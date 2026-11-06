@@ -1,5 +1,6 @@
 import { TorStatusCard } from "./components/TorStatusCard";
 import { TraceList } from "./components/TraceList";
+import { PrivateActions } from "./components/PrivateActions";
 import { ShieldForm } from "./components/ShieldForm";
 import { WalletCard } from "./components/WalletCard";
 import { WatchAddress } from "./components/WatchAddress";
@@ -12,6 +13,7 @@ export function App() {
         <p className="text-sm text-zinc-400">Private by default. Every request goes over Tor.</p>
       </header>
       <WalletCard />
+      <PrivateActions />
       <ShieldForm />
       <TorStatusCard />
       <WatchAddress />
