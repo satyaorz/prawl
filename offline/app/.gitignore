@@ -7,3 +7,6 @@ local.properties
 # Debug signing key: created by the build on first use (password "android"); never commit a release key.
 keystore/*.keystore
 keystore/*.jks
+
+# Local test output (UI screenshots from the research runs), never committed
+docs/
