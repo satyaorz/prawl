@@ -66,6 +66,7 @@ class WalletWebView(
     var bridgeActive = false; private set
     var bridgeNote = ""; private set
     private val exec = Executors.newSingleThreadExecutor()
+    private val passkeys = PasskeyBridge(activity, site.origin.host, debug)
 
     @SuppressLint("SetJavaScriptEnabled")
     val view: WebView = WebView(activity).also { wv ->
@@ -135,6 +136,16 @@ class WalletWebView(
                 }
             })
             WebViewCompat.addDocumentStartJavaScript(wv, BRIDGE_JS, origins)
+            // Passkeys through Credential Manager (see PasskeyBridge); same origin rules as the bridge.
+            WebViewCompat.addWebMessageListener(wv, "prowlPasskey", origins, object : WebViewCompat.WebMessageListener {
+                override fun onPostMessage(view: WebView, message: WebMessageCompat, sourceOrigin: Uri, isMainFrame: Boolean, replyProxy: JavaScriptReplyProxy) {
+                    if (!isMainFrame || Origin.parseStrict(sourceOrigin.toString()) != site.origin) return
+                    val data = message.data ?: return
+                    if (data.length > 16_384) return
+                    passkeys.handle(data, replyProxy)
+                }
+            })
+            WebViewCompat.addDocumentStartJavaScript(wv, PasskeyBridge.JS, origins)
             bridgeActive = true; bridgeNote = "bridge on for ${site.origin}"
         } catch (e: Exception) { bridgeNote = "bridge off: ${e.message}"; Log.w(TAG, bridgeNote) }
     }
@@ -170,7 +181,7 @@ class WalletWebView(
         view.evaluateJavascript("window.dispatchEvent(new CustomEvent('prowl:cashout-to-wallet',{detail:$detail}))", null)
     }
 
-    fun destroy() { exec.shutdownNow(); view.destroy() }
+    fun destroy() { exec.shutdownNow(); passkeys.destroy(); view.destroy() }
 
     companion object {
         const val TAG = "PRAWL_WV"
