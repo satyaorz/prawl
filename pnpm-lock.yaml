@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      viem:
+        specifier: 2.57.14
+        version: 2.57.14(typescript@5.9.3)
 
   packages/anon-rpc:
     dependencies:

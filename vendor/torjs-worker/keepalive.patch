@@ -1,0 +1,1331 @@
+diff --git a/crates/tor-js-wasm/src/fetch.rs b/crates/tor-js-wasm/src/fetch.rs
+index 17c060c..0f9f69f 100644
+--- a/crates/tor-js-wasm/src/fetch.rs
++++ b/crates/tor-js-wasm/src/fetch.rs
+@@ -54,8 +54,20 @@ fn has_header(headers: &HashMap<String, String>, name: &str) -> bool {
+ /// Maximum response header size (64KB)
+ const MAX_HEADER_SIZE: usize = 64 * 1024;
+ 
+-/// Type-erased async reader for the response body stream.
+-pub type BoxedReader = Box<dyn futures::io::AsyncRead + Unpin>;
++/// A connection: a Tor stream, or TLS over one. Read and write, so a finished
++/// exchange can hand it back to the keep-alive pool (pool.rs).
++pub trait Io: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin {}
++impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin> Io for T {}
++
++/// Type-erased connection.
++pub type BoxedIo = Box<dyn Io>;
++
++/// Type-erased connection the response body is read from.
++pub type BoxedReader = BoxedIo;
++
++/// Called with the connection once a response has been read exactly to the
++/// end of its framing, so it can serve another request (pool.rs).
++pub type Recycle = Box<dyn FnOnce(BoxedIo)>;
+ 
+ /// How the response body is framed.
+ #[derive(Debug, PartialEq, Eq)]
+@@ -93,6 +105,9 @@ pub struct BodyReader {
+     chunk_remaining: usize,
+     /// Chunked decoder: whether we're waiting for the trailing \r\n after chunk data.
+     awaiting_chunk_crlf: bool,
++    /// Set when the connection may be reused: taken and called once the body
++    /// ends exactly on its framing with no stray bytes left over.
++    recycle: Option<Recycle>,
+ }
+ 
+ impl BodyReader {
+@@ -105,6 +120,29 @@ impl BodyReader {
+             total_read: 0,
+             chunk_remaining: 0,
+             awaiting_chunk_crlf: false,
++            recycle: None,
++        }
++    }
++
++    /// Hand the connection to `recycle` if the body ends cleanly.
++    pub fn with_recycle(mut self, recycle: Option<Recycle>) -> Self {
++        self.recycle = recycle;
++        self
++    }
++
++    /// The body ended exactly on its framing: give the connection back, unless
++    /// bytes past the end arrived with it (a server that did that is not one
++    /// whose next response we could frame with confidence).
++    fn finish_clean(&mut self) {
++        self.done = true;
++        if let Some(recycle) = self.recycle.take() {
++            if self.buffer.is_empty() {
++                let io = std::mem::replace(
++                    &mut self.stream,
++                    Box::new(futures::io::Cursor::new(Vec::new())),
++                );
++                recycle(io);
++            }
+         }
+     }
+ 
+@@ -116,7 +154,7 @@ impl BodyReader {
+ 
+         match &self.framing {
+             BodyFraming::None => {
+-                self.done = true;
++                self.finish_clean();
+                 Ok(None)
+             }
+             BodyFraming::ContentLength(len) => {
+@@ -142,7 +180,7 @@ impl BodyReader {
+     async fn read_chunk_content_length(&mut self, total_len: usize) -> Result<Option<Vec<u8>>, JsTorError> {
+         let remaining = total_len.saturating_sub(self.total_read);
+         if remaining == 0 {
+-            self.done = true;
++            self.finish_clean();
+             return Ok(None);
+         }
+ 
+@@ -152,7 +190,7 @@ impl BodyReader {
+             let chunk: Vec<u8> = self.buffer.drain(..take).collect();
+             self.total_read += chunk.len();
+             if self.total_read >= total_len {
+-                self.done = true;
++                self.finish_clean();
+             }
+             return Ok(Some(chunk));
+         }
+@@ -174,7 +212,12 @@ impl BodyReader {
+                 buf.truncate(take);
+                 self.total_read += take;
+                 if self.total_read >= total_len {
+-                    self.done = true;
++                    // `n > take` (bytes past the body in the same read) would be
++                    // lost here, so such a connection is not reused.
++                    if n > take {
++                        self.recycle = None;
++                    }
++                    self.finish_clean();
+                 }
+                 Ok(Some(buf))
+             }
+@@ -304,6 +347,17 @@ impl BodyReader {
+                     if size == 0 {
+                         // Terminal chunk
+                         self.done = true;
++                        if self.recycle.is_some() {
++                            // Reuse needs the message to end exactly: read the
++                            // (usually empty) trailer section up to its blank
++                            // line. Without reuse in prospect, stop here as
++                            // stock does.
++                            if self.skip_trailers().await {
++                                self.finish_clean();
++                            } else {
++                                self.recycle = None;
++                            }
++                        }
+                         return Ok(None);
+                     }
+ 
+@@ -325,6 +379,28 @@ impl BodyReader {
+         }
+     }
+ 
++    /// Consume trailer lines up to and including the blank line that ends a
++    /// chunked message. False if the connection ended or broke first: the body
++    /// is still complete, the connection just cannot be reused.
++    async fn skip_trailers(&mut self) -> bool {
++        loop {
++            if let Some(pos) = find_crlf(&self.buffer) {
++                self.buffer.drain(..pos + 2);
++                if pos == 0 {
++                    return true;
++                }
++                continue;
++            }
++            if self.buffer.len() > MAX_HEADER_SIZE {
++                return false;
++            }
++            match self.fill_buffer_from_stream().await {
++                Ok(n) if n > 0 => {}
++                _ => return false,
++            }
++        }
++    }
++
+     /// Read from stream into provided buffer, returning bytes read.
+     async fn fill_buf(&mut self, buf: &mut [u8]) -> Result<usize, JsTorError> {
+         self.stream.read(buf).await.map_err(|e| {
+@@ -379,7 +455,9 @@ pub fn build_request_head(
+         request.push_str("Accept: */*\r\n");
+     }
+     if !has_header(headers, "Connection") {
+-        request.push_str("Connection: close\r\n");
++        // Fork: keep-alive, so the connection can return to the pool (pool.rs).
++        // Browsers send the same over HTTP/1.1.
++        request.push_str("Connection: keep-alive\r\n");
+     }
+ 
+     // Add custom headers (reject any with CR/LF to prevent header injection).
+@@ -479,6 +557,7 @@ where
+ /// Returns the parsed status/headers, the body framing mode, and any overflow
+ /// bytes read past the `\r\n\r\n` header separator. The stream is borrowed
+ /// mutably so the caller retains ownership for body reading.
++#[cfg(test)]
+ async fn read_response_headers<S>(
+     stream: &mut S,
+     method: &Method,
+@@ -486,6 +565,35 @@ async fn read_response_headers<S>(
+ where
+     S: futures::io::AsyncRead + Unpin,
+ {
++    let mut got_any = false;
++    read_response_head(stream, method, &mut got_any)
++        .await
++        .map(|h| (h.status, h.headers, h.framing, h.overflow))
++}
++
++/// A parsed response head.
++struct ResponseHead {
++    status: u16,
++    headers: Vec<(String, String)>,
++    framing: BodyFraming,
++    overflow: Vec<u8>,
++    /// The server lets the connection carry another request: HTTP/1.1 and no
++    /// `Connection: close`.
++    keep_alive: bool,
++}
++
++/// `read_response_headers`, also reporting whether the server allows reuse,
++/// and setting `got_any` once any response byte has arrived (a reused
++/// connection that ends before that was closed by the server while idle).
++async fn read_response_head<S>(
++    stream: &mut S,
++    method: &Method,
++    got_any: &mut bool,
++) -> Result<ResponseHead, JsTorError>
++where
++    S: futures::io::AsyncRead + Unpin,
++{
++    let keep_alive: bool;
+     // Read response headers, skipping 1xx interim responses (except 101).
+     let mut header_buf = Vec::new();
+     let status: u16;
+@@ -520,7 +628,10 @@ where
+                         "Connection closed before headers received",
+                     ));
+                 }
+-                Ok(n) => header_buf.extend_from_slice(&buf[..n]),
++                Ok(n) => {
++                    *got_any = true;
++                    header_buf.extend_from_slice(&buf[..n]);
++                }
+                 Err(e) => {
+                     return Err(JsTorError::http_request(format!(
+                         "Failed to read response headers: {}",
+@@ -569,6 +680,7 @@ where
+ 
+         // Final response
+         status = parsed_status;
++        keep_alive = parts[0] == "HTTP/1.1";
+         headers.clear();
+         for line in lines {
+             if let Some((key, value)) = line.split_once(':') {
+@@ -609,74 +721,157 @@ where
+         overflow.len()
+     );
+ 
+-    Ok((status, headers, framing, overflow))
++    let close = headers.iter().any(|(k, v)| {
++        k == "connection" && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"))
++    });
++    Ok(ResponseHead {
++        status,
++        headers,
++        framing,
++        overflow,
++        keep_alive: keep_alive && !close,
++    })
+ }
+ 
+-/// Perform an HTTP fetch over a Tor stream, resolving as soon as headers arrive.
+-///
+-/// The returned `FetchHeadersResult` contains parsed headers and a `BodyReader`
+-/// that can be used to read the body asynchronously.
+-#[expect(clippy::too_many_arguments, reason = "HTTP fetch requires many parameters")]
+-pub async fn fetch_headers<S>(
++/// Open a connection over a Tor stream: TLS for https, the bare stream for http.
++pub async fn open_connection<S>(
+     stream: S,
+-    url: &Url,
+-    method: Method,
+-    headers: HashMap<String, String>,
+-    body: RequestBody,
+     is_https: bool,
+     host: &str,
+     tls_config: Option<std::sync::Arc<futures_rustls::rustls::ClientConfig>>,
+-) -> Result<FetchHeadersResult, JsTorError>
++) -> Result<BoxedIo, JsTorError>
+ where
+     S: futures::io::AsyncRead + futures::io::AsyncWrite + Unpin + 'static,
+ {
+-    let head = build_request_head(url, &method, &headers, &body)?;
+-    debug!("Sending {}-byte request head", head.len());
++    if !is_https {
++        return Ok(Box::new(stream));
++    }
++    let tls_config = tls_config.ok_or_else(|| {
++        JsTorError::tls("HTTPS requested but no TLS config provided")
++    })?;
+ 
+-    if is_https {
+-        let tls_config = tls_config.ok_or_else(|| {
+-            JsTorError::tls("HTTPS requested but no TLS config provided")
++    let connector = futures_rustls::TlsConnector::from(tls_config);
++    let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
++        .map_err(|e| JsTorError::tls(format!("Invalid server name '{}': {}", host, e)))?;
++
++    let tls_stream = connector
++        .connect(server_name, stream)
++        .await
++        .map_err(|e| {
++            JsTorError::tls(format!("TLS handshake failed with {}: {}", host, e))
+         })?;
++    info!("TLS connection established with {}", host);
++    Ok(Box::new(tls_stream))
++}
+ 
+-        let connector = futures_rustls::TlsConnector::from(tls_config);
+-        let server_name = rustls_pki_types::ServerName::try_from(host.to_string())
+-            .map_err(|e| JsTorError::tls(format!("Invalid server name '{}': {}", host, e)))?;
+-
+-        let mut tls_stream = connector
+-            .connect(server_name, stream)
+-            .await
+-            .map_err(|e| {
+-                JsTorError::tls(format!("TLS handshake failed with {}: {}", host, e))
+-            })?;
+-        info!("TLS connection established with {}", host);
+-
+-        write_request(&mut tls_stream, &head, body).await?;
+-        let (status, resp_headers, framing, overflow) =
+-            read_response_headers(&mut tls_stream, &method).await?;
+-
+-        info!("Received response headers: status={}", status);
+-
+-        let reader: BoxedReader = Box::new(tls_stream);
+-        Ok(FetchHeadersResult {
+-            status,
+-            headers: resp_headers,
+-            body_reader: BodyReader::new(reader, framing, overflow),
+-        })
+-    } else {
+-        let mut stream = stream;
++/// How an exchange failed, as far as resending it is concerned.
++pub enum ExchangeError {
++    /// Not one request byte was accepted: always safe to send elsewhere.
++    NothingSent(JsTorError),
++    /// The request went out but the connection ended before any response
++    /// byte. On a reused connection this is the server having closed it while
++    /// idle; resending is safe only for a request that may be repeated.
++    NoResponse(JsTorError),
++    /// Anything else.
++    Failed(JsTorError),
++    /// Fork: on a reused connection, no response head arrived within the
++    /// reused-connection deadline (pool.rs `reused_headers_deadline`). The
++    /// connection is presumed silently dead: a stall gives no EOF, so the
++    /// liveness check cannot see it. Only replayable requests get a deadline,
++    /// so this is always safe to resend.
++    Stalled(JsTorError),
++}
+ 
+-        write_request(&mut stream, &head, body).await?;
+-        let (status, resp_headers, framing, overflow) =
+-            read_response_headers(&mut stream, &method).await?;
++impl ExchangeError {
++    pub fn into_inner(self) -> JsTorError {
++        match self {
++            Self::NothingSent(e) | Self::NoResponse(e) | Self::Failed(e) | Self::Stalled(e) => e,
++        }
++    }
+ 
+-        info!("Received response headers: status={}", status);
++    /// Whether a request that hit this error on a *reused* connection is sent
++    /// again on a fresh one. `replayable`: body in memory and an idempotent
++    /// method or `anonOptions.idempotent`.
++    pub fn resend_on_fresh(&self, replayable: bool) -> bool {
++        match self {
++            Self::NothingSent(_) => true,
++            Self::NoResponse(_) | Self::Stalled(_) => replayable,
++            Self::Failed(_) => false,
++        }
++    }
++}
+ 
+-        let reader: BoxedReader = Box::new(stream);
+-        Ok(FetchHeadersResult {
+-            status,
+-            headers: resp_headers,
+-            body_reader: BodyReader::new(reader, framing, overflow),
+-        })
++/// Send one request on `io` and read the response head. Resolves as soon as
++/// headers arrive; the body is read through the returned `BodyReader`, which
++/// gives `io` to `recycle` if the server allows reuse and the body ends
++/// cleanly.
++pub async fn exchange(
++    mut io: BoxedIo,
++    head: &[u8],
++    body: RequestBody,
++    method: &Method,
++    recycle: Option<Recycle>,
++) -> Result<FetchHeadersResult, ExchangeError> {
++    debug!("Sending {}-byte request head", head.len());
++    // The first write on its own, to tell "nothing left" from "partly sent".
++    let first = match io.write(head).await {
++        Ok(0) => {
++            return Err(ExchangeError::NothingSent(JsTorError::http_request(
++                "Failed to write request head: connection closed",
++            )))
++        }
++        Ok(n) => n,
++        Err(e) => {
++            return Err(ExchangeError::NothingSent(JsTorError::http_request(format!(
++                "Failed to write request head: {}",
++                e
++            ))))
++        }
++    };
++    // A later write failure: some of the request may have gone out, and no
++    // response has come back.
++    write_request(&mut io, &head[first..], body)
++        .await
++        .map_err(ExchangeError::NoResponse)?;
++
++    let mut got_any = false;
++    let parsed = read_response_head(&mut io, method, &mut got_any)
++        .await
++        .map_err(|e| {
++            if got_any {
++                ExchangeError::Failed(e)
++            } else {
++                ExchangeError::NoResponse(e)
++            }
++        })?;
++    info!("Received response headers: status={}", parsed.status);
++
++    let recycle = recycle.filter(|_| parsed.keep_alive && parsed.framing != BodyFraming::UntilEof);
++    Ok(FetchHeadersResult {
++        status: parsed.status,
++        headers: parsed.headers,
++        body_reader: BodyReader::new(io, parsed.framing, parsed.overflow).with_recycle(recycle),
++    })
++}
++
++/// Whether an idle pooled connection still looks open: one read polled once
++/// must find nothing waiting. EOF or an error means the server (or the exit)
++/// closed it; unexpected bytes mean it is out of step. Either way it is
++/// dropped rather than used.
++pub fn looks_alive(io: &mut BoxedIo) -> bool {
++    use futures::FutureExt;
++    let mut byte = [0u8; 1];
++    io.read(&mut byte).now_or_never().is_none()
++}
++
++impl RequestBody {
++    /// A copy for resending, when the body is in memory.
++    pub fn try_clone(&self) -> Option<RequestBody> {
++        match self {
++            RequestBody::None => Some(RequestBody::None),
++            RequestBody::Bytes(b) => Some(RequestBody::Bytes(b.clone())),
++            RequestBody::Stream(_) => None,
++        }
+     }
+ }
+ 
+@@ -761,6 +956,19 @@ mod tests {
+         }
+     }
+ 
++    /// Writes go nowhere: these tests only script what the server says.
++    impl futures::io::AsyncWrite for ScriptedReader {
++        fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
++            Poll::Ready(Ok(buf.len()))
++        }
++        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++        fn poll_close(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
+     fn reader<I, B>(pieces: I) -> BoxedReader
+     where
+         I: IntoIterator<Item = B>,
+@@ -1126,7 +1334,7 @@ mod tests {
+         assert_eq!(lines[0], "GET / HTTP/1.1");
+         assert_eq!(lines[1], "Host: example.com");
+         assert!(h.contains("Accept: */*\r\n"));
+-        assert!(h.contains("Connection: close\r\n"));
++        assert!(h.contains("Connection: keep-alive\r\n"), "fork default");
+         assert!(h.ends_with("\r\n\r\n"), "head must end with a blank line");
+         // No navigator off-browser, so no User-Agent is invented.
+         assert!(!h.to_ascii_lowercase().contains("user-agent"));
+@@ -1691,4 +1899,192 @@ mod tests {
+             assert_eq!(body_of(body).unwrap(), b"hello world", "split at {split}");
+         }
+     }
++
++    // =====================================================================
++    // keep-alive (fork)
++    // =====================================================================
++
++    use std::cell::RefCell;
++    use std::rc::Rc;
++
++    /// A recycle hook that records whether it was called.
++    fn recycle_probe() -> (Option<Recycle>, Rc<RefCell<bool>>) {
++        let called = Rc::new(RefCell::new(false));
++        let c = Rc::clone(&called);
++        (Some(Box::new(move |_io: BoxedIo| *c.borrow_mut() = true)), called)
++    }
++
++    fn run_exchange(wire: &str, method: Method) -> (Result<Vec<u8>, JsTorError>, bool) {
++        let (recycle, called) = recycle_probe();
++        let io: BoxedIo = Box::new(ScriptedReader::new([wire.to_string()]));
++        let res = block_on(exchange(io, b"GET / HTTP/1.1\r\n\r\n", RequestBody::None, &method, recycle))
++            .map_err(|e| e.into_inner())
++            .unwrap();
++        let body = body_of(res.body_reader);
++        let recycled = *called.borrow();
++        (body, recycled)
++    }
++
++    #[test]
++    fn a_content_length_response_read_to_the_end_is_recycled() {
++        let (body, recycled) = run_exchange("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", Method::GET);
++        assert_eq!(body.unwrap(), b"hello");
++        assert!(recycled);
++    }
++
++    #[test]
++    fn a_chunked_response_is_recycled_after_its_trailers() {
++        let (body, recycled) = run_exchange(
++            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-T: v\r\n\r\n",
++            Method::GET,
++        );
++        assert_eq!(body.unwrap(), b"hello");
++        assert!(recycled);
++    }
++
++    #[test]
++    fn a_chunked_response_cut_off_in_its_trailers_is_complete_but_not_recycled() {
++        let (body, recycled) =
++            run_exchange("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n", Method::GET);
++        assert_eq!(body.unwrap(), b"hello");
++        assert!(!recycled);
++    }
++
++    #[test]
++    fn connection_close_http_1_0_and_eof_framing_are_never_recycled() {
++        for wire in [
++            "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok",
++            "HTTP/1.1 200 OK\r\nConnection: Keep-Alive, Close\r\nContent-Length: 2\r\n\r\nok",
++            "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok",
++            "HTTP/1.1 200 OK\r\n\r\nok",
++        ] {
++            let (body, recycled) = run_exchange(wire, Method::GET);
++            assert_eq!(body.unwrap(), b"ok", "{wire:?}");
++            assert!(!recycled, "{wire:?}");
++        }
++    }
++
++    #[test]
++    fn bytes_past_the_body_stop_recycling() {
++        let (body, recycled) = run_exchange("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokEXTRA", Method::GET);
++        assert_eq!(body.unwrap(), b"ok");
++        assert!(!recycled);
++    }
++
++    #[test]
++    fn a_truncated_body_is_not_recycled() {
++        let (body, recycled) = run_exchange("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nok", Method::GET);
++        assert!(body.is_err());
++        assert!(!recycled);
++    }
++
++    #[test]
++    fn bodyless_responses_are_recycled() {
++        let (_, recycled) = run_exchange("HTTP/1.1 204 No Content\r\n\r\n", Method::GET);
++        assert!(recycled);
++        let (_, recycled) = run_exchange("HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n", Method::HEAD);
++        assert!(recycled);
++    }
++
++    #[test]
++    fn a_connection_closed_before_any_response_byte_is_no_response() {
++        let io: BoxedIo = Box::new(ScriptedReader::new(Vec::<Vec<u8>>::new()));
++        let err = block_on(exchange(io, b"GET / HTTP/1.1\r\n\r\n", RequestBody::None, &Method::GET, None)).err().unwrap();
++        assert!(matches!(err, ExchangeError::NoResponse(_)));
++
++        let io: BoxedIo = Box::new(ScriptedReader::new(["HTTP/1.1 200"]));
++        let err = block_on(exchange(io, b"GET / HTTP/1.1\r\n\r\n", RequestBody::None, &Method::GET, None)).err().unwrap();
++        assert!(matches!(err, ExchangeError::Failed(_)), "a partial head is a real failure");
++    }
++
++    /// A writer that refuses everything, as a Tor stream does after END.
++    struct Dead;
++    impl futures::io::AsyncRead for Dead {
++        fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut [u8]) -> Poll<std::io::Result<usize>> {
++            Poll::Ready(Ok(0))
++        }
++    }
++    impl futures::io::AsyncWrite for Dead {
++        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8]) -> Poll<std::io::Result<usize>> {
++            Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stream ended")))
++        }
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    /// Never ready: an open connection with nothing to say.
++    struct Quiet;
++    impl futures::io::AsyncRead for Quiet {
++        fn poll_read(self: Pin<&mut Self>, _: &mut Context<'_>, _: &mut [u8]) -> Poll<std::io::Result<usize>> {
++            Poll::Pending
++        }
++    }
++    impl futures::io::AsyncWrite for Quiet {
++        fn poll_write(self: Pin<&mut Self>, _: &mut Context<'_>, b: &[u8]) -> Poll<std::io::Result<usize>> {
++            Poll::Ready(Ok(b.len()))
++        }
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    #[test]
++    fn a_refused_first_write_is_nothing_sent() {
++        let err = block_on(exchange(Box::new(Dead), b"POST / HTTP/1.1\r\n\r\n", RequestBody::Bytes(b"x".to_vec()), &Method::POST, None))
++            .err()
++            .unwrap();
++        assert!(matches!(err, ExchangeError::NothingSent(_)));
++    }
++
++    #[test]
++    fn liveness_sees_closed_chatty_and_quiet_connections() {
++        let mut closed: BoxedIo = Box::new(Dead);
++        assert!(!looks_alive(&mut closed));
++        let mut chatty: BoxedIo = Box::new(ScriptedReader::new(["HTTP/1.1 408"]));
++        assert!(!looks_alive(&mut chatty));
++        let mut quiet: BoxedIo = Box::new(Quiet);
++        assert!(looks_alive(&mut quiet));
++    }
++
++    #[test]
++    fn a_silent_reused_connection_is_cut_by_the_deadline_and_dropped() {
++        // Quiet accepts the request and never answers: the soak stalls.
++        // The deadline future here is already due; in the worker it is a
++        // 5 s gloo timer (pool::reused_headers_deadline).
++        let io: BoxedIo = Box::new(Quiet);
++        let ex = exchange(io, b"POST / HTTP/1.1\r\n\r\n", RequestBody::Bytes(b"{}".to_vec()), &Method::POST, None);
++        let out = block_on(crate::unless_aborted(futures::future::ready(()), ex));
++        assert!(out.is_none(), "the exchange (and its stream) is dropped at the deadline");
++
++        // With no deadline due, an answering connection still answers.
++        let io: BoxedIo = Box::new(ScriptedReader::new(["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]));
++        let ex = exchange(io, b"GET / HTTP/1.1\r\n\r\n", RequestBody::None, &Method::GET, None);
++        let out = block_on(crate::unless_aborted(futures::future::pending::<()>(), ex));
++        assert!(matches!(out, Some(Ok(_))));
++    }
++
++    #[test]
++    fn what_is_resent_on_a_fresh_connection_after_a_reused_one_fails() {
++        let e = || JsTorError::http_request("x");
++        assert!(ExchangeError::NothingSent(e()).resend_on_fresh(false), "no byte left: always");
++        assert!(ExchangeError::NoResponse(e()).resend_on_fresh(true));
++        assert!(!ExchangeError::NoResponse(e()).resend_on_fresh(false), "never a write");
++        assert!(ExchangeError::Stalled(e()).resend_on_fresh(true));
++        assert!(!ExchangeError::Stalled(e()).resend_on_fresh(false), "never a write");
++        assert!(!ExchangeError::Failed(e()).resend_on_fresh(true));
++    }
++
++    #[test]
++    fn only_in_memory_bodies_can_be_resent() {
++        assert!(RequestBody::None.try_clone().is_some());
++        assert!(RequestBody::Bytes(b"x".to_vec()).try_clone().is_some());
++        assert!(RequestBody::Stream(Box::pin(futures::stream::empty())).try_clone().is_none());
++    }
+ }
+diff --git a/crates/tor-js-wasm/src/lib.rs b/crates/tor-js-wasm/src/lib.rs
+index 2bac0b4..b3b6c8c 100644
+--- a/crates/tor-js-wasm/src/lib.rs
++++ b/crates/tor-js-wasm/src/lib.rs
+@@ -36,6 +36,7 @@ mod error;
+ mod fast_bootstrap;
+ mod fetch;
+ mod isolation;
++mod pool;
+ mod runtime;
+ mod storage;
+ mod tls;
+@@ -45,6 +46,7 @@ pub use storage::{JsStorage, JsStorageInterface, CachedJsStorage};
+ use error::JsTorError;
+ 
+ use std::cell::RefCell;
++use std::rc::Rc;
+ use std::collections::HashMap;
+ use std::sync::Arc;
+ 
+@@ -296,6 +298,16 @@ pub struct TorClient {
+     /// `anonOptions.isolationKey` → Arti isolation group, with the key's own TLS
+     /// session cache (see isolation.rs, tls.rs).
+     isolation: RefCell<IsolationGroups<Arc<futures_rustls::rustls::ClientConfig>>>,
++    /// Fork: idle keep-alive connections, keyed by isolation group and origin
++    /// (pool.rs). Different keys never share an entry.
++    pool: SharedPool,
++}
++
++type SharedPool = Rc<RefCell<pool::Pool<fetch::BoxedIo>>>;
++
++/// Wall-clock milliseconds, for pool ages.
++fn now_ms() -> f64 {
++    js_sys::Date::now()
+ }
+ 
+ #[wasm_bindgen]
+@@ -348,8 +360,9 @@ impl TorClient {
+             Err(e) => return wasm_bindgen_futures::future_to_promise(async move { Err(e) }),
+         };
+ 
++        let pool = Rc::clone(&self.pool);
+         wasm_bindgen_futures::future_to_promise(async move {
+-            fetch_impl(&client, &url, init, tls_config, isolation).await
++            fetch_impl(&client, &url, init, tls_config, isolation, pool).await
+         })
+     }
+ 
+@@ -391,6 +404,7 @@ impl TorClient {
+     #[wasm_bindgen(js_name = close)]
+     pub fn close(&mut self) -> js_sys::Promise {
+         self.inner = None;
++        self.pool.borrow_mut().clear();
+         wasm_bindgen_futures::future_to_promise(async {
+             info!("TorClient closed");
+             Ok(JsValue::undefined())
+@@ -464,6 +478,7 @@ async fn create_client(options: TorClientOptions) -> Result<TorClient, JsValue>
+         inner: Some(tor_client),
+         tls: tls::TlsConfigs::new(make_tls_config()),
+         isolation: RefCell::new(IsolationGroups::default()),
++        pool: Rc::new(RefCell::new(pool::Pool::default())),
+     })
+ }
+ 
+@@ -510,6 +525,7 @@ async fn fetch_impl(
+     init: JsValue,
+     tls_config: Arc<futures_rustls::rustls::ClientConfig>,
+     isolation: Option<IsolationToken>,
++    pool: SharedPool,
+ ) -> Result<JsValue, JsValue> {
+     // Parse URL
+     let url = url::Url::parse(url_str)
+@@ -566,30 +582,139 @@ async fn fetch_impl(
+     // Log only the origin: the full URL can carry credentials or API keys.
+     info!("Fetching {}://{}:{} via Tor", url.scheme(), host, port);
+ 
+-    // Connect through Tor (circuit building can take several seconds)
+-    debug!("Connecting to {}:{}...", host, port);
+-    let stream = abortable(signal.as_ref(), async {
+-        match isolation {
+-            Some(token) => {
+-                let mut prefs = StreamPrefs::new();
+-                prefs.set_isolation(token);
+-                client.connect_with_prefs((host, port), &prefs).await
++    // Fork: keep-alive. A request may go out on an idle connection of the
++    // same isolation group and origin (pool.rs). If that connection turns out
++    // to have been closed by the server, the request is sent again on a fresh
++    // connection only when that cannot duplicate it: no byte of it was
++    // accepted, or it is replayable (bytes in memory, and an idempotent method
++    // or `anonOptions.idempotent: true` from the caller).
++    let caller_close = headers.iter().any(|(k, v)| {
++        k.eq_ignore_ascii_case("connection")
++            && v.split(',').any(|t| t.trim().eq_ignore_ascii_case("close"))
++    });
++    let in_memory = !matches!(request_body, fetch::RequestBody::Stream(_));
++    let replayable = in_memory
++        && (method == http::Method::GET
++            || method == http::Method::HEAD
++            || method == http::Method::OPTIONS
++            || idempotent_from_init(&init));
++    // A streamed body is consumed by its one attempt, and a request that may
++    // not be repeated could not be resent if a pooled connection turned out
++    // dead, so both always get a fresh connection (which may still be pooled
++    // afterwards). See pool::may_take_pooled.
++    let may_take = pool::may_take_pooled(caller_close, in_memory, replayable);
++    let requested_reuse_deadline = reused_headers_timeout_from_init(&init);
++    let pool_key = pool::PoolKey {
++        group: isolation,
++        scheme: url.scheme().to_owned(),
++        host: host.to_owned(),
++        port,
++    };
++    let head = fetch::build_request_head(&url, &method, &headers, &request_body)
++        .map_err(|e| e.into_js_value())?;
++
++    let mut request_body = Some(request_body);
++    let mut use_pool = may_take;
++    let result = loop {
++        // An idle connection that still looks open, if there is one.
++        let mut reused = None;
++        while use_pool {
++            let Some(taken) = pool.borrow_mut().take(&pool_key, now_ms()) else { break };
++            let mut taken = taken;
++            if fetch::looks_alive(&mut taken.conn) {
++                reused = Some(taken);
++                break;
+             }
+-            None => client.connect((host, port)).await,
++            debug!("Dropping a pooled connection the server closed");
+         }
+-        .map_err(|e| JsTorError::connect_failed(&e).into_js_value())
+-    })
+-    .await?;
++        let is_reuse = reused.is_some();
+ 
+-    debug!("Connected, making HTTP request...");
++        let (io, created, uses) = match reused {
++            Some(t) => {
++                debug!("Reusing a pooled connection ({} earlier requests)", t.uses);
++                (t.conn, t.created, t.uses)
++            }
++            None => {
++                // Connect through Tor (circuit building can take several seconds)
++                debug!("Connecting to {}:{}...", host, port);
++                let stream = abortable(signal.as_ref(), async {
++                    match isolation {
++                        Some(token) => {
++                            let mut prefs = StreamPrefs::new();
++                            prefs.set_isolation(token);
++                            client.connect_with_prefs((host, port), &prefs).await
++                        }
++                        None => client.connect((host, port)).await,
++                    }
++                    .map_err(|e| JsTorError::connect_failed(&e).into_js_value())
++                })
++                .await?;
++                debug!("Connected, making HTTP request...");
++                let io = abortable(signal.as_ref(), async {
++                    fetch::open_connection(stream, is_https, host, Some(Arc::clone(&tls_config)))
++                        .await
++                        .map_err(|e| e.into_js_value())
++                })
++                .await?;
++                (io, now_ms(), 0)
++            }
++        };
+ 
+-    // Perform the HTTP request — resolves as soon as headers arrive
+-    let result = abortable(signal.as_ref(), async {
+-        fetch::fetch_headers(stream, &url, method, headers, request_body, is_https, host, Some(tls_config))
+-            .await
+-            .map_err(|e| e.into_js_value())
+-    })
+-    .await?;
++        // On a reused connection keep the body for a possible resend; a
++        // fresh connection's attempt is the last one.
++        let copy = if is_reuse { request_body.as_ref().and_then(|b| b.try_clone()) } else { None };
++        let body = match copy {
++            Some(copy) => copy,
++            None => request_body.take().unwrap_or(fetch::RequestBody::None),
++        };
++        let recycle: Option<fetch::Recycle> = if caller_close {
++            None
++        } else {
++            let pool = Rc::clone(&pool);
++            let key = pool_key.clone();
++            Some(Box::new(move |io: fetch::BoxedIo| {
++                pool.borrow_mut().put(key, io, created, uses + 1, now_ms());
++            }))
++        };
++
++        // Perform the HTTP request — resolves as soon as headers arrive. On a
++        // reused connection a replayable request gets a short deadline for
++        // its response head: a pooled connection can die silently (no EOF),
++        // and the caller's own deadline is much longer.
++        let deadline = pool::reused_headers_deadline(is_reuse, replayable, requested_reuse_deadline);
++        let attempt = abortable(signal.as_ref(), async {
++            let exchange = fetch::exchange(io, &head, body, &method, recycle);
++            match deadline {
++                None => Ok(exchange.await),
++                // Dropping the exchange on timeout closes the stalled stream.
++                Some(ms) => Ok(unless_aborted(gloo_timers::future::TimeoutFuture::new(ms), exchange)
++                    .await
++                    .unwrap_or_else(|| {
++                        Err(fetch::ExchangeError::Stalled(JsTorError::http_request(format!(
++                            "no response within {} ms on a reused connection",
++                            ms
++                        ))))
++                    })),
++            }
++        })
++        .await?;
++        match attempt {
++            Ok(result) => break result,
++            Err(e) => {
++                let resend = is_reuse && e.resend_on_fresh(replayable);
++                if !resend {
++                    return Err(e.into_inner().into_js_value());
++                }
++                if let fetch::ExchangeError::Stalled(_) = e {
++                    info!("A pooled connection did not answer in time; resending on a fresh one");
++                } else {
++                    info!("A pooled connection was closed under the request; resending on a fresh one");
++                }
++                // Once, and on a fresh connection.
++                use_pool = false;
++            }
++        }
++    };
+ 
+     // Build web_sys::Headers from the parsed headers
+     let js_headers = web_sys::Headers::new()
+@@ -713,6 +838,36 @@ fn isolation_key_from_init(init: &JsValue) -> Result<Option<String>, JsValue> {
+         .ok_or_else(|| invalid("anonOptions.isolationKey must be a well-formed string"))
+ }
+ 
++/// Fork: `anonOptions.idempotent === true` marks a request (such as a JSON-RPC
++/// read sent as POST) safe to send twice, so a request caught by a pooled
++/// connection the server had closed can be resent on a fresh one.
++fn idempotent_from_init(init: &JsValue) -> bool {
++    if init.is_undefined() || init.is_null() {
++        return false;
++    }
++    js_sys::Reflect::get(init, &JsValue::from_str("anonOptions"))
++        .ok()
++        .filter(|o| o.is_object())
++        .and_then(|o| js_sys::Reflect::get(&o, &JsValue::from_str("idempotent")).ok())
++        .and_then(|v| v.as_bool())
++        .unwrap_or(false)
++}
++
++/// Fork: `anonOptions.reusedHeadersTimeoutMs`, the caller's response-head
++/// deadline for a replayable request on a reused connection (0 = none; see
++/// pool::reused_headers_deadline). Anything that is not a number is ignored,
++/// which means the default.
++fn reused_headers_timeout_from_init(init: &JsValue) -> Option<f64> {
++    if init.is_undefined() || init.is_null() {
++        return None;
++    }
++    js_sys::Reflect::get(init, &JsValue::from_str("anonOptions"))
++        .ok()
++        .filter(|o| o.is_object())
++        .and_then(|o| js_sys::Reflect::get(&o, &JsValue::from_str("reusedHeadersTimeoutMs")).ok())
++        .and_then(|v| v.as_f64())
++}
++
+ /// Extract an AbortSignal from a JavaScript FetchInit object.
+ fn extract_signal_from_js(init: &JsValue) -> Result<Option<web_sys::AbortSignal>, JsValue> {
+     if init.is_undefined() || init.is_null() {
+@@ -896,7 +1051,7 @@ export interface FetchInit {
+     body?: string | Uint8Array | ArrayBuffer | ReadableStream<Uint8Array>;
+     signal?: AbortSignal;
+     /** Per-call options, as anon-rpc spec 0.4.0 (§9.3) defines them (see FetchInit in types.ts). */
+-    anonOptions?: { isolationKey?: string };
++    anonOptions?: { isolationKey?: string; idempotent?: boolean; reusedHeadersTimeoutMs?: number };
+ }
+ 
+ export interface TorClient {
+diff --git a/src/anon-rpc-worker/worker.ts b/src/anon-rpc-worker/worker.ts
+index 7e91601..ac77c30 100644
+--- a/src/anon-rpc-worker/worker.ts
++++ b/src/anon-rpc-worker/worker.ts
+@@ -107,12 +107,35 @@ const dial: DialFn = async (addr) => {
+   }
+ })();
+ 
++// Fork: carry tor-js's `torKind` across the harness. The harness (§12) passes
++// only `name`, `message` and string `code` over the port; `kind`, `retryable`
++// and `torKind` are dropped. `kind` and `retryable` are fixed per `code` in
++// tor-js (error.rs), so the host can recompute them; `torKind` is the one
++// field with information of its own. `code` stays untouched, since hosts
++// branch on it, and `message` must not be parsed (§12). `name` crosses intact
++// and tor-js leaves it as the generic "Error", so it carries
++// "TorError.<torKind>", e.g. "TorError.RemoteStreamError", when there is one.
++function withTorKindInName(e: unknown): unknown {
++  if (e instanceof Error) {
++    const torKind = (e as { torKind?: unknown }).torKind;
++    if (typeof torKind === "string" && /^[A-Za-z0-9]+$/.test(torKind)) {
++      try { e.name = `TorError.${torKind}`; } catch { /* frozen: leave as is */ }
++    }
++  }
++  return e;
++}
++
+ async function handle(
+   client: TorClient,
+   url: string,
+   init?: AnonRequestInit,
+ ): Promise<AnonFetchResponse> {
+-  const resp = await client.fetch(url, await toFetchInit(init));
++  let resp: Response;
++  try {
++    resp = await client.fetch(url, await toFetchInit(init));
++  } catch (e) {
++    throw withTorKindInName(e);
++  }
+   const headers: HeaderList = [];
+   resp.headers.forEach((v, k) => headers.push([k, v]));
+   return {
+diff --git a/crates/tor-js-wasm/src/pool.rs b/crates/tor-js-wasm/src/pool.rs
+new file mode 100644
+index 0000000..8ce232a
+--- /dev/null
++++ b/crates/tor-js-wasm/src/pool.rs
+@@ -0,0 +1,343 @@
++//! HTTP/1.1 keep-alive pool (fork addition).
++//!
++//! Stock tor-js opens a new Tor stream, a new exit-side TCP connection and a
++//! new TLS session for every fetch, and sends `Connection: close`. That is
++//! about three circuit round trips per warm request (BEGIN/CONNECTED, TLS,
++//! request). Keeping the finished connection lets the next request to the same
++//! origin under the same isolation group cost one.
++//!
++//! Privacy rules, enforced by the key and by what may enter the pool:
++//!
++//! * The key is (isolation group, scheme, host, port). The group is the Arti
++//!   `IsolationToken` of the caller's `anonOptions.isolationKey` (`None` for
++//!   requests without a key, which already share circuits and a TLS session
++//!   cache). Two keys never share a token, so they never share a connection:
++//!   no lookup can return another group's entry.
++//! * A connection lives at most `MAX_AGE_MS` (4 min), below Arti's 10-minute circuit
++//!   dirtiness, and is dropped after `IDLE_TIMEOUT_MS` unused. A pooled stream
++//!   therefore cannot pin one group to one exit much longer than stock would.
++//! * Only connections whose last response ended exactly on its framing go back
++//!   in (see `BodyReader` in fetch.rs); anything ambiguous is closed.
++//!
++//! The pool is generic over the connection type so its rules are testable
++//! without a network; lib.rs instantiates it with `fetch::BoxedIo`. Time is
++//! passed in (milliseconds), for the same reason.
++
++use arti_client::IsolationToken;
++
++/// Drop a connection unused for this long. Servers commonly close idle
++/// keep-alive connections after 5-120 s; a connection they closed is caught by
++/// the liveness check, so this mainly bounds how long an exit holds a TCP
++/// connection open for us.
++pub(crate) const IDLE_TIMEOUT_MS: f64 = 60_000.0;
++
++/// Drop a connection this long after it was opened, however busy. Kept below
++/// Arti's 10-minute `max_dirtiness`, so a group's requests do not ride one
++/// exit for much longer than stock circuit rotation allows.
++///
++/// Lowered from 5 to 4 minutes: in both 15-minute soaks on 2026-11-06 a
++/// pooled publicnode connection stopped answering, with no EOF and no error,
++/// at 265 s and 278 s of age, just before the 5-minute retirement.
++pub(crate) const MAX_AGE_MS: f64 = 240_000.0;
++
++/// How long a request that rides a *reused* connection waits for its response
++/// head before the connection is presumed silently dead (a stall gives no EOF,
++/// so the liveness check on take cannot see it). The request is then sent once
++/// more on a fresh connection under the same key. Applies only to requests
++/// that may be repeated (see `reused_headers_deadline`). A JSON-RPC read on a
++/// warm connection answers in 0.25-0.65 s (p50 about 0.3-0.5 s), so 5 s is
++/// about 10 times the usual answer while still well inside a caller's 15 s.
++pub(crate) const REUSED_HEADERS_TIMEOUT_MS: u32 = 5_000;
++
++/// Bounds for a caller-chosen `anonOptions.reusedHeadersTimeoutMs`.
++pub(crate) const REUSED_HEADERS_TIMEOUT_MIN_MS: u32 = 1_000;
++pub(crate) const REUSED_HEADERS_TIMEOUT_MAX_MS: u32 = 120_000;
++
++/// Idle connections kept per (group, origin). Raised from 4 to 8 so a burst
++/// of 8 in flight under one key finds a warm connection for every request
++/// (with 4, half of an 8-wide burst opened fresh connections). Costs up to 8
++/// idle TCP connections from one exit to one provider per key, each still
++/// bounded by the idle timeout and maximum age below.
++pub(crate) const MAX_IDLE_PER_ORIGIN: usize = 8;
++
++/// Idle connections kept across all groups. Bookkeeping only: nothing is
++/// shared between groups, this just bounds open Tor streams.
++pub(crate) const MAX_IDLE_TOTAL: usize = 64;
++
++/// Requests per connection before it is retired.
++pub(crate) const MAX_USES: u32 = 1000;
++
++/// Where a connection goes: one isolation group and one origin.
++#[derive(Clone, Debug, PartialEq, Eq)]
++pub(crate) struct PoolKey {
++    pub(crate) group: Option<IsolationToken>,
++    pub(crate) scheme: String,
++    pub(crate) host: String,
++    pub(crate) port: u16,
++}
++
++struct Idle<C> {
++    key: PoolKey,
++    conn: C,
++    created: f64,
++    idle_since: f64,
++    uses: u32,
++}
++
++/// A connection taken out of the pool, with what `put` needs to return it.
++pub(crate) struct Taken<C> {
++    pub(crate) conn: C,
++    pub(crate) created: f64,
++    pub(crate) uses: u32,
++}
++
++pub(crate) struct Pool<C> {
++    /// Oldest first. Small (at most `MAX_IDLE_TOTAL`), so a linear scan is fine.
++    idle: Vec<Idle<C>>,
++}
++
++impl<C> Default for Pool<C> {
++    fn default() -> Self {
++        Self { idle: Vec::new() }
++    }
++}
++
++/// Still young enough to use or keep. A clock that went backwards counts as
++/// expired.
++fn within_age(created: f64, uses: u32, now: f64) -> bool {
++    let age = now - created;
++    (0.0..MAX_AGE_MS).contains(&age) && uses < MAX_USES
++}
++
++/// Whether a request may go out on a pooled connection at all.
++///
++/// Only a request that could be sent again if the connection turns out dead:
++/// its body is in memory, the caller did not ask for `Connection: close`, and
++/// it is replayable (GET/HEAD/OPTIONS, or `anonOptions.idempotent`). A request
++/// that must not be repeated (a transaction broadcast, a proof submission)
++/// always gets a fresh connection, as in stock tor-js, so a stale pooled
++/// connection can never leave it in an "was it sent?" state. Its connection
++/// may still be pooled afterwards for later reads.
++pub(crate) fn may_take_pooled(caller_close: bool, in_memory: bool, replayable: bool) -> bool {
++    !caller_close && in_memory && replayable
++}
++
++/// The response-head deadline for one attempt, if any: only on a reused
++/// connection and only for a replayable request. `requested` is the caller's
++/// `anonOptions.reusedHeadersTimeoutMs`: 0 turns the deadline off (for
++/// requests whose server time is long, such as deep `eth_getLogs`), any other
++/// value is clamped to [1 s, 120 s], and none means the 5 s default.
++pub(crate) fn reused_headers_deadline(is_reuse: bool, replayable: bool, requested: Option<f64>) -> Option<u32> {
++    if !is_reuse || !replayable {
++        return None;
++    }
++    match requested {
++        None => Some(REUSED_HEADERS_TIMEOUT_MS),
++        Some(ms) if !ms.is_finite() || ms < 0.0 => Some(REUSED_HEADERS_TIMEOUT_MS),
++        Some(ms) if ms == 0.0 => None,
++        Some(ms) => Some((ms.round() as u32).clamp(REUSED_HEADERS_TIMEOUT_MIN_MS, REUSED_HEADERS_TIMEOUT_MAX_MS)),
++    }
++}
++
++impl<C> Pool<C> {
++    /// Drop every idle connection that is too old or idle too long.
++    pub(crate) fn sweep(&mut self, now: f64) {
++        self.idle.retain(|e| {
++            let idle = now - e.idle_since;
++            within_age(e.created, e.uses, now) && (0.0..IDLE_TIMEOUT_MS).contains(&idle)
++        });
++    }
++
++    /// The most recently returned idle connection for `key`, if any. Most
++    /// recent first: it is the likeliest to still be open at the server.
++    pub(crate) fn take(&mut self, key: &PoolKey, now: f64) -> Option<Taken<C>> {
++        self.sweep(now);
++        let i = self.idle.iter().rposition(|e| &e.key == key)?;
++        let e = self.idle.remove(i);
++        Some(Taken { conn: e.conn, created: e.created, uses: e.uses })
++    }
++
++    /// Return a connection after a cleanly finished exchange. `uses` counts
++    /// that exchange. Returns false (and drops it) when it is too old to keep.
++    pub(crate) fn put(&mut self, key: PoolKey, conn: C, created: f64, uses: u32, now: f64) -> bool {
++        self.sweep(now);
++        if !within_age(created, uses, now) {
++            return false;
++        }
++        if self.idle.iter().filter(|e| e.key == key).count() >= MAX_IDLE_PER_ORIGIN {
++            let oldest = self.idle.iter().position(|e| e.key == key).expect("counted above");
++            self.idle.remove(oldest);
++        }
++        if self.idle.len() >= MAX_IDLE_TOTAL {
++            self.idle.remove(0);
++        }
++        self.idle.push(Idle { key, conn, created, idle_since: now, uses });
++        true
++    }
++
++    /// Drop everything (client closed).
++    pub(crate) fn clear(&mut self) {
++        self.idle.clear();
++    }
++
++    #[cfg(test)]
++    fn len(&self) -> usize {
++        self.idle.len()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn key(group: Option<IsolationToken>, host: &str) -> PoolKey {
++        PoolKey { group, scheme: "https".into(), host: host.into(), port: 443 }
++    }
++
++    #[test]
++    fn a_returned_connection_is_reused_for_the_same_group_and_origin() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        assert!(p.put(key(a, "rpc.example"), 1u32, 0.0, 1, 10.0));
++        let t = p.take(&key(a, "rpc.example"), 20.0).expect("reused");
++        assert_eq!((t.conn, t.created, t.uses), (1, 0.0, 1));
++        assert!(p.take(&key(a, "rpc.example"), 20.0).is_none(), "taken exclusively");
++    }
++
++    #[test]
++    fn groups_never_share_a_connection() {
++        let (a, b) = (Some(IsolationToken::new()), Some(IsolationToken::new()));
++        let mut p = Pool::default();
++        p.put(key(a, "rpc.example"), 1u32, 0.0, 1, 0.0);
++        assert!(p.take(&key(b, "rpc.example"), 1.0).is_none(), "another key");
++        assert!(p.take(&key(None, "rpc.example"), 1.0).is_none(), "no key");
++        p.put(key(None, "rpc.example"), 2u32, 0.0, 1, 0.0);
++        assert!(p.take(&key(b, "rpc.example"), 1.0).is_none(), "unkeyed never reaches a key");
++        assert_eq!(p.take(&key(a, "rpc.example"), 1.0).unwrap().conn, 1);
++        assert_eq!(p.take(&key(None, "rpc.example"), 1.0).unwrap().conn, 2);
++    }
++
++    #[test]
++    fn origins_never_share_a_connection() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        p.put(key(a, "one.example"), 1u32, 0.0, 1, 0.0);
++        assert!(p.take(&key(a, "two.example"), 1.0).is_none());
++        let mut other_port = key(a, "one.example");
++        other_port.port = 8443;
++        assert!(p.take(&other_port, 1.0).is_none());
++        let mut other_scheme = key(a, "one.example");
++        other_scheme.scheme = "http".into();
++        assert!(p.take(&other_scheme, 1.0).is_none());
++    }
++
++    #[test]
++    fn idle_connections_expire() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        p.put(key(a, "h"), 1u32, 0.0, 1, 1000.0);
++        assert!(p.take(&key(a, "h"), 1000.0 + IDLE_TIMEOUT_MS).is_none());
++        assert_eq!(p.len(), 0);
++    }
++
++    #[test]
++    fn busy_connections_still_retire_at_max_age() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        // Returned a moment ago, but opened MAX_AGE_MS ago.
++        p.put(key(a, "h"), 1u32, 0.0, 5, MAX_AGE_MS - 10.0);
++        assert!(p.take(&key(a, "h"), MAX_AGE_MS).is_none());
++        // Too old to go back in at all.
++        assert!(!p.put(key(a, "h"), 2u32, 0.0, 6, MAX_AGE_MS + 1.0));
++        assert!(!p.put(key(a, "h"), 3u32, 0.0, MAX_USES, 1.0), "worn out");
++        assert_eq!(p.len(), 0);
++    }
++
++    #[test]
++    fn max_age_is_below_arti_circuit_dirtiness() {
++        assert!(MAX_AGE_MS <= 600_000.0);
++    }
++
++    #[test]
++    fn connections_retire_at_four_minutes_before_the_observed_stalls() {
++        assert_eq!(MAX_AGE_MS, 240_000.0);
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        // Both soak stalls came at 265-278 s of connection age.
++        p.put(key(a, "h"), 1u32, 0.0, 9, 230_000.0);
++        assert!(p.take(&key(a, "h"), 239_999.0).is_some(), "still usable just before 4 min");
++        p.put(key(a, "h"), 1u32, 0.0, 10, 239_999.5);
++        assert!(p.take(&key(a, "h"), 240_000.0).is_none(), "retired at 4 min");
++        assert!(!p.put(key(a, "h"), 2u32, 0.0, 3, 265_000.0), "never kept to the stall age");
++    }
++
++    #[test]
++    fn only_replayable_in_memory_requests_take_a_pooled_connection() {
++        assert!(may_take_pooled(false, true, true));
++        assert!(!may_take_pooled(false, true, false), "a write gets a fresh connection");
++        assert!(!may_take_pooled(true, true, true), "caller asked for Connection: close");
++        assert!(!may_take_pooled(false, false, true), "a streamed body can be sent only once");
++    }
++
++    #[test]
++    fn reused_deadline_applies_only_to_replayable_requests_on_reused_connections() {
++        assert_eq!(reused_headers_deadline(true, true, None), Some(5_000));
++        assert_eq!(reused_headers_deadline(false, true, None), None, "a fresh connection has no extra deadline");
++        assert_eq!(reused_headers_deadline(true, false, None), None, "never cut a request that cannot be resent");
++        assert_eq!(reused_headers_deadline(false, false, Some(3_000.0)), None);
++    }
++
++    #[test]
++    fn reused_deadline_follows_the_caller_within_bounds() {
++        assert_eq!(reused_headers_deadline(true, true, Some(0.0)), None, "0 turns it off");
++        assert_eq!(reused_headers_deadline(true, true, Some(8_000.0)), Some(8_000));
++        assert_eq!(reused_headers_deadline(true, true, Some(10.0)), Some(1_000), "clamped up");
++        assert_eq!(reused_headers_deadline(true, true, Some(1e9)), Some(120_000), "clamped down");
++        assert_eq!(reused_headers_deadline(true, true, Some(-1.0)), Some(5_000), "nonsense means default");
++        assert_eq!(reused_headers_deadline(true, true, Some(f64::NAN)), Some(5_000));
++    }
++
++    #[test]
++    fn a_clock_going_backwards_expires_rather_than_keeps() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        p.put(key(a, "h"), 1u32, 5000.0, 1, 5000.0);
++        assert!(p.take(&key(a, "h"), 10.0).is_none());
++    }
++
++    #[test]
++    fn idle_per_origin_is_capped_dropping_the_oldest() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        for i in 0..(MAX_IDLE_PER_ORIGIN as u32 + 2) {
++            p.put(key(a, "h"), i, 0.0, 1, i as f64);
++        }
++        assert_eq!(p.len(), MAX_IDLE_PER_ORIGIN);
++        // Most recent first.
++        assert_eq!(p.take(&key(a, "h"), 10.0).unwrap().conn, MAX_IDLE_PER_ORIGIN as u32 + 1);
++    }
++
++    #[test]
++    fn eight_idle_connections_per_origin_are_kept() {
++        let a = Some(IsolationToken::new());
++        let mut p = Pool::default();
++        for i in 0..8u32 {
++            p.put(key(a, "h"), i, 0.0, 1, i as f64);
++        }
++        assert_eq!(MAX_IDLE_PER_ORIGIN, 8);
++        assert_eq!(p.len(), 8);
++        for want in (0..8u32).rev() {
++            assert_eq!(p.take(&key(a, "h"), 10.0).unwrap().conn, want);
++        }
++        assert!(p.take(&key(a, "h"), 10.0).is_none());
++    }
++
++    #[test]
++    fn idle_total_is_capped() {
++        let mut p = Pool::default();
++        for i in 0..(MAX_IDLE_TOTAL + 5) {
++            p.put(key(Some(IsolationToken::new()), "h"), i, 0.0, 1, 0.0);
++        }
++        assert_eq!(p.len(), MAX_IDLE_TOTAL);
++    }
++}

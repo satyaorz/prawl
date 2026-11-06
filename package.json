@@ -9,5 +9,10 @@
     "dev": "pnpm --filter @prawl/wallet dev",
     "build": "pnpm -r build"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "viem": "2.57.14"
+  }
 }
