@@ -17,18 +17,17 @@ adds the pieces the wallet needs to run a real WETH / custom-token pair:
 
 ## Status
 
-This is **development code, not audited**. The encrypted path (funding, orders,
-netting, settlement, expiry, refunds) is exercised on the FHEVM mock network,
-and the Uniswap leg is exercised against a **real** v4 pool. It has not been:
+This is **development code, not audited**. It has run end to end on Sepolia, at small
+scale, against the **live Zama gateway** and a **real Uniswap v4 pool** (see
+"Live deployment" below): encrypted funding, encrypted orders, closing, publishing the
+net, trading it on Uniswap, confidential credits, and an exit. It has not been reviewed
+adversarially, and it must not be pointed at a pool holding real value.
 
-- run against the live Zama gateway and real FHE coprocessors,
-- run against a funded pool on a public network,
-- reviewed adversarially for the minimum-output and timeout-recovery paths.
-
-Pricing comes from the pool itself, so there is no feed to configure. That also
-means a thin pool gives a manipulable quote; the batch snapshots the price when
-a round opens and allows a refund when it expires, but do not point this at a
-pool holding real value.
+Pricing comes from the pool itself, so there is no feed to configure. That also means a
+thin pool gives a manipulable quote. Two guards bound that: the batch snapshots the price
+when a round opens and refuses to settle if the live pool price has moved more than 2%
+from the snapshot, and the Universal Router enforces a 97% output floor. A time-weighted
+price would be stronger and is not built.
 
 ## Testing
 
@@ -112,3 +111,61 @@ The wallet reads (`apps/wallet/src/swap/`) only:
 and writes `submitOrder`, `exit`, `refundOrder`, `creditOrder`. If a function
 signature here changes, update `apps/wallet/src/swap/service.ts` in the same
 change.
+
+## Live deployment (Sepolia)
+
+| | |
+|---|---|
+| Batch (`VeilBatchSwap` v5) | `0x7D18B237fd0555C5f046EA9bbb1cBCf7b175C741` |
+| PRAWL token (tokenA, currency0) | `0xce7d494Ca57BAc8bC3bE5964C5fA8D7da4338Fb3` |
+| WETH (tokenB, currency1) | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
+| c-PRAWL wrapper | `0x2B4f777Eda45293AAAb1ac9beAE250A4dCC1cfcc` |
+| c-WETH wrapper | `0x7C091e777CA1acA96446e8D8751878c2E7765Ddf` |
+| Oracle (`PoolLotPriceOracle`) | `0xF3aeA35313Ad7CA3bdE064779E32b6497fCbC526` |
+| Pool id (fee 3000, spacing 60, no hook) | `0xc3e2a961ffb3b1e017f6d6061aa561c6adbe72a4966d93b65241d703cf73a5aa` |
+| PoolManager / UniversalRouter / Permit2 | Uniswap's Sepolia deployments (addresses in `scripts/deploy.mjs`) |
+
+Evidence (all on Sepolia): deploy `0x4777779d…a332` (batch), pool initialise `0xc7fb0930…f1a8`,
+liquidity seed `0xe4e68f90…94d2` (full range). One live round: close `0x97243ad0…0fd7`,
+publish-the-net `0xb26832b0…4686`, **trade the net on Uniswap `0xa9647e53…11d6`**, credits
+`0x89cfda5a…fd80` and `0x11671bf7…6b62`, exit finalized `0xde923270…b5a6`. In that round the
+deployer sold 2 lots of A for B and the counterparty sold 1 lot of B for A; one lot matched at the
+quoted price and one lot traded on the pool. Decrypting the vaults afterwards showed the deployer
+with 199 B units (100 matched + 99 from the pool) and the counterparty with exactly 1 lot of A.
+
+## What is hidden and what is not
+
+Hidden: each order's direction, size and minimum; how much of a round was matched; each
+payout; vault balances.
+
+Not hidden:
+- Wrapping, funding and exiting are public steps: the amounts, the asset (the `Funded` event
+  names it) and the address are visible. An account that only ever funded one asset can only
+  sell that asset, so its direction is effectively public.
+- Which addresses ordered in a round, and when.
+- The round's **net** trade, its side, and the price it traded at.
+
+Limits you should know about:
+- "At least N participants" counts **addresses**, not people. One honest user plus one extra
+  account closes a round, and in a two-account round the other account can work out your order
+  from the public net and its own order. A liquidity bot would make the net equal one user's
+  order, so rounds should not be padded that way if the privacy claim matters.
+- Several colluding accounts can recover the last participant's order.
+- This is order-intent privacy and a smaller footprint on Uniswap, **not anonymity**.
+- The wallet's "fresh private account" mode funds the swap account straight from the private
+  balance, so no transaction links it to the main address. The wrap, fund and exit amounts are
+  still public on that fresh account.
+
+## Running it
+
+```bash
+npm ci --ignore-scripts && npm run setup:harness && npm run compile && npm test
+cp .env.example .env.local        # SEPOLIA_RPC_URL, DEPLOYER_PRIVATE_KEY, COUNTERPARTY_PRIVATE_KEY
+node scripts/deploy.mjs           # resumable; writes deployments/manifest.json
+node scripts/keeper.mjs           # anyone can run it: closes, settles, credits, finalizes exits
+LIVE_EXIT=1 node scripts/live-round.mjs   # a live round with two scripted accounts
+```
+
+The wallet advances its own rounds (close, publish, settle, credit, exit), so a keeper is only
+needed when nobody has the wallet open. Every step is permissionless and credits only ever land
+in an order's own encrypted balance.
