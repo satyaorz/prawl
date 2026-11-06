@@ -1,7 +1,7 @@
 import type { AnonRpcClient } from "@prawl/anon-rpc";
 import type { Call } from "@prawl/railgun";
 import type { KmsUserDecryptEIP712Type } from "@zama-fhe/relayer-sdk/web";
-import { decodeFunctionResult, encodeFunctionData, getAddress, isHex, parseAbi, type Address, type Hex } from "viem";
+import { decodeFunctionResult, encodeFunctionData, getAddress, isHex, parseAbi, toEventSelector, type Address, type Hex } from "viem";
 import { UnconfirmedError, type SentTx } from "../lib/tx";
 import { verifySwapDeployment, type SwapDeployment } from "./deployment";
 import { FheController } from "./fhe-controller";
@@ -11,6 +11,8 @@ const wrapperAbi = parseAbi([
   "function confidentialBalanceOf(address) view returns (bytes32)",
   "function wrap(address,uint256)",
   "function confidentialTransferAndCall(address,bytes32,bytes,bytes) returns (bytes32)",
+  "function unwrapRequester(bytes32) view returns (address)",
+  "function finalizeUnwrap(bytes32,uint64,bytes)",
 ]);
 const batchAbi = parseAbi([
   "function fundedBalance(address,uint8) view returns (bytes32)",
@@ -30,7 +32,14 @@ const batchAbi = parseAbi([
   "function exit(uint8,bytes32,bytes)",
   "function refundOrder(uint256,address)",
   "function creditOrder(uint256,address)",
+  "function closeRound()",
+  "function prepareSettle(uint256,bytes,bytes)",
+  "function executeSettle(uint256,uint64,bytes)",
+  "function expireRound(uint256,uint64,bytes)",
 ]);
+const UNWRAP_REQUESTED = toEventSelector("UnwrapRequested(address,bytes32)");
+/** The price floor every order is guaranteed (matches VeilBatchSwap.SLIPPAGE_FLOOR_BPS). */
+export const SLIPPAGE_FLOOR_BPS = 9700n;
 const oracleAbi = parseAbi(["function latestLotPrice() view returns (uint64 lotA,uint64 lotB,uint256 updatedAt)"]);
 const EMPTY_HANDLE = `0x${"00".repeat(32)}`;
 const RATE = 10n ** 12n;
@@ -86,10 +95,23 @@ export class SwapService {
   #running = false;
   #decryptSignature: Hex | undefined;
   #decryptUntil = 0;
+  /** Last decrypted confidential balances, shown while a poll only reads public state. */
+  #secret: { wrapped: readonly [bigint, bigint]; vault: readonly [bigint, bigint] } = { wrapped: [0n, 0n], vault: [0n, 0n] };
+  #exits: Array<{ asset: 0 | 1; handle: Hex }> = [];
 
   private constructor(client: AnonRpcClient, account: Address, config: SwapDeployment, signer: SwapSigner, fhe: FheController) {
     this.#client = client; this.#account = account; this.config = config; this.#signer = signer; this.#fhe = fhe;
-    this.#lastKnownRound = undefined;
+    this.#lastKnownRound = this.#read<string>("order") ? BigInt(this.#read<string>("order")!) : undefined;
+    this.#exits = this.#read<Array<{ asset: 0 | 1; handle: Hex }>>("exits") ?? [];
+  }
+
+  /** What the page remembers across a reload: a round number and public handles, never a secret. */
+  #storageKey(name: string): string { return `prawl.swap.${name}.${this.config.chainId}.${this.config.batch.toLowerCase()}.${this.#account.toLowerCase()}`; }
+  #read<T>(name: string): T | undefined {
+    try { const raw = localStorage.getItem(this.#storageKey(name)); return raw ? (JSON.parse(raw) as T) : undefined; } catch { return undefined; }
+  }
+  #write(name: string, value: unknown): void {
+    try { localStorage.setItem(this.#storageKey(name), JSON.stringify(value)); } catch { /* the wallet works without it */ }
   }
 
   static async open(client: AnonRpcClient, account: Address, config: SwapDeployment, signer: SwapSigner): Promise<SwapService> {
@@ -141,7 +163,12 @@ export class SwapService {
     return BigInt(block.timestamp);
   }
 
-  async balances(): Promise<SwapBalances> {
+  /**
+   * Public state always; the confidential balances only when `decrypt` is true. Decrypting asks the
+   * gateway (which learns when you look), so a periodic poll should not: it shows the last values.
+   */
+  async balances(options: { decrypt?: boolean } = {}): Promise<SwapBalances> {
+    const decrypt = options.decrypt ?? true;
     const tokens = [this.config.tokenA, this.config.tokenB] as const;
     const wrappers = [this.config.wrapperA, this.config.wrapperB] as const;
     const publicBalances = await Promise.all(tokens.map(async (token) => decodeFunctionResult({ abi: tokenAbi, functionName: "balanceOf", data: await this.#call(token, encodeFunctionData({ abi: tokenAbi, functionName: "balanceOf", args: [this.#account] })) })));
@@ -149,10 +176,14 @@ export class SwapService {
       wrapper: decodeFunctionResult({ abi: wrapperAbi, functionName: "confidentialBalanceOf", data: await this.#call(wrapper, encodeFunctionData({ abi: wrapperAbi, functionName: "confidentialBalanceOf", args: [this.#account] })) }),
       vault: decodeFunctionResult({ abi: batchAbi, functionName: "fundedBalance", data: await this.#call(this.config.batch, encodeFunctionData({ abi: batchAbi, functionName: "fundedBalance", args: [this.#account, i] })) }),
     })));
-    const [wrappedA, wrappedB, vaultA, vaultB] = await this.#decrypt([
-      { handle: handles[0]!.wrapper, contractAddress: wrappers[0] }, { handle: handles[1]!.wrapper, contractAddress: wrappers[1] },
-      { handle: handles[0]!.vault, contractAddress: this.config.batch }, { handle: handles[1]!.vault, contractAddress: this.config.batch },
-    ]);
+    let [wrappedA, wrappedB, vaultA, vaultB] = [...this.#secret.wrapped, ...this.#secret.vault] as [bigint, bigint, bigint, bigint];
+    if (decrypt) {
+      [wrappedA, wrappedB, vaultA, vaultB] = await this.#decrypt([
+        { handle: handles[0]!.wrapper, contractAddress: wrappers[0] }, { handle: handles[1]!.wrapper, contractAddress: wrappers[1] },
+        { handle: handles[0]!.vault, contractAddress: this.config.batch }, { handle: handles[1]!.vault, contractAddress: this.config.batch },
+      ]) as [bigint, bigint, bigint, bigint];
+      this.#secret = { wrapped: [wrappedA, wrappedB], vault: [vaultA, vaultB] };
+    }
     const round = decodeFunctionResult({ abi: batchAbi, functionName: "currentRound", data: await this.#call(this.config.batch, encodeFunctionData({ abi: batchAbi, functionName: "currentRound" })) });
     const [submitters, lastUpdate, duration, minSubmitters, refundDelay, maxAge, price, chainTime] = await Promise.all([
       this.#call(this.config.batch, encodeFunctionData({ abi: batchAbi, functionName: "distinctSubmitters" })).then((data) => decodeFunctionResult({ abi: batchAbi, functionName: "distinctSubmitters", data })),
@@ -311,10 +342,15 @@ export class SwapService {
       if (amount / inputLot > balances.maxLots) throw new Error("Amount exceeds the maximum order size");
       if (balances.priceValidUntil === undefined || balances.chainTime > balances.priceValidUntil) throw new Error("Swap price is stale");
       if (balances.vault[direction - 1]! < amount) throw new Error("Not enough confidential vault balance");
-      if (minOutput > amount / inputLot * outputLot * 9000n / 10000n) throw new Error("Minimum output exceeds the batch's guaranteed floor");
+      if (minOutput > amount / inputLot * outputLot * SLIPPAGE_FLOOR_BPS / 10000n) throw new Error("Minimum output exceeds the batch's guaranteed floor");
       const encrypted = await this.#fhe.encrypt(this.config.batch, amount, direction, minOutput);
       if (encrypted.handles.length !== 3) throw new Error("Unexpected encrypted order");
-      return this.#send([{ to: this.config.batch, value: 0n, data: encodeFunctionData({ abi: batchAbi, functionName: "submitOrder", args: [encrypted.handles[0]!, encrypted.proof, encrypted.handles[1]!, encrypted.proof, encrypted.handles[2]!, encrypted.proof] }) }], onStatus);
+      const sent = await this.#send([{ to: this.config.batch, value: 0n, data: encodeFunctionData({ abi: batchAbi, functionName: "submitOrder", args: [encrypted.handles[0]!, encrypted.proof, encrypted.handles[1]!, encrypted.proof, encrypted.handles[2]!, encrypted.proof] }) }], onStatus);
+      // Remember which round this order is in, so a reload still advances it.
+      const placed = await this.#view<bigint>(this.config.batch, batchAbi, "currentRound");
+      this.#lastKnownRound = placed;
+      this.#write("order", placed.toString());
+      return sent;
     });
   }
 
@@ -324,7 +360,106 @@ export class SwapService {
       if ((await this.balances()).vault[asset] < amount) throw new Error("Not enough confidential vault balance");
       const encrypted = await this.#fhe.encrypt(this.config.batch, amount);
       if (encrypted.handles.length !== 1) throw new Error("Unexpected encrypted input");
-      return this.#send([{ to: this.config.batch, value: 0n, data: encodeFunctionData({ abi: batchAbi, functionName: "exit", args: [asset, encrypted.handles[0]!, encrypted.proof] }) }], onStatus);
+      const sent = await this.#send([{ to: this.config.batch, value: 0n, data: encodeFunctionData({ abi: batchAbi, functionName: "exit", args: [asset, encrypted.handles[0]!, encrypted.proof] }) }], onStatus);
+      // The unwrap is finalized later with the gateway's proof; keep its handle (public) until it is.
+      const wrapper = (asset === 0 ? this.config.wrapperA : this.config.wrapperB).toLowerCase();
+      for (const receipt of sent) {
+        for (const log of receipt.logs ?? []) {
+          if (log.address.toLowerCase() === wrapper && log.topics[0]?.toLowerCase() === UNWRAP_REQUESTED.toLowerCase() && /^0x[0-9a-fA-F]{64}$/.test(log.data)) {
+            this.#exits.push({ asset, handle: log.data });
+          }
+        }
+      }
+      this.#write("exits", this.#exits);
+      return sent;
     });
+  }
+
+  /** True while an exit of this wallet's is waiting to be finalized. */
+  get pendingExits(): number { return this.#exits.length; }
+
+  /**
+   * Do the next permissionless step that moves this wallet's order or exit forward, if there is one:
+   * close the round, prepare it, execute it on Uniswap, credit the payout, expire a stuck round,
+   * refund, or finalize an exit. Anyone may do each of these; doing them here means the wallet never
+   * waits for somebody else's keeper. Returns what it did, or undefined when nothing is due.
+   * A step the contract would reject fails at gas estimation, before anything is sent.
+   */
+  advance(onStatus?: (status: string) => void): Promise<string | undefined> {
+    return this.#exclusive(async () => (await this.#advanceExit(onStatus)) ?? (await this.#advanceRound(onStatus)));
+  }
+
+  async #advanceExit(onStatus?: (status: string) => void): Promise<string | undefined> {
+    for (const exit of [...this.#exits]) {
+      const wrapper = exit.asset === 0 ? this.config.wrapperA : this.config.wrapperB;
+      const requester = await this.#view<Address>(wrapper, wrapperAbi as never, "unwrapRequester", [exit.handle]);
+      const forget = () => { this.#exits = this.#exits.filter((e) => e !== exit); this.#write("exits", this.#exits); };
+      if (/^0x0+$/.test(requester)) { forget(); continue; }
+      onStatus?.("Asking the gateway to release your exit…");
+      let proof;
+      try { proof = await this.#fhe.publicDecrypt([exit.handle]); } catch { return undefined; } // not ready yet: try again later
+      const value = proof.clearValues[exit.handle] ?? proof.clearValues[exit.handle.toLowerCase()];
+      if (typeof value !== "bigint") return undefined;
+      await this.#send([{ to: wrapper, value: 0n, data: encodeFunctionData({ abi: wrapperAbi, functionName: "finalizeUnwrap", args: [exit.handle, value, proof.decryptionProof] }) }], onStatus);
+      forget();
+      return "Exit released to your public account.";
+    }
+    return undefined;
+  }
+
+  async #advanceRound(onStatus?: (status: string) => void): Promise<string | undefined> {
+    const round = this.#lastKnownRound;
+    if (round === undefined) return undefined;
+    const b = this.config.batch;
+    const [submitted, credited, refunded] = await this.#view<[boolean, boolean, boolean]>(b, batchAbi, "orderStatus", [round, this.#account]);
+    if (!submitted || credited || refunded) return undefined;
+    const [current, st, price, isRefundable, now, refundDelay] = await Promise.all([
+      this.#view<bigint>(b, batchAbi, "currentRound"),
+      this.#view<readonly unknown[]>(b, batchAbi, "rounds", [round]),
+      this.#view<readonly bigint[]>(b, batchAbi, "roundPrices", [round]),
+      this.#view<boolean>(b, batchAbi, "refundable", [round]),
+      this.#blockTime(),
+      this.#view<bigint>(b, batchAbi, "refundDelay"),
+    ]);
+    const [, , netEnc, surplusEnc, closed, prepared, executed, net, , , unwrapHandle] = st as readonly [Hex, Hex, Hex, Hex, boolean, boolean, boolean, bigint, number, bigint, Hex];
+    const validUntil = price[3]!;
+    const call = (functionName: string, args: readonly unknown[]): Call => ({ to: b, value: 0n, data: encodeFunctionData({ abi: batchAbi, functionName, args } as never) });
+    const clear = (dec: { clearValues: Record<string, unknown> }, handle: Hex) => {
+      const v = dec.clearValues[handle] ?? dec.clearValues[handle.toLowerCase()];
+      if (typeof v !== "bigint") throw new Error("The gateway did not return the decrypted value");
+      return v;
+    };
+    const step = async (label: string, calls: Call[]) => { onStatus?.(`${label}…`); await this.#send(calls, onStatus); return label; };
+
+    if (isRefundable) return step("Refunding your order", [call("refundOrder", [round, this.#account])]);
+    if (!closed) {
+      if (round !== current) return undefined;
+      const [last, duration, min, submitters] = await Promise.all([
+        this.#view<bigint>(b, batchAbi, "lastUpdateTime"), this.#view<bigint>(b, batchAbi, "minRoundDuration"),
+        this.#view<bigint>(b, batchAbi, "minDistinctSubmitters"), this.#view<bigint>(b, batchAbi, "distinctSubmitters"),
+      ]);
+      if (now > validUntil || now >= last + refundDelay) return step("Expiring a round that never closed", [call("expireRound", [round, 0n, "0x"])]);
+      if (submitters >= min && now >= last + duration) return step("Closing the round", [call("closeRound", [])]);
+      return undefined;
+    }
+    if (executed) return step("Crediting your payout", [call("creditOrder", [round, this.#account])]);
+    const closedAt = await this.#view<bigint>(b, batchAbi, "closedAt", [round]);
+    if (now > validUntil || now >= closedAt + refundDelay) {
+      // Not settled in time: expire it so every order can be refunded.
+      if (prepared && net > 0n) {
+        const dec = await this.#fhe.publicDecrypt([unwrapHandle]);
+        return step("Expiring a round that did not settle", [call("expireRound", [round, clear(dec, unwrapHandle), dec.decryptionProof])]);
+      }
+      return step("Expiring a round that did not settle", [call("expireRound", [round, 0n, "0x"])]);
+    }
+    if (!prepared) {
+      const dec = await this.#fhe.publicDecrypt([netEnc, surplusEnc]);
+      return step("Settling the round: publishing its net trade", [call("prepareSettle", [round, dec.abiEncodedClearValues, dec.decryptionProof])]);
+    }
+    if (net > 0n) {
+      const dec = await this.#fhe.publicDecrypt([unwrapHandle]);
+      return step("Settling the round: trading the net on Uniswap", [call("executeSettle", [round, clear(dec, unwrapHandle), dec.decryptionProof])]);
+    }
+    return step("Settling the round: fully matched, nothing to trade", [call("executeSettle", [round, 0n, "0x"])]);
   }
 }

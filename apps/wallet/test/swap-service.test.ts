@@ -10,10 +10,11 @@ const mocks = vi.hoisted(() => ({
   })),
   prepare: vi.fn(async () => ({})),
   decrypt: vi.fn(async (handles: Array<{ handle: string }>) => Object.fromEntries(handles.map(({ handle }) => [handle, 20n]))),
+  publicDecrypt: vi.fn(async (handles: string[]) => ({ clearValues: Object.fromEntries(handles.map((h) => [h, 100n])), abiEncodedClearValues: "0xaa", decryptionProof: "0xbb" })),
   close: vi.fn(),
 }));
 vi.mock("../src/swap/deployment", () => ({ verifySwapDeployment: mocks.verify }));
-vi.mock("../src/swap/fhe-controller", () => ({ FheController: { open: async () => ({ encrypt: mocks.encrypt, prepareDecrypt: mocks.prepare, decrypt: mocks.decrypt, close: mocks.close }) } }));
+vi.mock("../src/swap/fhe-controller", () => ({ FheController: { open: async () => ({ encrypt: mocks.encrypt, prepareDecrypt: mocks.prepare, decrypt: mocks.decrypt, publicDecrypt: mocks.publicDecrypt, close: mocks.close }) } }));
 
 const address = (i: number) => `0x${i.toString(16).padStart(40, "0")}` as Address;
 const account = address(1), batch = address(2), tokenA = address(3), tokenB = address(4), wrapperA = address(5), wrapperB = address(6), oracle = address(7);
@@ -30,6 +31,7 @@ const abi = parseAbi([
   "function rounds(uint256) view returns (bytes32,bytes32,bytes32,bytes32,bool,bool,bool,uint64,uint8,uint256,bytes32,uint64)",
   "function roundPrices(uint256) view returns (uint64,uint64,uint64,uint256)",
   "function latestLotPrice() view returns (uint64,uint64,uint256)",
+  "function unwrapRequester(bytes32) view returns (address)",
 ]);
 const callAbi = parseAbi(["function approve(address,uint256) returns (bool)", "function wrap(address,uint256)", "function submitOrder(bytes32,bytes,bytes32,bytes,bytes32,bytes)"]);
 
@@ -41,9 +43,14 @@ interface ChainState {
   closedAt?: bigint;
   blockTime?: bigint;
   lastUpdate?: bigint;
+  submitters?: bigint;
+  /** Residual in lots (adds an unwrap handle, handle(7)). */
+  net?: bigint;
+  /** Whether an exit's unwrap request is still pending. */
+  exitPending?: boolean;
 }
 
-const flags = (rounds: [boolean, boolean, boolean]) => [handle(0), handle(0), handle(0), handle(0), ...rounds, 0n, 0, 0n, handle(0), 0n] as const;
+const flags = (rounds: [boolean, boolean, boolean], net = 0n) => [handle(0), handle(0), handle(0), handle(0), ...rounds, net, 0, 0n, net > 0n ? handle(7) : handle(0), 0n] as const;
 
 function client(state: ChainState | boolean = {}): AnonRpcClient {
   const s: ChainState = typeof state === "boolean" ? { stale: state } : state;
@@ -59,7 +66,7 @@ function client(state: ChainState | boolean = {}): AnonRpcClient {
       if (sel === toFunctionSelector("confidentialBalanceOf(address)")) return encodeFunctionResult({ abi, functionName: "confidentialBalanceOf", result: handle(to === wrapperA ? 1 : 2) });
       if (sel === toFunctionSelector("fundedBalance(address,uint8)")) return encodeFunctionResult({ abi, functionName: "fundedBalance", result: handle(3) });
       if (sel === toFunctionSelector("currentRound()")) return encodeFunctionResult({ abi, functionName: "currentRound", result: 1n });
-      if (sel === toFunctionSelector("distinctSubmitters()")) return encodeFunctionResult({ abi, functionName: "distinctSubmitters", result: 1n });
+      if (sel === toFunctionSelector("distinctSubmitters()")) return encodeFunctionResult({ abi, functionName: "distinctSubmitters", result: s.submitters ?? 1n });
       if (sel === toFunctionSelector("lastUpdateTime()")) return encodeFunctionResult({ abi, functionName: "lastUpdateTime", result: s.lastUpdate ?? 950n });
       if (sel === toFunctionSelector("minRoundDuration()")) return encodeFunctionResult({ abi, functionName: "minRoundDuration", result: 60n });
       if (sel === toFunctionSelector("minDistinctSubmitters()")) return encodeFunctionResult({ abi, functionName: "minDistinctSubmitters", result: 2n });
@@ -67,7 +74,8 @@ function client(state: ChainState | boolean = {}): AnonRpcClient {
       if (sel === toFunctionSelector("closedAt(uint256)")) return encodeFunctionResult({ abi, functionName: "closedAt", result: s.closedAt ?? 0n });
       if (sel === toFunctionSelector("refundable(uint256)")) return encodeFunctionResult({ abi, functionName: "refundable", result: s.refundable ?? false });
       if (sel === toFunctionSelector("orderStatus(uint256,address)")) return encodeFunctionResult({ abi, functionName: "orderStatus", result: s.order ?? [true, false, false] });
-      if (sel === toFunctionSelector("rounds(uint256)")) return encodeFunctionResult({ abi, functionName: "rounds", result: flags(s.rounds ?? [true, false, false]) });
+      if (sel === toFunctionSelector("rounds(uint256)")) return encodeFunctionResult({ abi, functionName: "rounds", result: flags(s.rounds ?? [true, false, false], s.net ?? 0n) });
+      if (sel === toFunctionSelector("unwrapRequester(bytes32)")) return encodeFunctionResult({ abi, functionName: "unwrapRequester", result: (s.exitPending ?? true) ? account : address(0) });
       if (sel === toFunctionSelector("maxPriceAge()")) return encodeFunctionResult({ abi, functionName: "maxPriceAge", result: 1000n });
       if (sel === toFunctionSelector("roundPrices(uint256)")) return encodeFunctionResult({ abi, functionName: "roundPrices", result: [2n, 5n, 100n, stale ? 900n : 1500n] });
       throw new Error(`unexpected call ${sel}`);
@@ -157,5 +165,122 @@ describe("swap service", () => {
     await expect(service.refund(1n)).rejects.toThrow("can close in");
     expect(sign.send).not.toHaveBeenCalled();
     service.close();
+  });
+
+  describe("advance: the wallet moves its own round forward", () => {
+    const stepFn = (sign: ReturnType<typeof signer>) => {
+      const calls = sign.send.mock.calls.at(-1)![0] as Array<{ to: Address; data: Hex }>;
+      return { to: calls[0]!.to, name: decodeFunctionData({ abi: stepAbi, data: calls[0]!.data }).functionName, args: decodeFunctionData({ abi: stepAbi, data: calls[0]!.data }).args };
+    };
+    const stepAbi = parseAbi([
+      "function closeRound()", "function prepareSettle(uint256,bytes,bytes)", "function executeSettle(uint256,uint64,bytes)",
+      "function creditOrder(uint256,address)", "function expireRound(uint256,uint64,bytes)", "function refundOrder(uint256,address)",
+      "function finalizeUnwrap(bytes32,uint64,bytes)",
+    ]);
+    async function open(state: ChainState) {
+      const { SwapService } = await import("../src/swap/service");
+      const sign = signer();
+      const service = await SwapService.open(client(state), account, config, sign);
+      await service.orderStatus(); // learns which round this wallet's order is in
+      return { service, sign };
+    }
+
+    it("closes a round once it is old enough and has enough orderers", async () => {
+      const { service, sign } = await open({ rounds: [false, false, false], submitters: 2n, lastUpdate: 900n, blockTime: 1000n });
+      expect(await service.advance()).toMatch(/Closing/);
+      expect(stepFn(sign)).toMatchObject({ to: batch, name: "closeRound" });
+      service.close();
+    });
+
+    it("waits (does nothing) while a round is too young or has too few orderers", async () => {
+      for (const state of [{ submitters: 1n, lastUpdate: 900n, blockTime: 1000n }, { submitters: 2n, lastUpdate: 990n, blockTime: 1000n }]) {
+        const { service, sign } = await open({ rounds: [false, false, false], ...state });
+        expect(await service.advance()).toBeUndefined();
+        expect(sign.send).not.toHaveBeenCalled();
+        service.close();
+      }
+    });
+
+    it("publishes the net trade, then trades it on Uniswap, then credits the payout", async () => {
+      let { service, sign } = await open({ rounds: [true, false, false], blockTime: 1000n, closedAt: 900n });
+      expect(await service.advance()).toMatch(/publishing its net trade/);
+      expect(stepFn(sign)).toMatchObject({ name: "prepareSettle", args: [1n, "0xaa", "0xbb"] });
+      service.close();
+
+      ({ service, sign } = await open({ rounds: [true, true, false], blockTime: 1000n, closedAt: 900n, net: 3n }));
+      expect(await service.advance()).toMatch(/Uniswap/);
+      expect(mocks.publicDecrypt).toHaveBeenLastCalledWith([handle(7)]);
+      expect(stepFn(sign)).toMatchObject({ name: "executeSettle", args: [1n, 100n, "0xbb"] });
+      service.close();
+
+      ({ service, sign } = await open({ rounds: [true, true, false], blockTime: 1000n, closedAt: 900n, net: 0n }));
+      expect(await service.advance()).toMatch(/fully matched/);
+      expect(stepFn(sign)).toMatchObject({ name: "executeSettle", args: [1n, 0n, "0x"] });
+      service.close();
+
+      ({ service, sign } = await open({ rounds: [true, true, true], blockTime: 1000n, closedAt: 900n }));
+      expect(await service.advance()).toMatch(/Crediting/);
+      expect(stepFn(sign)).toMatchObject({ name: "creditOrder", args: [1n, account] });
+      service.close();
+    });
+
+    it("expires a round that did not settle in time, and refunds once it is refundable", async () => {
+      let { service, sign } = await open({ rounds: [true, false, false], blockTime: 99_999n, closedAt: 1000n });
+      expect(await service.advance()).toMatch(/Expiring/);
+      expect(stepFn(sign)).toMatchObject({ name: "expireRound", args: [1n, 0n, "0x"] });
+      service.close();
+
+      ({ service, sign } = await open({ rounds: [true, true, false], blockTime: 99_999n, closedAt: 1000n, net: 3n }));
+      await service.advance();
+      expect(stepFn(sign)).toMatchObject({ name: "expireRound", args: [1n, 100n, "0xbb"] }); // finalizes the burned residual first
+      service.close();
+
+      ({ service, sign } = await open({ refundable: true }));
+      expect(await service.advance()).toMatch(/Refunding/);
+      expect(stepFn(sign)).toMatchObject({ name: "refundOrder", args: [1n, account] });
+      service.close();
+    });
+
+    it("does nothing for an order that is already credited, refunded, or absent", async () => {
+      for (const order of [[true, true, false], [true, false, true], [false, false, false]] as Array<[boolean, boolean, boolean]>) {
+        const { service, sign } = await open({ order });
+        expect(await service.advance()).toBeUndefined();
+        expect(sign.send).not.toHaveBeenCalled();
+        service.close();
+      }
+    });
+
+    it("releases an exit once the gateway has its proof, and forgets it afterwards", async () => {
+      const { SwapService } = await import("../src/swap/service");
+      const exitTopic = (await import("viem")).toEventSelector("UnwrapRequested(address,bytes32)");
+      const sign = {
+        signDecrypt: vi.fn(async () => "0x1234" as Hex),
+        send: vi.fn(async (calls: readonly { to: Address }[]) => calls.map(() => ({ hash: handle(9), status: "success" as const, blockNumber: 1n, gasUsed: 1n, logs: [{ address: wrapperA, topics: [exitTopic, handle(1)], data: handle(8) }] }))),
+      };
+      const service = await SwapService.open(client({ order: [false, false, false] }), account, config, sign);
+      await service.exit(0, 5n); // the (mock) vault holds 20, so this is allowed
+      expect(service.pendingExits).toBe(1);
+      expect(await service.advance()).toMatch(/Exit released/);
+      const finalize = sign.send.mock.calls.at(-1)![0] as Array<{ to: Address; data: Hex }>;
+      expect(finalize[0]!.to).toBe(wrapperA);
+      expect(decodeFunctionData({ abi: stepAbi, data: finalize[0]!.data })).toMatchObject({ functionName: "finalizeUnwrap", args: [handle(8), 100n, "0xbb"] });
+      service.close();
+    });
+
+    it("forgets an exit somebody else already finalized, without sending anything", async () => {
+      const { SwapService } = await import("../src/swap/service");
+      const exitTopic = (await import("viem")).toEventSelector("UnwrapRequested(address,bytes32)");
+      const sign = {
+        signDecrypt: vi.fn(async () => "0x1234" as Hex),
+        send: vi.fn(async (calls: readonly { to: Address }[]) => calls.map(() => ({ hash: handle(9), status: "success" as const, blockNumber: 1n, gasUsed: 1n, logs: [{ address: wrapperA, topics: [exitTopic, handle(1)], data: handle(8) }] }))),
+      };
+      const service = await SwapService.open(client({ order: [false, false, false], exitPending: false }), account, config, sign);
+      await service.exit(0, 5n);
+      sign.send.mockClear();
+      expect(await service.advance()).toBeUndefined();
+      expect(sign.send).not.toHaveBeenCalled();
+      expect(service.pendingExits).toBe(0);
+      service.close();
+    });
   });
 });

@@ -15,6 +15,16 @@ self.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const request = input instanceof Request ? input : new Request(input, init);
   const url = new URL(request.url);
   if (url.origin === self.location.origin) return localFetch(request);
+  // The key store's objects (public key, CRS ~4.6 MB) never change for a given
+  // URL and are public: keep them so a later unlock does not re-download them
+  // over Tor. Everything else always goes out through the bridge.
+  const cacheable = request.method === "GET" && url.hostname.endsWith(".amazonaws.com");
+  if (cacheable) {
+    try {
+      const hit = await (await caches.open("prawl-zama-keys-v1")).match(url.href);
+      if (hit) return hit;
+    } catch { /* no Cache API: fall through to the network bridge */ }
+  }
   const body = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
   const headers: [string, string][] = [];
   request.headers.forEach((value, key) => headers.push([key, value]));
@@ -26,6 +36,11 @@ self.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       if (pending.delete(id)) reject(new DOMException("Aborted", "AbortError"));
     }, { once: true });
     send({ type: "fetch", id, url: url.href, method: request.method, headers, body }, body ? [body] : []);
+  }).then(async (response) => {
+    if (cacheable && response.ok) {
+      try { await (await caches.open("prawl-zama-keys-v1")).put(url.href, response.clone()); } catch { /* cache is best effort */ }
+    }
+    return response;
   });
 }) as typeof fetch;
 
@@ -65,6 +80,10 @@ async function run(call: WorkerCall): Promise<unknown> {
     const days = 1;
     decryptSession = { keypair, contracts, start, days };
     return instance.createEIP712(keypair.publicKey, contracts, start, days);
+  }
+  if (call.op === "public-decrypt") {
+    if (!call.handles.length || call.handles.length > 2 || call.handles.some((h) => !/^0x[0-9a-fA-F]{64}$/.test(h))) throw new Error("Invalid public decryption handles");
+    return instance.publicDecrypt(call.handles);
   }
   if (call.op === "decrypt") {
     const session = decryptSession;

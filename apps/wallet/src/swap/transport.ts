@@ -33,6 +33,9 @@ export function createFheTransport(client: AnonRpcClient, account: string, chain
         headers: Object.fromEntries(headers),
         ...(body ? { body: new TextDecoder("utf-8", { fatal: true }).decode(body) } : {}),
         ...(verb === "POST" ? { kind: "write" as const } : {}),
+        // The default 15 s / 30 s is too short for the ~4.6 MB key download or a
+        // gateway call over Tor. These only lengthen this one request.
+        deadlines: target.hostname === KEY_STORE ? { headersMs: 60_000, totalMs: 300_000 } : { headersMs: 60_000, totalMs: 180_000 },
         passHttpErrors: true,
       });
       const response = new Response(result.body as BodyInit, { status: result.status, statusText: result.statusText, headers: result.headers });

@@ -25,6 +25,9 @@ export interface SentTx {
 
 const hexBig = (v: unknown): bigint => BigInt(v as string);
 
+/** The protocol's cap on gas for a single transaction (EIP-7825). */
+const MAX_TX_GAS = 16_777_216n;
+
 /**
  * A submission whose outcome we cannot tell: the answer never came back, the
  * transaction was not seen mined in time, or the bundler returned another hash.
@@ -99,7 +102,10 @@ export async function sendCalls(
     const nonce = Number(hexBig(unwrap(nonceR, "nonce")));
     const baseFee = hexBig((unwrap(feeR, "latest block") as { baseFeePerGas: string }).baseFeePerGas);
     const tip = hexBig(unwrap(tipR, "priority fee"));
-    const gas = (hexBig(unwrap(gasR, "gas estimate")) * 12n) / 10n;
+    // 20% headroom, but never above the per-transaction gas cap (EIP-7825, 2^24):
+    // a node rejects a larger limit outright, and FHE transactions are heavy.
+    const estimated = hexBig(unwrap(gasR, "gas estimate"));
+    const gas = estimated >= MAX_TX_GAS ? estimated : (estimated * 12n) / 10n > MAX_TX_GAS ? MAX_TX_GAS : (estimated * 12n) / 10n;
     const maxFeePerGas = baseFee * 2n + tip;
     const balance = hexBig(unwrap(balR, "balance"));
     if (call.value + gas * maxFeePerGas > balance) throw new InsufficientFundsError(balance, call.value, gas * maxFeePerGas);

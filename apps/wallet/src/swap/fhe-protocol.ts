@@ -4,6 +4,7 @@ export type WorkerCall =
   | { op: "init"; account: string; chainId: number }
   | { op: "encrypt"; contract: string; amount: string; direction?: 1 | 2; minimumOutput?: string }
   | { op: "prepare-decrypt"; contracts: string[] }
+  | { op: "public-decrypt"; handles: Hex[] }
   | { op: "decrypt"; handles: Array<{ handle: Hex; contractAddress: string }>; signature: Hex };
 
 export type ToFheWorker =

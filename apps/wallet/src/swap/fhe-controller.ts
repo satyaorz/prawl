@@ -44,6 +44,11 @@ export class FheController {
     return await this.#call({ op: "decrypt", handles, signature }) as ClearValues;
   }
 
+  /** Gateway decryption of handles the contract made publicly decryptable (a round's net, an unwrap). Needs no key or signature. */
+  async publicDecrypt(handles: Hex[]): Promise<{ clearValues: Record<string, bigint | boolean | string>; abiEncodedClearValues: Hex; decryptionProof: Hex }> {
+    return await this.#call({ op: "public-decrypt", handles }) as { clearValues: Record<string, bigint | boolean | string>; abiEncodedClearValues: Hex; decryptionProof: Hex };
+  }
+
   close(): void {
     if (this.#closed) return;
     this.#closed = true;

@@ -13,6 +13,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
 import { createRequire } from "node:module";
+import { Keeper } from "./keeper.mjs";
 
 const require = createRequire(import.meta.url);
 const sdk = require("@zama-fhe/relayer-sdk/node");
@@ -99,6 +100,7 @@ async function main() {
   return { batch, wA, wB, oracle, instance, round, lotA, lotB };
 }
 
+const startBlock = (await provider.getBlockNumber()) - 5;
 const ctx = await main();
 
 /** Encrypt 3 values in one client-side input for `user`, bound to `contract`. */
@@ -200,21 +202,6 @@ async function main2() {
 
 const submitted = await main2();
 
-function clearValue(dec, handle) {
-  const normalized = ethers.hexlify(handle).toLowerCase();
-  const value = dec.clearValues?.[handle] ?? dec.clearValues?.[normalized];
-  if (value === undefined) throw new Error(`decryption did not return ${normalized}`);
-  return BigInt(value);
-}
-
-async function waitTx(tx, label) {
-  log(`${label}: ${tx.hash}`);
-  const receipt = await tx.wait();
-  if (!receipt || receipt.status !== 1) throw new Error(`${label} reverted`);
-  log(`${label}: block ${receipt.blockNumber} gas=${receipt.gasUsed}`);
-  return receipt;
-}
-
 async function waitForRound() {
   const duration = Number(await ctx.batch.minRoundDuration());
   const until = Number(await ctx.batch.lastUpdateTime()) + duration;
@@ -238,49 +225,49 @@ async function decryptBalance(user, handle) {
 
 async function settle() {
   const { batch, instance } = ctx;
-  let state = await batch.rounds(submitted.round);
-  if (!state.closed) {
-    await waitForRound();
-    await waitTx(await batch.closeRound(), `close round ${submitted.round}`);
-    state = await batch.rounds(submitted.round);
-  } else {
-    log("round already closed; resuming settlement");
+  // The keeper drives close, prepare, settle and credit with permissionless
+  // calls only; this script is just one of many parties that could run it.
+  const keeper = new Keeper({ provider, signer: wallet, manifest, instance, fromBlock: startBlock, log });
+  const deadline = Date.now() + 20 * 60_000;
+  await waitForRound();
+  for (;;) {
+    await keeper.pass();
+    const [d, c] = await Promise.all([batch.orderStatus(submitted.round, wallet.address), batch.orderStatus(submitted.round, counterparty.address)]);
+    if (d.credited && c.credited) break;
+    if (Date.now() > deadline) throw new Error("round did not settle within 20 minutes");
+    await new Promise((r) => setTimeout(r, 8000));
   }
-
-  if (!state.prepared) {
-    const first = await instance.publicDecrypt([state.netEnc, state.surplusEnc]);
-    const net = clearValue(first, state.netEnc);
-    const side = clearValue(first, state.surplusEnc);
-    log(`gateway disclosed net lots=${net} surplus side=${side}`);
-    await waitTx(await batch.prepareSettle(submitted.round, first.abiEncodedClearValues, first.decryptionProof), "prepare settlement");
-    state = await batch.rounds(submitted.round);
-  } else {
-    log("settlement already prepared; resuming unwrap");
-  }
-
-  if (!state.executed) {
-    if (state.netSwapped > 0n) {
-      const second = await instance.publicDecrypt([state.unwrapHandle]);
-      const cleartext = clearValue(second, state.unwrapHandle);
-      await waitTx(await batch.executeSettle(submitted.round, cleartext, second.decryptionProof), "execute Uniswap settlement");
-    } else {
-      await waitTx(await batch.executeSettle(submitted.round, 0n, "0x"), "execute matched settlement");
-    }
-  } else {
-    log("settlement already executed; resuming credits");
-  }
-  const [deployerOrder, counterpartyOrder] = await Promise.all([
-    batch.orderStatus(submitted.round, wallet.address),
-    batch.orderStatus(submitted.round, counterparty.address),
-  ]);
-  if (!deployerOrder.credited) await waitTx(await batch.creditOrder(submitted.round, wallet.address), "credit deployer");
-  if (!counterpartyOrder.credited) await waitTx(await batch.creditOrder(submitted.round, counterparty.address), "credit counterparty");
   const [aA, aB, bA, bB] = await Promise.all([
     batch.fundedBalance(wallet.address, 0), batch.fundedBalance(wallet.address, 1),
     batch.fundedBalance(counterparty.address, 0), batch.fundedBalance(counterparty.address, 1),
   ]);
   log(`deployer vault: A=${await decryptBalance(wallet, aA)} B=${await decryptBalance(wallet, aB)}`);
   log(`counterparty vault: A=${await decryptBalance(counterparty, bA)} B=${await decryptBalance(counterparty, bB)}`);
+
+  // Optional: exit the counterparty's received tokens, to prove the unwrap path end to end.
+  if (process.env.LIVE_EXIT === "1") {
+    const received = await decryptBalance(counterparty, bA);
+    if (received > 0n) {
+      const token = new ethers.Contract(manifest.tokenA, ["function balanceOf(address) view returns (uint256)"], provider);
+      const before = await token.balanceOf(counterparty.address);
+      const enc = await instance.createEncryptedInput(manifest.batch, counterparty.address).add64(received).encrypt();
+      await waitTx(await batch.connect(counterparty).exit(0, enc.handles[0], enc.inputProof), "exit counterparty A balance");
+      for (let i = 0; i < 40; ++i) {
+        await keeper.pass();
+        const after = await token.balanceOf(counterparty.address);
+        if (after > before) { log(`exit finalized: counterparty received ${after - before} (wei of tokenA)`); break; }
+        await new Promise((r) => setTimeout(r, 8000));
+      }
+    }
+  }
+}
+
+async function waitTx(tx, label) {
+  log(`${label}: ${tx.hash}`);
+  const receipt = await tx.wait();
+  if (!receipt || receipt.status !== 1) throw new Error(`${label} reverted`);
+  log(`${label}: block ${receipt.blockNumber} gas=${receipt.gasUsed}`);
+  return receipt;
 }
 
 await settle();

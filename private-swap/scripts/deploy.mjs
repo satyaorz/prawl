@@ -77,6 +77,8 @@ const SUPPLY = BigInt(process.env.PRAWL_TOKEN_SUPPLY ?? "10000000000000000000000
 // unit every order is a multiple of; keep it a small share of this depth so a
 // residual does not move the price, or the 97% floor will refuse the trade.
 const SEED_WETH = ethers.parseEther(process.env.PRAWL_SEED_WETH ?? "0.06");
+// Extra WETH kept by the deployer for demo participants (the pool seed is separate).
+const EXTRA_WETH = ethers.parseEther(process.env.PRAWL_EXTRA_WETH ?? "0.01");
 const LOT_WETH = BigInt(process.env.PRAWL_LOT_WETH ?? "100000000000000"); // 0.0001 WETH
 
 const provider = new ethers.JsonRpcProvider(RPC, SEPOLIA.chainId, { staticNetwork: true });
@@ -125,7 +127,8 @@ const poolKeyArgs = (key) => [key.currency0, key.currency1, key.fee, key.tickSpa
 async function main() {
   const balance = await provider.getBalance(deployer.address);
   log(`deployer ${deployer.address} has ${ethers.formatEther(balance)} ETH`);
-  const needed = SEED_WETH + ethers.parseEther("0.04"); // seed + gas for ~12 transactions
+  // Seed + spare WETH + gas for ~12 transactions; on a resume the seed is already spent, so only gas is needed.
+  const needed = state.wrapped ? ethers.parseEther("0.02") : SEED_WETH + EXTRA_WETH + ethers.parseEther("0.04");
   if (balance < needed) throw new Error(`Deployer needs at least ${ethers.formatEther(needed)} Sepolia ETH (seed liquidity + gas)`);
 
   // Confirm the infrastructure addresses actually hold code on this chain.
@@ -154,8 +157,8 @@ async function main() {
   const token = new ethers.Contract(state.token.address, tokenAbi, deployer);
   const weth = new ethers.Contract(SEPOLIA.weth, wethAbi, deployer);
   const existingWeth = await weth.balanceOf(deployer.address);
-  const requiredWeth = SEED_WETH;
-  if (!state.wrapped || existingWeth < requiredWeth) {
+  const requiredWeth = SEED_WETH + EXTRA_WETH;
+  if (!state.wrapped) {
     const toWrap = requiredWeth - existingWeth;
     await wait((await weth.deposit({ value: toWrap })).hash, `wrap ${ethers.formatEther(toWrap)} ETH to WETH`);
     state.wrapped = true;
@@ -275,11 +278,19 @@ async function main() {
       poolKeyArgs(key),
       lotAUnits,
     ], "PoolLotPriceOracle");
-    const quote = await new ethers.Contract(state.oracle.address, ["function latestLotPrice() view returns (uint64,uint64,uint256)"], provider).latestLotPrice();
-    if (quote[0] === 0n || quote[1] === 0n) throw new Error("Oracle returned an unusable lot price; check the pool is seeded");
-    log(`oracle lot: ${quote[0]} tokenA = ${quote[1]} tokenB (from the pool, tokenA=${tokenA})`);
-    save();
+    save(); // record it before anything can fail, so a re-run never deploys a second one
   } else log(`resuming with oracle ${state.oracle.address}`);
+  {
+    // Public RPC nodes can lag a block behind a deployment and return empty data: retry the readback.
+    const oracleRead = new ethers.Contract(state.oracle.address, ["function latestLotPrice() view returns (uint64,uint64,uint256)"], provider);
+    let quote;
+    for (let attempt = 0; attempt < 12 && !quote; ++attempt) {
+      try { quote = await oracleRead.latestLotPrice(); } catch { await new Promise((r) => setTimeout(r, 2500)); }
+    }
+    if (!quote) throw new Error("Could not read the oracle after retries");
+    if (quote[0] === 0n || quote[1] === 0n) throw new Error("Oracle returned an unusable lot price; check the pool is seeded");
+    log(`oracle lot: ${quote[0]} tokenA = ${quote[1]} tokenB (from the pool)`);
+  }
 
   // 6. Batch swap. cTokenA pairs with whichever asset is currency0 in the pool.
   const wrapperA = key.currency0 === SEPOLIA.weth.toLowerCase() ? state.wrapperWeth.address : state.wrapperPrawl.address;
@@ -323,9 +334,9 @@ async function main() {
   };
   const version = await readWithRetry("batch VERSION()", () => batch.VERSION());
   if (version !== 5n) throw new Error(`unexpected batch version ${version}`);
-  if ((await batch.cTokenA()).toLowerCase() !== wrapperA.toLowerCase()) throw new Error("batch cTokenA mismatch");
-  if ((await batch.cTokenB()).toLowerCase() !== wrapperB.toLowerCase()) throw new Error("batch cTokenB mismatch");
-  const onchainKey = await batch.poolKey();
+  if ((await readWithRetry("batch cTokenA()", () => batch.cTokenA())).toLowerCase() !== wrapperA.toLowerCase()) throw new Error("batch cTokenA mismatch");
+  if ((await readWithRetry("batch cTokenB()", () => batch.cTokenB())).toLowerCase() !== wrapperB.toLowerCase()) throw new Error("batch cTokenB mismatch");
+  const onchainKey = await readWithRetry("batch poolKey()", () => batch.poolKey());
   if (onchainKey[0].toLowerCase() !== currency0 || onchainKey[1].toLowerCase() !== currency1) throw new Error("batch pool currency mismatch");
 
   // Build the wallet manifest: addresses pinned plus the code hashes the
