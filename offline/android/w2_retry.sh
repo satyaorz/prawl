@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env bash 
 # Interrupted Bluetooth payment: the radio drops after Alice signs. Retry must resend the
 # identical payment to Bob, and must not let Alice redirect the coin to someone else.
 cd "$(dirname "$0")"

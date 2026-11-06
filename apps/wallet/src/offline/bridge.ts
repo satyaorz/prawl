@@ -42,6 +42,10 @@ export interface PrawlOfflineBridge {
    * memory and shows the full address before the user submits.
    */
   setAccount?(req: { address: string }): Promise<unknown>;
+  /** Optional (newer app builds): the load code of a coin that is still awaiting its deposit, so it is funded instead of minting another. */
+  loadLink?(req: { coinId: string }): Promise<unknown>;
+  /** Optional (newer app builds): discard a coin that was never deposited. The phone asks its owner first. */
+  discard?(req: { coinId: string }): Promise<unknown>;
 }
 
 const METHODS = ["mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed"] as const;
@@ -99,6 +103,14 @@ const NONCE = /^[0-9a-f]{32}$/;
 export async function mintOnPhone(b: PrawlOfflineBridge, req: { depositor: string; valueWei: bigint; mode: "public" | "private" }): Promise<{ payload: OfflinePayload; link: string }> {
   const raw = await ask(() => b.mint({ depositor: req.depositor, valueWei: req.valueWei.toString(), mode: req.mode }));
   const payload = payloadFromBridge(raw, [req.mode === "private" ? "load-private" : "load"]);
+  return { payload, link: payloadLink(typeof raw === "string" ? JSON.parse(raw) : raw) };
+}
+
+/** The load code of a coin already on the phone and still awaiting its deposit (older app builds: undefined). */
+export async function loadLinkOnPhone(b: PrawlOfflineBridge, coinId: string): Promise<{ payload: OfflinePayload; link: string } | undefined> {
+  if (typeof b.loadLink !== "function") return undefined;
+  const raw = await ask(() => b.loadLink!({ coinId }));
+  const payload = payloadFromBridge(raw, ["load", "load-private"]);
   return { payload, link: payloadLink(typeof raw === "string" ? JSON.parse(raw) : raw) };
 }
 

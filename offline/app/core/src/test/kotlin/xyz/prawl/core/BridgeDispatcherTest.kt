@@ -145,6 +145,31 @@ class BridgeDispatcherTest {
         assertTrue(proven, proven.contains("\"spendable\""))
     }
 
+    @Test fun loadLinkGivesAnAwaitingCoinItsOwnLoadCodeAgainSoNoSecondCoinIsMinted() {
+        val h = Host(); val d = BridgeDispatcher(h)
+        val pub = mint(d); val priv = mint(d, mode = "private")
+        assertEquals(pub, call(d, "loadLink", """{"coinId":"${coinOf(pub)}"}"""))
+        assertEquals(priv, call(d, "loadLink", """{"coinId":"${coinOf(priv)}"}"""))
+        assertEquals("no new coin", 2, h.notes().count { it.pendingDeposit && !it.spent })
+        assertTrue("it signs nothing, so it never asks the user", h.confirms.isEmpty())
+        call(d, "markDeposited", """{"coinId":"${coinOf(pub)}"}""")
+        fails("no_such_coin") { call(d, "loadLink", """{"coinId":"${coinOf(pub)}"}""") }   // already deposited: never funded twice
+        fails("invalid_args") { call(d, "loadLink", """{"coinId":"short"}""") }
+    }
+
+    @Test fun discardNeedsTheUsersYesAndOnlyTouchesAnAwaitingCoin() {
+        val h = Host(answer = false); val d = BridgeDispatcher(h)
+        val id = coinOf(mint(d))
+        fails("declined") { call(d, "discard", """{"coinId":"$id"}""") }
+        assertTrue("a no keeps the coin", d.dispatch("coins", "{}").contains("awaiting_deposit"))
+        assertTrue("the full coin id is shown natively", h.confirms.single().mono!!.endsWith(id.removePrefix("0x")))
+        h.answer = true
+        call(d, "discard", """{"coinId":"$id"}""")
+        assertEquals("[]", d.dispatch("coins", "{}"))
+        val live = funded(h, d)
+        fails("no_such_coin") { call(d, "discard", """{"coinId":"$live"}""") }              // a deposited coin is never discarded
+    }
+
     @Test fun markDepositedAndRefreshedValidate() {
         val d = BridgeDispatcher(Host())
         val m = mint(d)
