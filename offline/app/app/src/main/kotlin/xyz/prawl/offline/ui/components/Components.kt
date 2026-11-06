@@ -200,9 +200,15 @@ fun ConfirmDialog(
     mono: String? = null,
     /** An amber warning shown above the text. */
     warning: String? = null,
+    /**
+     * When given, Cancel and an outside tap call THIS, and Approve calls only [onConfirm]. Without it (the other screens) Approve calls
+     * [onDismiss] (to hide the dialog) and then [onConfirm]; a caller whose dismiss means "no" must use [onCancel], or Approve would say no first.
+     */
+    onCancel: (() -> Unit)? = null,
 ) {
+    val cancel = onCancel ?: onDismiss
     AlertDialog(
-        onDismissRequest = onDismiss, containerColor = Tw.zinc900,
+        onDismissRequest = cancel, containerColor = Tw.zinc900,
         title = { Text(title, style = Tw.heading.copy(fontSize = 16.sp)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -211,8 +217,8 @@ fun ConfirmDialog(
                 if (mono != null) Text(mono, style = Tw.mono.copy(fontSize = 12.sp))
             }
         },
-        confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = Tw.emerald400) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Tw.zinc400) } },
+        confirmButton = { TextButton(onClick = { if (onCancel == null) onDismiss(); onConfirm() }) { Text(confirm, color = Tw.emerald400) } },
+        dismissButton = { TextButton(onClick = cancel) { Text("Cancel", color = Tw.zinc400) } },
     )
 }
 

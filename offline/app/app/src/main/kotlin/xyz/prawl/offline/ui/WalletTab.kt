@@ -149,6 +149,7 @@ class WalletWebView(
             val result: JsonElement = Json.parseToJsonElement(dispatcher.dispatch(env.str("method"), env.obj("args").toString()))
             buildJsonObject { put("id", id); put("ok", true); put("result", result) }.toString()
         } catch (e: BridgeException) {
+            if (debug) Log.i(TAG, "bridge refused: code=${e.code} message=${e.message}")
             buildJsonObject { put("id", id); put("ok", false); put("error", buildJsonObject { put("code", e.code); put("message", e.message ?: e.code) }) }.toString()
         } catch (e: Exception) {
             Log.w(TAG, "bridge call failed: ${e.javaClass.simpleName}")

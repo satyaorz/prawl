@@ -154,8 +154,10 @@ class OfflineCashActivity : ComponentActivity() {
                         ConfirmDialog(
                             title = pc.c.title, text = pc.c.text, confirm = "Approve with fingerprint / PIN",
                             mono = pc.c.mono, warning = pc.c.warning,
+                            // Approve must NOT also run onDismiss (it would answer "no" first): Cancel / outside tap use onCancel.
                             onConfirm = { pending = null; pc.result.complete(true) },
-                            onDismiss = { pending = null; pc.result.complete(false) },
+                            onDismiss = {},
+                            onCancel = { pending = null; pc.result.complete(false) },
                         )
                     }
                 }
