@@ -132,7 +132,21 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
         }
         error?.let { PCard(border = Tw.red400.copy(alpha = 0.5f)) { StatusLine(Status.ERROR, it) } }
 
-        Segmented(listOf("address" to "To an address", "private" to "To a private balance"), mode) { mode = it; error = null }
+        // The main way out: into this wallet's own private balance (nothing to type, nothing public about where it went).
+        val walletNotes = allNotes.filter { Escrows.isV31(it.header.chainId, it.header.escrow) }
+        val toWallet = g.cashOutToWallet
+        if (toWallet != null) PCard(title = "Cash out to my wallet",
+            subtitle = "Into your private balance in the Wallet tab: the most private way out. You approve here with your fingerprint, then the wallet submits it.") {
+            if (walletNotes.isEmpty()) Secondary("No note can go into a private balance (only coins on escrow v3.1 can). Use another address below.")
+            walletNotes.forEach { n ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Mono(Fmt.eth(n.value) + " ETH", Modifier.weight(1f))
+                    SecondaryButton("To my wallet", { error = null; toWallet(n.header.coinId, n.noteId) })
+                }
+            }
+        }
+        if (toWallet != null) Secondary("Or cash out another way:")
+        Segmented(listOf("address" to "Another address", "private" to "A private-balance code"), mode) { mode = it; error = null }
 
         PCard(title = "Note to cash out") {
             if (notes.isEmpty()) Secondary(if (priv) "No notes on escrow v3.1. Only v3.1 coins can be cashed out into a private balance." else "No spendable notes.")
@@ -145,7 +159,7 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
             }
         }
 
-        if (!priv) PCard(title = "Pay out to") {
+        if (!priv) PCard(title = "Pay out to", subtitle = "Any Ethereum address. The address and the amount become public.") {
             Field(payout, { payout = it }, "Payout address (0x…)", mono = true, error = if (payout.isNotBlank() && !addr.ok) addr.note else null)
             if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prowl website.") {
                 QrScanner(onResult = { t -> scanning = false; Eth.parseEip681(t)?.let { payout = Eth.checksum(it.addr40) } ?: run { error = "Not an Ethereum address code" } })

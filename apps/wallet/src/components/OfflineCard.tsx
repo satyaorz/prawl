@@ -118,7 +118,7 @@ function ShieldTarget({ ask }: { ask?: { value: string; escrow: `0x${string}`; n
  * Offline cash (phone ↔ website, HANDOFF v1). The phones hold and pay the
  * cash; the website only loads coins into the escrow and cashes them out.
  */
-export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; incoming?: { link: string; n: number; own?: boolean } } = {}) {
+export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; incoming?: { link: string; n: number; own?: boolean; autoSend?: boolean } } = {}) {
   const w = useWallet();
   const [payload, setPayload] = useState<OfflinePayload>();
   const [text, setText] = useState("");
@@ -154,9 +154,22 @@ export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; inc
   }, []);
 
   // A payload handed over by the phone bridge opens like a scanned code.
+  const autoSend = useRef(false);
   useEffect(() => {
-    if (incoming) take(incoming.link, !!incoming.own);
+    if (!incoming) return;
+    take(incoming.link, !!incoming.own);
+    autoSend.current = !!incoming.autoSend;
   }, [incoming, take]);
+  // "Cash out to my wallet" is one intent: the phone has signed (after the user's fingerprint), so submit it now. offlineRedeem still
+  // simulates first and refuses a redemption that would fail; any problem the card shows stops it, and nothing else is ever auto-sent.
+  useEffect(() => {
+    if (!autoSend.current || !payload) return;
+    if (payload.t !== "redeem" && payload.t !== "redeem-shield") { autoSend.current = false; return; }
+    if (w.action && !w.action.done) return;
+    if (configProblems(payload).length > 0) { autoSend.current = false; return; }
+    autoSend.current = false;
+    void offlineRedeem(payload);
+  }, [payload, w.action]);
 
   const opened = useRef(onOpened);
   opened.current = onOpened;

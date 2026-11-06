@@ -163,6 +163,7 @@ class OfflineCashActivity : ComponentActivity() {
         siteProblem = r.problem
         web = r.resolved?.let { WalletWebView(this, BridgeDispatcher(host), it, BuildConfig.DEBUG) { screen -> runOnUiThread { openNative(screen) } } }
         tab = if (web != null) 0 else 1
+        g.cashOutToWallet = web?.let { w -> { coinId: String, noteId: String? -> runOnUiThread { tab = 0; w.requestCashOutToWallet(coinId, noteId) } } }
         routeFor(intent)?.let { if (it != Route.Balance) stack.add(it); tab = 1 }
         setContent {
             CompositionLocalProvider(LocalHostActivity provides this) {

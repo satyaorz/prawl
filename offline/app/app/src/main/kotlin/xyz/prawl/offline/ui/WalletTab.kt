@@ -157,6 +157,19 @@ class WalletWebView(
         }
     }
 
+    /**
+     * Native "Cash out to my wallet": tells the wallet page which note to cash out into its own private balance. Only ids go across (validated
+     * here and again by the page); the page then calls the bridge, so the phone shows its usual confirmation and fingerprint prompt.
+     */
+    fun requestCashOutToWallet(coinIdHex: String, noteId: String?) {
+        val id = coinIdHex.lowercase().removePrefix("0x")
+        if (!Regex("^[0-9a-f]{64}$").matches(id)) return
+        if (noteId != null && !Regex("^[0-9A-Za-z_-]{1,128}$").matches(noteId)) return
+        if (Origin.ofUrl(view.url ?: "") != site.origin) return          // only ever our own page (NavigationPolicy keeps it so)
+        val detail = buildJsonObject { put("coinId", "0x$id"); noteId?.let { put("noteId", it) } }.toString()
+        view.evaluateJavascript("window.dispatchEvent(new CustomEvent('prowl:cashout-to-wallet',{detail:$detail}))", null)
+    }
+
     fun destroy() { exec.shutdownNow(); view.destroy() }
 
     companion object {

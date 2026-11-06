@@ -154,6 +154,12 @@ class AppGraph(val app: Application) {
         v31Escrows = Escrows.V31 + extraV31,
     ))
 
+    /**
+     * Set by the activity when the Wallet tab exists: "Cash out to my wallet" from a native screen. It switches to the Wallet tab and asks
+     * the page to cash out that note into the wallet's private balance; the phone's own approval and fingerprint still come first.
+     */
+    @Volatile var cashOutToWallet: ((coinIdHex: String, noteId: String?) -> Unit)? = null
+
     /** This phone holds a light-client proof of the coin's deposit (the coin is then really spendable offline). */
     fun depositProven(coinIdHex: String): Boolean = runCatching { lightClient.store.proof(coinIdHex) != null }.getOrDefault(false)
 

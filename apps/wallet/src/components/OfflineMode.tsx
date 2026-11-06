@@ -17,11 +17,11 @@ const STEPS: ReadonlyArray<readonly [string, string]> = [
  * hardware key that signs once); this side loads coins, cashes them out and
  * refreshes them. Everything here works from links and QR codes.
  */
-export function OfflineMode({ onOpened }: { onOpened: () => void }) {
+export function OfflineMode({ onOpened, cashout }: { onOpened: () => void; cashout?: { coinId: string; noteId?: string; n: number } }) {
   const w = useWallet();
   const unlocked = !!w.railgunAddress;
   // A payload the phone bridge returned: the card below opens it like a scanned code.
-  const [incoming, setIncoming] = useState<{ link: string; n: number; own?: boolean }>();
+  const [incoming, setIncoming] = useState<{ link: string; n: number; own?: boolean; autoSend?: boolean }>();
   return (
     <div className="flex flex-col gap-4 px-5 pb-6">
       {unlocked && (
@@ -50,7 +50,17 @@ export function OfflineMode({ onOpened }: { onOpened: () => void }) {
         </>
       )}
 
-      {unlocked && <PhoneBridgePanel onPayload={(link, opts) => setIncoming({ link, n: Date.now(), ...(opts?.own ? { own: true } : {}) })} />}
+      {!unlocked && cashout && (
+        <p className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-3 text-xs text-amber-300">
+          Unlock your wallet to cash out the coin your phone sent here. It goes into your private balance.
+        </p>
+      )}
+      {unlocked && (
+        <PhoneBridgePanel
+          request={cashout}
+          onPayload={(link, opts) => setIncoming({ link, n: Date.now(), ...(opts?.own ? { own: true } : {}), ...(opts?.autoSend ? { autoSend: true } : {}) })}
+        />
+      )}
 
       <OfflineCard onOpened={onOpened} incoming={incoming} />
 
