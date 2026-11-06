@@ -156,6 +156,44 @@ describe("swap service", () => {
     }
   });
 
+  it("waits for a lagging node to show a balance it just created, instead of saying 'not enough'", async () => {
+    vi.useFakeTimers();
+    try {
+      const { SwapService } = await import("../src/swap/service");
+      const sign = signer();
+      const service = await SwapService.open(client(), account, config, sign);
+      // The first read (a node a block behind) shows nothing wrapped; after a pause the real balance (20) is visible.
+      mocks.decrypt.mockClear();
+      mocks.decrypt.mockImplementationOnce(async (handles: Array<{ handle: string }>) => Object.fromEntries(handles.map(({ handle }) => [handle, 0n])));
+      const pending = service.fund(0, 10n);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await pending;
+      expect(mocks.decrypt.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(sign.send).toHaveBeenCalledTimes(1); // the funding transaction was sent once the balance showed up
+      service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still refuses, with the numbers, when the wrapped balance really is too small", async () => {
+    vi.useFakeTimers();
+    try {
+      const { SwapService } = await import("../src/swap/service");
+      const sign = signer();
+      const service = await SwapService.open(client(), account, config, sign);
+      mocks.decrypt.mockClear();
+      const pending = service.fund(0, 500n); // the mock balance is 20
+      pending.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(120_000);
+      await expect(pending).rejects.toThrow(/Not enough confidential wrapped tokens: this account has 20 units wrapped.*500 are needed/);
+      expect(sign.send).not.toHaveBeenCalled();
+      service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("accepts an oracle timestamp a few seconds ahead of the latest block time (nodes answer from different blocks), but not a wild one", async () => {
     const { SwapService } = await import("../src/swap/service");
     const near = await SwapService.open(client({ oracleAhead: 24n }), account, config, signer());

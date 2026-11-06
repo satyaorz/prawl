@@ -50,6 +50,13 @@ const MAX_U64 = (1n << 64n) - 1n;
  * the contract re-checks against its own block time when the order executes.
  */
 const CLOCK_SKEW_SECONDS = 120n;
+/**
+ * After one of our own transactions confirms, a public RPC node that is a block behind can still serve the OLD
+ * confidential-balance handle (an empty one decrypts as zero), so a check right afterwards says "not enough" about
+ * money that is there. Re-read for up to this long before believing it.
+ */
+const SETTLE_REREADS = 8;
+const SETTLE_REREAD_MS = 6000;
 const DECRYPT_RETRIES = 10;
 const DECRYPT_RETRY_MS = 6000;
 
@@ -188,6 +195,17 @@ export class SwapService {
    * Public state always; the confidential balances only when `decrypt` is true. Decrypting asks the
    * gateway (which learns when you look), so a periodic poll should not: it shows the last values.
    */
+  /** Balances, re-read for a while until `enough` holds (or the time is up): see SETTLE_REREADS. */
+  async #balancesWhen(enough: (b: SwapBalances) => boolean): Promise<SwapBalances> {
+    let balances = await this.balances();
+    for (let i = 0; i < SETTLE_REREADS && !enough(balances); i++) {
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_REREAD_MS));
+      this.#assertOpen();
+      balances = await this.balances();
+    }
+    return balances;
+  }
+
   async balances(options: { decrypt?: boolean } = {}): Promise<SwapBalances> {
     const decrypt = options.decrypt ?? true;
     const tokens = [this.config.tokenA, this.config.tokenB] as const;
@@ -343,8 +361,8 @@ export class SwapService {
     return this.#exclusive(async () => {
       if (amount <= 0n || amount > MAX_U64) throw new Error("Invalid amount");
       const wrapper = asset === 0 ? this.config.wrapperA : this.config.wrapperB;
-      const balances = await this.balances();
-      if (balances.wrapped[asset] < amount) throw new Error("Not enough confidential wrapped tokens");
+      const balances = await this.#balancesWhen((b) => b.wrapped[asset] >= amount);
+      if (balances.wrapped[asset] < amount) throw new Error(`Not enough confidential wrapped tokens: this account has ${balances.wrapped[asset]} units wrapped (6 decimals) and ${amount} are needed. If you just wrapped them, wait a minute and try again.`);
       if (balances.vault[asset] > MAX_U64 - amount) throw new Error("Confidential vault balance would overflow");
       const encrypted = await this.#fhe.encrypt(wrapper, amount);
       if (encrypted.handles.length !== 1) throw new Error("Unexpected encrypted input");
@@ -355,14 +373,14 @@ export class SwapService {
   order(direction: 1 | 2, amount: bigint, minOutput: bigint, onStatus?: (status: string) => void): Promise<SentTx[]> {
     return this.#exclusive(async () => {
       if (amount <= 0n || amount > MAX_U64 || minOutput <= 0n || minOutput > MAX_U64) throw new Error("Invalid swap amount or minimum output");
-      const balances = await this.balances();
+      const balances = await this.#balancesWhen((b) => !!b.priceError || b.vault[direction - 1]! >= amount);
       if (balances.priceError) throw new Error(balances.priceError);
       const inputLot = direction === 1 ? balances.lotA : balances.lotB;
       const outputLot = direction === 1 ? balances.lotB : balances.lotA;
       if (inputLot === 0n || outputLot === 0n || amount % inputLot !== 0n) throw new Error("Amount must be a whole number of price lots");
       if (amount / inputLot > balances.maxLots) throw new Error("Amount exceeds the maximum order size");
       if (balances.priceValidUntil === undefined || balances.chainTime > balances.priceValidUntil) throw new Error("Swap price is stale");
-      if (balances.vault[direction - 1]! < amount) throw new Error("Not enough confidential vault balance");
+      if (balances.vault[direction - 1]! < amount) throw new Error(`Not enough confidential vault balance: ${balances.vault[direction - 1]} units funded (6 decimals) and ${amount} are needed. If you just funded it, wait a minute and try again.`);
       if (minOutput > amount / inputLot * outputLot * SLIPPAGE_FLOOR_BPS / 10000n) throw new Error("Minimum output exceeds the batch's guaranteed floor");
       const encrypted = await this.#fhe.encrypt(this.config.batch, amount, direction, minOutput);
       if (encrypted.handles.length !== 3) throw new Error("Unexpected encrypted order");

@@ -11,6 +11,7 @@ import {
   swapConfigured,
   SWAP_ACCOUNT_GAS_WEI,
   unshieldEth,
+  walletState,
   type SwapAccount,
 } from "../lib/wallet";
 import { useWallet } from "../lib/use-wallet";
@@ -160,13 +161,23 @@ export function SwapDashboard() {
       setUnfunded(account);
       await loadAccounts();
       const ok = await fundSwapAccount(account.index, wei, setStatus);
-      if (!ok) throw new Error("Funding the swap account did not complete (the reason is on the wallet's status line once you close this sheet). Nothing was lost: press the button again to retry with the same account.");
+      if (!ok) {
+        // The reason lives on the wallet's action status, which is hidden behind this sheet: show it here.
+        const action = walletState.get().action;
+        const why = [action?.status, action?.error].filter(Boolean).join(": ") || "no reason given";
+        throw new Error(`Funding the swap account did not complete (${why}). Nothing was lost: tap the button again to retry with the same account.`);
+      }
       setUnfunded(undefined);
       setSelected(account.index);
       setFundAmount("");
       await loadAccounts();
     }, "Swap account funded. Open it to swap.");
   }
+
+  // The sheet is long on a phone: bring a new message into view so a failure is never off-screen.
+  useEffect(() => {
+    if (error || autoError) document.getElementById("swap-messages")?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [error, autoError]);
 
   const inputAsset = (direction === 1 ? 0 : 1) as 0 | 1;
   const outputAsset = (1 - inputAsset) as 0 | 1;
@@ -345,8 +356,10 @@ export function SwapDashboard() {
           <button disabled={busy} onClick={() => { setBusy(true); void service.balances().then(() => refresh(service), (cause) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }} className="w-full text-xs text-zinc-400 disabled:opacity-40">Refresh balances and round</button>
         </div>
       )}
-      {status && <p role="status" className="break-words text-xs text-zinc-300">{status}</p>}
-      {error && <p role="alert" className="break-words text-xs text-red-400">{error}</p>}
+      <div id="swap-messages" className="space-y-2">
+        {status && <p role="status" className="break-words text-xs text-zinc-300">{status}</p>}
+        {error && <p role="alert" className="break-words rounded-xl border border-red-900 bg-red-950/30 p-3 text-xs text-red-300">{error}</p>}
+      </div>
       {autoError && (
         <p role="alert" className="break-words text-xs text-amber-300">
           Automatic progress paused: {autoError}{" "}
