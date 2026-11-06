@@ -77,6 +77,20 @@ VITE_WALLET_URL=https://your-wallet-domain pnpm --filter @prawl/site build
 
 The passkey is bound to that domain, so choose it once and keep it.
 
+## GitHub Pages
+
+The site can be served from GitHub Pages at `https://satyaorz.github.io/prawl/`. A project page lives under a sub-path, so
+the Pages build sets `VITE_BASE=/prawl/` (every path the site builds goes through `url()` in `src/lib/router.ts`) and writes a
+`404.html` copy of the app, which is how Pages serves a direct link such as `/prawl/docs/private-swap`.
+
+```sh
+pnpm --filter @prawl/site build:pages     # apps/site/dist, for the /prawl/ sub-path
+pnpm --filter @prawl/site publish:pages   # builds, then force-pushes the result as the gh-pages branch
+```
+
+It publishes without GitHub Actions, so it works while Actions is unavailable. In the repository's Pages settings the source
+is the `gh-pages` branch, root. (On Vercel or a custom domain, use `pnpm --filter @prawl/site build`: the base is `/`.)
+
 ## Deploy
 
 `apps/site` is a static site. `vercel.json` sets the SPA rewrite (so

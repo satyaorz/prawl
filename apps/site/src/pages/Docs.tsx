@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../components/Icon";
 import { chapterBySlug, grouped, neighbours, type Block, type Chapter } from "../content/chapters";
-import { navigate } from "../lib/router";
+import { navigate, url } from "../lib/router";
 
 /**
  * The handbook: a fixed table of contents on the left, the chapter on the right.
@@ -24,7 +24,7 @@ export function Docs({ slug }: { slug: string }) {
         <h1 className="text-2xl font-semibold">No such chapter</h1>
         <p className="mt-2 text-zinc-400">
           That page does not exist.{" "}
-          <a href="/docs" className="text-emerald-400 underline" onClick={(e) => (e.preventDefault(), navigate("/docs"))}>
+          <a href={url("/docs")} className="text-emerald-400 underline" onClick={(e) => (e.preventDefault(), navigate("/docs"))}>
             Start at the introduction
           </a>
           .
@@ -131,7 +131,7 @@ export function Docs({ slug }: { slug: string }) {
 function SideLink({ chapter, active }: { chapter: Chapter; active: boolean }) {
   return (
     <a
-      href={`/docs/${chapter.slug}`}
+      href={url(`/docs/${chapter.slug}`)}
       title={chapter.summary}
       aria-current={active ? "page" : undefined}
       onClick={(e) => {
@@ -155,7 +155,7 @@ function ChapterLink({ chapter, dir }: { chapter: Chapter; dir: "prev" | "next" 
   const isNext = dir === "next";
   return (
     <a
-      href={`/docs/${chapter.slug}`}
+      href={url(`/docs/${chapter.slug}`)}
       onClick={(e) => {
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
         e.preventDefault();

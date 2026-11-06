@@ -1,8 +1,9 @@
+import { url } from "../lib/router";
 /** The Prowl mark: the yellow smiley, the same file the wallet ships. */
 export function Logo({ className = "h-8 w-8" }: { className?: string }) {
   return (
     <img
-      src="/prowl-logo.png"
+      src={url("/prowl-logo.png")}
       alt=""
       aria-hidden="true"
       draggable={false}

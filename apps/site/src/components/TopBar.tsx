@@ -1,5 +1,5 @@
 import { Logo } from "./Logo";
-import { navigate, WALLET_URL } from "../lib/router";
+import { navigate, url, WALLET_URL } from "../lib/router";
 
 /**
  * The permanent dashboard: always at the top, on every page, never scrolls away.
@@ -20,7 +20,7 @@ export function TopBar({ active }: { active: "home" | "docs" }) {
       <nav aria-label="Main" className="mx-auto flex h-16 max-w-[1240px] items-center gap-3 px-5 sm:px-8">
         {/* The mark and the name: the way home. */}
         <a
-          href="/"
+          href={url("/")}
           onClick={(e) => go(e, "/")}
           className="group flex items-center gap-2.5 rounded-full pr-2 transition-opacity hover:opacity-90"
           aria-label="Prowl home"
@@ -34,10 +34,10 @@ export function TopBar({ active }: { active: "home" | "docs" }) {
         </span>
 
         <div className="ml-auto flex items-center gap-1">
-          <TopLink href="/" active={active === "home"} onClick={(e) => go(e, "/")}>
+          <TopLink href={url("/")} active={active === "home"} onClick={(e) => go(e, "/")}>
             App
           </TopLink>
-          <TopLink href="/docs" active={active === "docs"} onClick={(e) => go(e, "/docs")}>
+          <TopLink href={url("/docs")} active={active === "docs"} onClick={(e) => go(e, "/docs")}>
             Docs
           </TopLink>
           <a

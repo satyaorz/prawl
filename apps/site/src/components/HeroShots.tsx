@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { url } from "../lib/router";
 
 /**
  * Three real wallet screens, overlapping like cards fanned on a table.
@@ -8,10 +9,10 @@ import { useEffect, useState } from "react";
  * activity, offline cash, shielding. Purely CSS transforms, no libraries.
  */
 const SHOTS = [
-  { src: "/shots/wallet.png", label: "Your private balance" },
-  { src: "/shots/activity.png", label: "Activity, kept on device" },
-  { src: "/shots/offline.png", label: "Offline cash, phone to phone" },
-  { src: "/shots/shield.png", label: "Shield ETH into the pool" },
+  { src: url("/shots/wallet.png"), label: "Your private balance" },
+  { src: url("/shots/activity.png"), label: "Activity, kept on device" },
+  { src: url("/shots/offline.png"), label: "Offline cash, phone to phone" },
+  { src: url("/shots/shield.png"), label: "Shield ETH into the pool" },
 ] as const;
 
 export function HeroShots() {
@@ -41,7 +42,7 @@ export function HeroShots() {
       <div className="relative h-full w-full">
         {/* Back card: the welcome screen, tilted away. */}
         <Phone
-          src="/shots/welcome.png"
+          src={url("/shots/welcome.png")}
           alt="The Prowl welcome screen"
           className="absolute left-[4%] top-[16%] h-[76%] w-auto -rotate-[9deg] opacity-65 blur-[0.6px]"
           delay="120ms"
@@ -49,7 +50,7 @@ export function HeroShots() {
 
         {/* Middle card: activity. */}
         <Phone
-          src="/shots/activity.png"
+          src={url("/shots/activity.png")}
           alt="The Prowl activity list"
           className="absolute left-[24%] top-[9%] h-[84%] w-auto rotate-[3deg] opacity-90"
           delay="220ms"

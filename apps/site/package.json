@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
+    "build:pages": "tsc -p tsconfig.json && VITE_BASE=/prawl/ vite build && cp dist/index.html dist/404.html && touch dist/.nojekyll",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "apk": "cd ../../offline/app && ANDROID_HOME=${ANDROID_HOME:-$HOME/Android/Sdk} ./gradlew assembleDebug && cp app/build/outputs/apk/prawl/debug/app-prawl-debug.apk ../../apps/site/public/apk/prowl.apk"
+    "apk": "cd ../../offline/app && ANDROID_HOME=${ANDROID_HOME:-$HOME/Android/Sdk} ./gradlew assembleDebug && cp app/build/outputs/apk/prawl/debug/app-prawl-debug.apk ../../apps/site/public/apk/prowl.apk",
+    "publish:pages": "bash scripts/publish-pages.sh"
   },
   "dependencies": {
     "react": "^19.3.1",
