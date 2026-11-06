@@ -1,0 +1,188 @@
+/// <reference lib="webworker" />
+/**
+ * RAILGUN worker. Runs kohaku-railgun-wasm off the UI thread. Its global
+ * `fetch` is replaced by a bridge to the page, where every request goes out
+ * over Anon-RPC (Tor). Same-origin requests (the wasm itself, a local artifact
+ * mirror) use the real fetch; nothing else ever does.
+ *
+ * Keys arrive in an `open` message and live only in this worker's memory.
+ * Checkpoints are sealed here with the wallet's storage key before storage.
+ */
+import { seal, open as openSealed, type Sealed } from "@prawl/keys";
+import { RailgunWallet, type RailgunWasm } from "@prawl/railgun";
+import { store } from "../lib/store";
+import type { FromWorker, OpenArgs, Ops, ToWorker } from "./protocol";
+
+type ArgsOf<K extends keyof Ops> = Parameters<Ops[K]>[0];
+
+declare const self: DedicatedWorkerGlobalScope;
+
+const realFetch = self.fetch.bind(self);
+const post = (m: FromWorker, transfer: Transferable[] = []) => self.postMessage(m, transfer);
+
+// ------------------------------------------------------------- fetch bridge
+let fetchSeq = 0;
+const pendingFetches = new Map<number, { resolve: (r: Response) => void; reject: (e: unknown) => void }>();
+
+async function bridgedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const request = input instanceof Request ? input : new Request(input, init);
+  const url = new URL(request.url);
+  if (url.origin === self.location.origin) return realFetch(request);
+  const body = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
+  const id = ++fetchSeq;
+  const headers: [string, string][] = [];
+  request.headers.forEach((v, k) => headers.push([k, v]));
+  const signal = init?.signal ?? request.signal;
+  return new Promise<Response>((resolve, reject) => {
+    pendingFetches.set(id, { resolve, reject });
+    signal?.addEventListener("abort", () => {
+      pendingFetches.delete(id);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    });
+    post({ t: "fetch", id, url: url.href, method: request.method, headers, body }, body ? [body] : []);
+  });
+}
+self.fetch = bridgedFetch as typeof fetch;
+
+// ------------------------------------------------------------------- wasm
+let wasmPromise: Promise<RailgunWasm> | undefined;
+function loadWasm(): Promise<RailgunWasm> {
+  wasmPromise ??= (async () => {
+    const glue = "/railgun/kohaku_railgun_wasm.js";
+    const mod = (await import(/* @vite-ignore */ glue)) as RailgunWasm & { default: (input: unknown) => Promise<unknown> };
+    await mod.default({ module_or_path: "/railgun/kohaku_railgun_wasm_bg.wasm" });
+    return mod;
+  })();
+  return wasmPromise;
+}
+
+// ------------------------------------------------------------------ state
+let wallet: RailgunWallet | undefined;
+let storageKey: CryptoKey | undefined;
+let checkpointName = "";
+
+async function saveCheckpoint(plaintext: string): Promise<void> {
+  if (!storageKey) return;
+  await store.set(checkpointName, await seal(storageKey, checkpointName, plaintext));
+}
+
+const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = {
+  async deployment(chainId: number) {
+    const wasm = await loadWasm();
+    const c = wasm.Chain.fromChainId(BigInt(chainId));
+    if (!c) throw new Error(`RAILGUN has no deployment on chain ${chainId}`);
+    try {
+      return {
+        chainId,
+        deploymentBlock: c.deploymentBlock.toString(),
+        smartWallet: c.railgunSmartWallet,
+        wrappedBaseToken: c.wrappedBaseToken,
+        unshieldFeeBps: c.unshieldFeeBps,
+        subsquidEndpoint: c.subsquidEndpoint,
+        poiEndpoint: c.poiEndpoint,
+      };
+    } finally {
+      c.free();
+    }
+  },
+
+  async open(args: OpenArgs) {
+    const wasm = await loadWasm();
+    await wallet?.close();
+    storageKey = args.storageKey;
+    checkpointName = args.checkpointName;
+    const sealed = await store.get<Sealed>(checkpointName);
+    let checkpoint: string | undefined;
+    if (sealed) {
+      try {
+        checkpoint = await openSealed(storageKey, checkpointName, sealed);
+      } catch {
+        checkpoint = undefined; // other wallet or corrupt: resync
+      }
+    }
+    wallet = await RailgunWallet.open({
+      wasm,
+      chainId: args.chainId,
+      rpcUrl: args.rpcUrl,
+      spendingKey: args.spendingKey,
+      viewingKey: args.viewingKey,
+      ...(checkpoint ? { checkpoint } : {}),
+    });
+    return { address: wallet.address, syncedBlock: wallet.syncedBlock.toString(), restored: !!checkpoint };
+  },
+
+  async sync(args: { head: string; windowBlocks?: string }) {
+    const w = need();
+    await w.sync({
+      head: BigInt(args.head),
+      ...(args.windowBlocks ? { windowBlocks: BigInt(args.windowBlocks) } : {}),
+      onCheckpoint: saveCheckpoint,
+      onProgress: (p) =>
+        post({ t: "progress", progress: { from: p.from.toString(), to: p.to.toString(), synced: p.synced.toString(), head: p.head.toString(), ms: p.ms } }),
+    });
+    return { syncedBlock: w.syncedBlock.toString() };
+  },
+
+  async refreshPoi() {
+    await need().refreshPoi();
+    await saveCheckpoint(await need().checkpoint());
+  },
+
+  balances: async () => need().balances(),
+  notes: async () => need().notes(),
+
+  async buildShield(args: { recipient: string; items: Array<{ token: "native" | `0x${string}`; amount: string }> }) {
+    return need().buildShield(args.recipient, args.items.map((i) => ({ token: i.token, amount: BigInt(i.amount) })));
+  },
+
+  async prepareTransfer(args: ArgsOf<"prepareTransfer">) {
+    const w = need();
+    const out = await w.prepareTransfer({ ...args, amount: BigInt(args.amount) });
+    await saveCheckpoint(await w.checkpoint()); // keeps the pending PPOI proof
+    return out;
+  },
+
+  async prepareUnshield(args: ArgsOf<"prepareUnshield">) {
+    const w = need();
+    const out = await w.prepareUnshield({ ...args, amount: BigInt(args.amount) });
+    await saveCheckpoint(await w.checkpoint());
+    return out;
+  },
+
+  async close() {
+    await wallet?.close();
+    wallet = undefined;
+    storageKey = undefined;
+  },
+};
+
+function need(): RailgunWallet {
+  if (!wallet) throw new Error("RAILGUN wallet is not open");
+  return wallet;
+}
+
+self.onmessage = async (ev: MessageEvent<ToWorker>) => {
+  const m = ev.data;
+  if (m.t === "fetch-result") {
+    const p = pendingFetches.get(m.id);
+    if (!p) return;
+    pendingFetches.delete(m.id);
+    if (!m.ok) {
+      p.reject(new TypeError(m.error));
+      return;
+    }
+    const res = new Response(m.status === 204 || m.status === 304 ? null : m.body, { status: m.status, statusText: m.statusText, headers: m.headers });
+    Object.defineProperty(res, "url", { value: m.url });
+    p.resolve(res);
+    return;
+  }
+  if (m.t === "call") {
+    try {
+      const fn = ops[m.op] as (a: unknown) => Promise<unknown>;
+      const value = await fn(m.args);
+      post({ t: "result", id: m.id, ok: true, value });
+    } catch (e) {
+      post({ t: "result", id: m.id, ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+};
