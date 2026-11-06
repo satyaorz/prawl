@@ -70,6 +70,7 @@ try {
   }
   if (process.env.RESCAN) await openAndSync("Full rescan", "full rescan");
   console.log(`[${s()}] final:`, (await page.locator("section").first().innerText()).replace(/\n/g, " | "));
+  await page.getByRole("tab", { name: "Network" }).click();
   const rows = await page.locator("section", { hasText: "Network log" }).locator("li").allInnerTexts();
   const by = {};
   for (const r of rows) {

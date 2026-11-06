@@ -59,13 +59,13 @@ export function PrivateActions() {
 
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
-      <div className="flex gap-4 text-sm">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
         {(["send", "unshield"] as const).map((t) => (
-          <button key={t} onClick={() => setTab(t)} className={tab === t ? "font-medium text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}>
+          <button key={t} onClick={() => setTab(t)} className={`whitespace-nowrap ${tab === t ? "font-medium text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
             {t === "send" ? "Send privately" : "Withdraw to public"}
           </button>
         ))}
-        <span className="ml-auto font-mono text-xs text-zinc-400">spendable: {formatEther(available)} ETH</span>
+        <span className="ml-auto whitespace-nowrap font-mono text-xs text-zinc-400">spendable: {formatEther(available)} ETH</span>
       </div>
       <p className="mt-2 text-xs text-zinc-500">
         {tab === "send"

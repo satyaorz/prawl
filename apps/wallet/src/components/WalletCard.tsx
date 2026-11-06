@@ -65,6 +65,9 @@ export function WalletCard() {
     );
   }
 
+  const eth = (w.balances ?? []).filter((b) => b.token !== undefined && b.token === w.wrappedBaseToken);
+  const ethTotal = eth.reduce((sum, b) => sum + BigInt(b.amount), 0n);
+  const ethValid = eth.filter((b) => b.poiStatus === "Valid").reduce((sum, b) => sum + BigInt(b.amount), 0n);
   const span = w.head !== undefined && w.deploymentBlock !== undefined ? Number(w.head - w.deploymentBlock) : 0;
   const done = w.syncedBlock !== undefined && w.deploymentBlock !== undefined ? Number(w.syncedBlock - w.deploymentBlock) : 0;
   const pct = span > 0 ? Math.max(0, Math.min(100, (done / span) * 100)) : 0;
@@ -99,6 +102,17 @@ export function WalletCard() {
         </div>
       )}
 
+      {w.balances && w.balances.length > 0 && (
+        <div className="mt-3">
+          <p className="font-mono text-3xl">
+            {formatEther(ethTotal)} <span className="text-base text-zinc-500">ETH</span>
+          </p>
+          <p className="mt-0.5 text-xs text-zinc-500">
+            {formatEther(ethValid)} spendable{ethTotal > ethValid ? ` · ${formatEther(ethTotal - ethValid)} waiting for the PPOI check` : ""}
+          </p>
+        </div>
+      )}
+
       {w.balances && (
         <ul className="mt-3 space-y-1">
           {w.balances.length === 0 && <li className="text-sm text-zinc-400">No private funds yet.</li>}
@@ -118,7 +132,7 @@ export function WalletCard() {
 
       {w.balances?.some((b) => b.poiStatus === "Missing") && (
         <p className="mt-2 text-xs text-zinc-500">
-          New shields wait for the PPOI check (about an hour) before they can be sent or withdrawn. The wallet refreshes on its own.
+          New shields wait for the PPOI check (a few minutes on Sepolia, up to an hour on mainnet) before they can be sent or withdrawn. The wallet refreshes on its own.
         </p>
       )}
       {!!w.poiQueue && (

@@ -45,7 +45,17 @@ export function TorStatusCard() {
           {done} ok / {tor.traces.length} attempts
         </dd>
       </dl>
-      {tor.error && <p className="mt-3 text-xs text-red-400">{tor.error}</p>}
+      {tor.error && <p className="mt-3 break-words text-xs text-red-400">{tor.error}</p>}
+      {tor.phase === "failed" && (
+        <div className="mt-3 text-xs text-zinc-400">
+          <p>
+            Prawl never falls back to a direct connection. The gateway{tor.chosenGateway ? " you chose" : ""} may be down or unreachable from this network.
+          </p>
+          <button onClick={() => window.location.reload()} className="mt-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-zinc-200">
+            Reload and retry
+          </button>
+        </div>
+      )}
     </section>
   );
 }

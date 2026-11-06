@@ -47,6 +47,8 @@ try {
   log(`wallet open; depositor/public account ${account}`);
 
   const offline = page.locator("section", { hasText: "Offline cash" });
+  // Panels stay mounted but only the active tab is visible: switch before clicking in one.
+  const tab = (name) => page.getByRole("tab", { name }).click();
   const publicEth = async () =>
     Number((await page.locator("section", { hasText: "Add funds privately" }).innerText()).match(/public: ([\d.]+) ETH/)?.[1] ?? 0);
 
@@ -66,10 +68,12 @@ try {
         log("reloaded and unlocked");
       }
       if (cmd === "status") {
+        await tab("Wallet");
         log(`status: ${(await card.innerText()).replace(/\n/g, " | ").slice(0, 400)} || public ${await publicEth()} ETH`);
       }
       const shield = /^shield ([\d.]+)$/.exec(cmd);
       if (shield) {
+        await tab("Wallet");
         const form = page.locator("section", { hasText: "Add funds privately" });
         await form.getByPlaceholder("0.01").fill(shield[1]);
         await form.getByRole("button", { name: "Shield ETH" }).click();
@@ -82,6 +86,7 @@ try {
       }
       const target = /^target ([\d.]+)$/.exec(cmd);
       if (target) {
+        await tab("Offline cash");
         if (!(await offline.getByPlaceholder("note value, e.g. 0.003").isVisible())) await offline.getByRole("button", { name: /Cash out a phone coin/ }).click();
         await offline.getByPlaceholder("note value, e.g. 0.003").fill(target[1]);
         await offline.getByRole("button", { name: "Show QR" }).click();
@@ -93,6 +98,7 @@ try {
       }
       const sweep = /^sweep (0x[0-9a-fA-F]{40})$/.exec(cmd);
       if (sweep) {
+        await tab("Wallet");
         const form = page.locator("section", { hasText: "Add funds privately" });
         if (!(await form.getByPlaceholder("0x… recipient").isVisible())) await form.getByRole("button", { name: "Send public ETH elsewhere" }).click();
         await form.getByPlaceholder("0x… recipient").fill(sweep[1]);
@@ -122,6 +128,7 @@ try {
       renameSync(path.join(dir, f), path.join(dir, `${f}.done`));
       const hash = link.slice(link.indexOf("#"));
       log(`${f}: opening ${hash.slice(0, 40)}…`);
+      await tab("Offline cash");
       await page.evaluate((h) => (window.location.hash = h), hash);
       const panel = offline.locator("div.rounded-xl");
       await panel.or(offline.locator("p.text-red-400")).first().waitFor({ timeout: 30_000 });
@@ -129,12 +136,14 @@ try {
       log(`${f}: card: ${(await offline.innerText()).replace(/\n/g, " | ").slice(0, 700)}`);
       if (f.startsWith("go-")) {
         const button = panel.getByRole("button", { name: /^(Load .* ETH|Load .* ETH privately|Cash out|Cash out to private balance)$/ });
+        const own = panel.getByRole("checkbox");
+        if (await own.count()) await own.check(); // a go- link is one the operator vouches for
+        // The read-only checks of a private load finish a few seconds after the card opens.
+        for (let i = 0; i < 30 && !(await button.isEnabled()); i++) await sleep(1000);
         if (!(await button.isEnabled())) {
           log(`${f}: action button disabled`);
           continue;
         }
-        const own = panel.getByRole("checkbox");
-        if (await own.count()) await own.check(); // a go- link is one the operator vouches for
         await button.click();
         for (let i = 0; i < 180; i++) {
           const t = await offline.innerText();

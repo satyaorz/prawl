@@ -1,15 +1,26 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "qrcode";
 import { formatEther } from "viem";
 import { anon } from "../lib/anon";
 import { useWallet } from "../lib/use-wallet";
 import { buildShieldTarget, clearFinishedAction, offlineLoad, offlineLoadPrivate, offlineRedeem } from "../lib/wallet";
 import { coinStatus, privateLoadProblems, type CoinStatus } from "../offline/escrow";
-import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, type OfflinePayload } from "../offline/payload";
+import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, type LoadPrivatePayload, type OfflinePayload } from "../offline/payload";
 import { parseEther } from "viem";
 import { QrScanner } from "./QrScanner";
 
 const short = (s: string, a = 10, b = 6) => (s.length > a + b + 1 ? `${s.slice(0, a)}…${s.slice(-b)}` : s);
+
+/**
+ * Test builds only (`VITE_PRAWL_TEST_AUTOCONFIRM=1` at build time, used by the live test scripts): start with
+ * "my own phone minted this" ticked. A normal build never does: that box is the user's own confirmation.
+ */
+const AUTO_CONFIRM = (import.meta.env as Record<string, string | undefined>).VITE_PRAWL_TEST_AUTOCONFIRM === "1";
+
+/** Display-time chain checks of a private load, kept briefly so reopening the same link is instant. Sending re-checks regardless. */
+const CHECK_TTL_MS = 60_000;
+const checkCache = new Map<string, { at: number; problems: string[] }>();
+const checkKey = (p: LoadPrivatePayload) => JSON.stringify([p.escrow, p.depositAddress, Object.entries(p.params).map(([k, v]) => [k, String(v)])]);
 
 /** A handoff in the address bar (#/offline/<kind>?d=…), read once and then removed from it. */
 function takeFromLocation(): string | undefined {
@@ -92,7 +103,7 @@ function ShieldTarget() {
  * Offline cash (phone ↔ website, HANDOFF v1). The phones hold and pay the
  * cash; the website only loads coins into the escrow and cashes them out.
  */
-export function OfflineCard() {
+export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
   const w = useWallet();
   const [payload, setPayload] = useState<OfflinePayload>();
   const [text, setText] = useState("");
@@ -101,7 +112,7 @@ export function OfflineCard() {
   const [showDepositor, setShowDepositor] = useState(false);
   const [qr, setQr] = useState<string>();
   const [status, setStatus] = useState<CoinStatus | { error: string }>();
-  const [ownCoin, setOwnCoin] = useState(false);
+  const [ownCoin, setOwnCoin] = useState(AUTO_CONFIRM);
   /** Read-only checks of a private load against the escrow (deposit address, reservation, expiry), run when it opens. */
   const [chainProblems, setChainProblems] = useState<string[]>();
 
@@ -109,7 +120,7 @@ export function OfflineCard() {
     setError(undefined);
     setStatus(undefined);
     clearFinishedAction();
-    setOwnCoin(false);
+    setOwnCoin(AUTO_CONFIRM);
     try {
       setPayload(payloadFromText(t));
       setText("");
@@ -119,10 +130,15 @@ export function OfflineCard() {
     }
   }, []);
 
+  const opened = useRef(onOpened);
+  opened.current = onOpened;
   useEffect(() => {
     const read = () => {
       const t = takeFromLocation();
-      if (t) take(t);
+      if (t) {
+        take(t);
+        opened.current?.(); // a link from the phone: bring this tab to the front
+      }
     };
     read();
     window.addEventListener("hashchange", read);
@@ -143,9 +159,18 @@ export function OfflineCard() {
   useEffect(() => {
     setChainProblems(undefined);
     if (payload?.t !== "load-private" || configProblems(payload).length > 0) return;
+    const key = checkKey(payload);
+    const cached = checkCache.get(key);
+    if (cached && Date.now() - cached.at < CHECK_TTL_MS) {
+      setChainProblems(cached.problems);
+      return;
+    }
     let live = true;
     privateLoadProblems(anon, payload)
-      .then((r) => live && setChainProblems(r.problems))
+      .then((r) => {
+        checkCache.set(key, { at: Date.now(), problems: r.problems });
+        if (live) setChainProblems(r.problems);
+      })
       .catch((e: unknown) => live && setChainProblems([`could not check the coin over Tor: ${e instanceof Error ? e.message : String(e)}`]));
     return () => {
       live = false;

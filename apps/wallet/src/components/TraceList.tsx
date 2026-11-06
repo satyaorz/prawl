@@ -12,10 +12,10 @@ export function TraceList() {
         {[...traces].reverse().map((t) => (
           <li key={t.id} className="flex gap-2 text-zinc-400">
             <span className={t.ok ? "text-emerald-400" : "text-red-400"}>{t.ok ? "✓" : "✗"}</span>
-            <span className="w-28 shrink-0 truncate text-zinc-300">{t.method}</span>
-            <span className="w-32 shrink-0 truncate">{t.identity}</span>
-            <span className="truncate">{t.circuit}</span>
-            <span className="ml-auto shrink-0">{Math.round(t.durationMs)} ms</span>
+            <span className="w-24 shrink-0 truncate text-zinc-300 sm:w-28">{t.method}</span>
+            <span className="min-w-0 flex-1 truncate sm:w-32 sm:flex-none sm:shrink-0">{t.identity}</span>
+            <span className="hidden truncate sm:block">{t.circuit}</span>
+            <span className="shrink-0 sm:ml-auto">{Math.round(t.durationMs)} ms</span>
           </li>
         ))}
       </ul>
