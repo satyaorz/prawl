@@ -7,7 +7,7 @@ WORK=${WORK:-relay2}
 LOG=${LOG:-run2.log}
 mkdir -p "$WORK"
 
-say() { echo -e "\n### $*" | tee -a "$LOG"; }
+say() { need_phones; echo -e "\n### $*" | tee -a "$LOG"; }
 # w2 <serial> [pkg] -- <extras...>
 w2() {
   local s=$1 pkg=$PKG; shift
@@ -24,7 +24,7 @@ w2_bg() { local s=$1; shift; adb -s "$s" shell input keyevent KEYCODE_WAKEUP; ad
   adb -s "$s" shell am start -n "$PKG/xyz.prawl.otktest.Wallet2Activity" "$@" >/dev/null; }
 w2_wait() { local s=$1 pat=$2 i; for i in $(seq 1 ${WAIT:-240}); do adb -s "$s" logcat -d -s PRAWL_W2:I | grep -q "$pat" && return 0; sleep 0.5; done; return 1; }
 w2_dump() { adb -s "$1" logcat -d -s PRAWL_W2:I | sed -n 's/^.*PRAWL_W2: /    /p' | tee -a "$LOG"; }
-pull() { local pkg=${3:-$PKG}; adb -s "$1" exec-out run-as "$pkg" cat "files/out/$2" > "$WORK/$2"; }
+pull() { local pkg=${3:-$PKG}; adb -s "$1" exec-out run-as "$pkg" cat "files/out/$2" > "$WORK/$2"; head -c1 "$WORK/$2" | grep -q "{" || { echo "ABORT: could not pull $2 from $1" | tee -a "$LOG"; exit 4; }; }
 push() { local pkg=${3:-$PKG}; adb -s "$1" exec-in run-as "$pkg" sh -c "cat > files/in/$2" < "$WORK/$2"; }
 reset_app() { adb -s "$1" shell "run-as ${2:-$PKG} rm -rf files/in files/out files/wallet files/certs; run-as ${2:-$PKG} mkdir -p files/in files/out files/wallet files/certs"; }
 snapshot() {  # build snapshot from every mint_*.json in $WORK, push to both phones
@@ -44,3 +44,7 @@ EOF
   push $A snapshot.json; push $B snapshot.json
   adb -s $A shell pm list packages | grep -q $EVIL && push $A snapshot.json $EVIL || true
 }
+
+# Abort the test run if a phone is missing or unauthorized (avoids meaningless results).
+need_phones() { local s; for s in $A $B; do
+  [ "$(adb -s $s get-state 2>/dev/null)" = device ] || { echo "ABORT: phone $s is not connected/authorized" | tee -a "$LOG"; exit 3; }; done; }

@@ -16,5 +16,6 @@
         </activity>
         <activity android:name=".WalletActivity" android:exported="true" />
         <activity android:name=".Wallet2Activity" android:exported="true" />
+        <activity android:name=".Wallet3Activity" android:exported="true" />
     </application>
 </manifest>
