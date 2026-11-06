@@ -13,9 +13,10 @@ function spendable(balances: Balance[] | undefined, weth?: string): bigint {
     .reduce((sum, b) => sum + BigInt(b.amount), 0n);
 }
 
-export function PrivateActions() {
+/** `mode` fixes the form to Send or Withdraw (used inside an action sheet); without it the card has both tabs. */
+export function PrivateActions({ mode }: { mode?: Tab } = {}) {
   const w = useWallet();
-  const [tab, setTab] = useState<Tab>("send");
+  const [tab, setTab] = useState<Tab>(mode ?? "send");
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("");
   const [asWeth, setAsWeth] = useState(false);
@@ -60,7 +61,7 @@ export function PrivateActions() {
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
-        {(["send", "unshield"] as const).map((t) => (
+        {(mode ? [] : (["send", "unshield"] as const)).map((t) => (
           <button key={t} onClick={() => setTab(t)} className={`whitespace-nowrap ${tab === t ? "font-medium text-zinc-100" : "text-zinc-500 hover:text-zinc-300"}`}>
             {t === "send" ? "Send privately" : "Withdraw to public"}
           </button>

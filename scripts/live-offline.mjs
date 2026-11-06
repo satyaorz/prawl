@@ -50,7 +50,18 @@ try {
   // Panels stay mounted but only the active tab is visible: switch before clicking in one.
   const tab = (name) => page.getByRole("tab", { name }).click();
   const publicEth = async () =>
-    Number((await page.locator("section", { hasText: "Add funds privately" }).innerText()).match(/public: ([\d.]+) ETH/)?.[1] ?? 0);
+    Number((await page.getByText("Public account · the way in and out").locator("xpath=../..").innerText()).match(/([\d.]+) ETH/)?.[1] ?? 0);
+  // Actions open in sheets (dialogs): open one, work inside it, close it with Escape.
+  const dialog = page.getByRole("dialog");
+  const openSheet = async (name) => {
+    await page.getByRole("button", { name, exact: true }).first().click();
+    await dialog.waitFor();
+    return dialog;
+  };
+  const closeSheet = async () => {
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" }).catch(() => {});
+  };
 
   let lastBalance = -1;
   for (;;) {
@@ -69,13 +80,13 @@ try {
         log("reloaded and unlocked");
       }
       if (cmd === "status") {
-        await tab("Wallet");
+        await tab("Online");
         log(`status: ${(await card.innerText()).replace(/\n/g, " | ").slice(0, 400)} || public ${await publicEth()} ETH`);
       }
       const shield = /^shield ([\d.]+)$/.exec(cmd);
       if (shield) {
-        await tab("Wallet");
-        const form = page.locator("section", { hasText: "Add funds privately" });
+        await tab("Online");
+        const form = await openSheet("Shield");
         await form.getByPlaceholder("0.01").fill(shield[1]);
         await form.getByRole("button", { name: "Shield ETH" }).click();
         for (let i = 0; i < 120; i++) {
@@ -84,10 +95,11 @@ try {
           await sleep(2000);
         }
         log(`shield: ${(await form.innerText()).replace(/\n/g, " | ").slice(-260)}`);
+        await closeSheet();
       }
       const target = /^target ([\d.]+)$/.exec(cmd);
       if (target) {
-        await tab("Offline cash");
+        await tab("Offline");
         if (!(await offline.getByPlaceholder("note value, e.g. 0.003").isVisible())) await offline.getByRole("button", { name: /Cash out a phone coin/ }).click();
         await offline.getByPlaceholder("note value, e.g. 0.003").fill(target[1]);
         await offline.getByRole("button", { name: "Show QR" }).click();
@@ -99,8 +111,8 @@ try {
       }
       const sweep = /^sweep (0x[0-9a-fA-F]{40})$/.exec(cmd);
       if (sweep) {
-        await tab("Wallet");
-        const form = page.locator("section", { hasText: "Add funds privately" });
+        await tab("Online");
+        const form = await openSheet("Shield");
         if (!(await form.getByPlaceholder("0x… recipient").isVisible())) await form.getByRole("button", { name: "Send public ETH elsewhere" }).click();
         await form.getByPlaceholder("0x… recipient").fill(sweep[1]);
         await form.getByRole("button", { name: "Max" }).nth(1).click();
@@ -117,6 +129,7 @@ try {
           if (!fits) break;
           await form.getByPlaceholder("0.001").fill(String(Math.floor(Number(fits) * 0.98 * 1e9) / 1e9));
         }
+        await closeSheet();
       }
     }
     const bal = await publicEth();
@@ -129,7 +142,7 @@ try {
       renameSync(path.join(dir, f), path.join(dir, `${f}.done`));
       const hash = link.slice(link.indexOf("#"));
       log(`${f}: opening ${hash.slice(0, 40)}…`);
-      await tab("Offline cash");
+      await tab("Offline");
       await page.evaluate((h) => (window.location.hash = h), hash);
       const panel = offline.locator("div.rounded-xl");
       await panel.or(offline.locator("p.text-red-400")).first().waitFor({ timeout: 30_000 });

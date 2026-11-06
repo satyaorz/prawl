@@ -27,35 +27,44 @@ function CopyHash({ hash }: { hash: string }) {
   );
 }
 
-/** This wallet's own history, from the sealed local log. No explorer links: opening one would reveal your IP and which transaction is yours. */
+/** The list itself (also used inside the home screen). No explorer links: opening one would reveal your IP and which transaction is yours. */
+export function ActivityList({ kinds }: { kinds?: ReadonlyArray<Activity["kind"]> }) {
+  const w = useWallet();
+  const items = (w.activity ?? []).filter((a) => !kinds || kinds.includes(a.kind));
+  if (!w.activity) return null;
+  return items.length === 0 ? (
+    <p className="py-6 text-center text-sm text-zinc-500">Nothing yet.</p>
+  ) : (
+    <ul className="divide-y divide-zinc-900">
+      {items.slice(0, 40).map((a) => (
+        <li key={`${a.txHash}-${a.at}`} className="flex items-center gap-3 py-3 text-xs">
+          <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm ${a.ok ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"}`}>{a.ok ? "✓" : "✗"}</span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm text-zinc-200">{LABEL[a.kind] ?? a.kind}</p>
+            <p className="truncate text-zinc-500">
+              {new Date(a.at).toLocaleString()}
+              {a.to ? <span className="font-mono"> · {short(a.to, 10, 6)}</span> : null}
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="font-mono text-sm text-zinc-200">{formatEther(BigInt(a.amount))} ETH</p>
+            <CopyHash hash={a.txHash} />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** This wallet's own history as a card. */
 export function ActivityCard() {
   const w = useWallet();
   if (!w.railgunAddress || !w.activity) return null;
   return (
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
       <h2 className="text-sm font-medium">Activity</h2>
-      <p className="mt-1 text-xs text-zinc-500">Kept encrypted on this device only. Copy a hash to look it up; there are no explorer links, since opening one would tell that site which transaction is yours.</p>
-      {w.activity.length === 0 ? (
-        <p className="mt-3 text-sm text-zinc-400">Nothing yet.</p>
-      ) : (
-        <ul className="mt-3 space-y-2">
-          {w.activity.slice(0, 30).map((a) => (
-            <li key={`${a.txHash}-${a.at}`} className="flex items-start justify-between gap-3 text-xs">
-              <div className="min-w-0">
-                <p className="text-zinc-300">
-                  <span className={a.ok ? "text-emerald-400" : "text-red-400"}>{a.ok ? "✓" : "✗"}</span> {LABEL[a.kind] ?? a.kind}{" "}
-                  <span className="font-mono">{formatEther(BigInt(a.amount))} ETH</span>
-                </p>
-                <p className="text-zinc-500">
-                  {new Date(a.at).toLocaleString()}
-                  {a.to ? <span className="font-mono"> · {short(a.to, 10, 6)}</span> : null}
-                </p>
-              </div>
-              <CopyHash hash={a.txHash} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <p className="mt-1 text-xs text-zinc-500">Kept encrypted on this device only. Copy a hash to look it up; there are no explorer links.</p>
+      <ActivityList />
     </section>
   );
 }

@@ -111,20 +111,20 @@ async function withdrawAll(ret) {
     const avail = await spendable(w);
     let amt = Math.floor(((avail - 0.0045) / 1.0025) * 1e6) / 1e6;
     for (let attempt = 0; attempt < 3 && amt > 0; attempt++) {
-      const s = w.page.locator("section", { hasText: "Send privately" });
       log(`${w.name} withdraws ${amt} ETH to ${ret}`);
-      await s.getByRole("button", { name: "Withdraw to public" }).click();
-      await s.locator("input").nth(0).fill(ret);
-      await s.locator("input").nth(1).fill(String(amt));
-      await s.getByRole("button", { name: "Withdraw", exact: true }).click();
+      const d = await openSheet(w, "Withdraw");
+      await d.getByPlaceholder(/^0x/).fill(ret);
+      await d.getByPlaceholder("0.005").fill(String(amt));
+      await d.getByRole("button", { name: "Withdraw", exact: true }).click();
       const end = Date.now() + 30 * MIN;
       let t = "";
       while (Date.now() < end) {
-        t = await actionText(w, "Withdraw to public");
-        if (/Done\.|reverted|failed|Try at most|is spendable/.test(t)) break;
+        t = await dlgText(w);
+        if (/Done\.|reverted|failed|Try at most|is spendable|Status unknown/.test(t)) break;
         await sleep(5000);
       }
-      log(`${w.name} withdraw result: ${t}`);
+      log(`${w.name} withdraw result: ${t.slice(-300)}`);
+      await closeSheet(w);
       const fits = t.match(/Try at most ([\d.]+) ETH/)?.[1];
       if (!fits) break;
       amt = Math.floor(Number(fits) * 0.95 * 1e6) / 1e6;
@@ -133,10 +133,22 @@ async function withdrawAll(ret) {
 }
 
 const num = (s) => (s ? Number(s) : 0);
-const publicEth = async (w) => num((await w.page.locator("section", { hasText: "Add funds privately" }).innerText()).match(/public: ([\d.]+) ETH/)?.[1]);
-const spendable = async (w) => num((await w.page.locator("section", { hasText: "Send privately" }).innerText()).match(/spendable: ([\d.]+) ETH/)?.[1]);
-const balanceLines = async (w) => (await w.card.innerText()).split("\n").filter((l) => /^ETH|^\d|spendable|PPOI|queued|Last attempt/.test(l)).join(" | ");
-const actionText = async (w, section) => (await w.page.locator("section", { hasText: section }).innerText()).replace(/\n/g, " | ");
+// The app shows actions in sheets (dialogs): open one, work inside it, close it with Escape.
+const dialog = (w) => w.page.getByRole("dialog");
+async function openSheet(w, name) {
+  await w.page.getByRole("button", { name, exact: true }).first().click();
+  await dialog(w).waitFor();
+  return dialog(w);
+}
+async function closeSheet(w) {
+  await w.page.keyboard.press("Escape");
+  await dialog(w).waitFor({ state: "detached" }).catch(() => {});
+}
+const dlgText = async (w) => (await dialog(w).innerText()).replace(/\n/g, " | ");
+const publicEth = async (w) => num((await w.page.getByText("Public account · the way in and out").locator("xpath=../..").innerText()).match(/([\d.]+) ETH/)?.[1]);
+const spendable = async (w) => num((await w.card.innerText()).match(/([\d.]+) spendable/)?.[1]);
+const privateEth = async (w) => num((await w.card.innerText()).match(/([\d.]+)\s*ETH/)?.[1]);
+const balanceLines = async (w) => (await w.card.innerText()).split("\n").filter((l) => /^\d|spendable|PPOI|queued|Last attempt/.test(l)).join(" | ");
 
 async function refresh(w) {
   const b = w.card.getByRole("button", { name: "Refresh" });
@@ -156,18 +168,18 @@ try {
   log(`A funded: ${funded} ETH public`);
 
   // Shield all but a gas reserve; the wallet says how much fits if the reserve is short.
-  const shieldForm = A.page.locator("section", { hasText: "Add funds privately" });
   let amount = Math.floor((funded - 0.006) * 1e6) / 1e6;
   for (let attempt = 0; attempt < 3; attempt++) {
     log(`A shields ${amount} ETH`);
-    await shieldForm.locator("input").fill(String(amount));
-    await shieldForm.getByRole("button", { name: "Shield ETH" }).click();
+    const d = await openSheet(A, "Shield");
+    await d.getByPlaceholder("0.01").fill(String(amount));
+    await d.getByRole("button", { name: "Shield ETH" }).click();
     const out = await until("shield", async () => {
-      const t = await actionText(A, "Add funds privately");
-      const done = /Shielded\.|reverted|failed|Not enough/.test(t);
-      return { done, value: t, note: t.split(" | ").slice(3, 5).join(" ") };
+      const t = await dlgText(A);
+      return { done: /Shielded\.|reverted|failed|Not enough|Status unknown/.test(t), value: t, note: t.slice(-120) };
     }, 15 * MIN, 5000);
-    log(`shield result: ${out}`);
+    log(`shield result: ${out.slice(-300)}`);
+    await closeSheet(A);
     const fits = out.match(/Try at most ([\d.]+) ETH/)?.[1];
     if (fits) { amount = Math.floor(Number(fits) * 0.97 * 1e6) / 1e6; continue; }
     if (!/Shielded\./.test(out)) throw new Error("shield failed");
@@ -186,24 +198,24 @@ try {
     process.exit(0);
   }
   const B = await wallet("B");
-  const actions = A.page.locator("section", { hasText: "Send privately" });
   const sendAmt = Math.floor((valid / 2) * 1e6) / 1e6; // B must afford its own withdrawal gas
   log(`A sends ${sendAmt} ETH privately to B`);
-  await actions.getByRole("button", { name: "Send privately" }).click();
-  await actions.locator("input").nth(0).fill(B.zk);
-  await actions.locator("input").nth(1).fill(String(sendAmt));
-  await actions.getByRole("button", { name: "Send", exact: true }).click();
+  const sd = await openSheet(A, "Send");
+  await sd.getByPlaceholder("0zk1…").fill(B.zk);
+  await sd.getByPlaceholder("0.005").fill(String(sendAmt));
+  await sd.getByRole("button", { name: "Send", exact: true }).click();
   const sent = await until("private send", async () => {
-    const t = await actionText(A, "Send privately");
-    return { done: /Done\.|reverted|failed/.test(t), value: t, note: t.split(" | ").slice(-2).join(" ") };
+    const t = await dlgText(A);
+    return { done: /Done\.|reverted|failed|Status unknown/.test(t), value: t, note: t.slice(-120) };
   }, 30 * MIN, 5000);
-  log(`send result: ${sent}`);
+  log(`send result: ${sent.slice(-300)}`);
+  await closeSheet(A);
   if (!/Done\./.test(sent)) throw new Error("private send failed");
 
   await until("B receives", async () => {
     await refresh(B);
-    const lines = await balanceLines(B);
-    return { done: /ETH/.test(lines), note: lines || "nothing yet" };
+    const v = await privateEth(B);
+    return { done: v > 0, note: `${v} ETH` };
   }, 20 * MIN, 30_000);
   const bValid = await until("B PPOI (A submits proofs on its syncs)", async () => {
     const v = await spendable(B);
