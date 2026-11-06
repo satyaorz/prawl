@@ -17,6 +17,28 @@ export interface SentTx {
 
 const hexBig = (v: unknown): bigint => BigInt(v as string);
 
+/** ETH with up to 6 decimals, rounded down. */
+function eth(wei: bigint): string {
+  const s = (wei < 0n ? 0n : wei).toString().padStart(19, "0");
+  return `${s.slice(0, -18)}.${s.slice(-18, -12)}`.replace(/\.?0+$/, "") || "0";
+}
+
+/** Thrown before signing when value plus the worst-case gas cost exceeds the balance. */
+export class InsufficientFundsError extends Error {
+  constructor(
+    readonly balance: bigint,
+    readonly value: bigint,
+    readonly maxGasCost: bigint,
+  ) {
+    super(
+      value > 0n && balance > maxGasCost
+        ? `Not enough ETH for gas: this needs up to ${eth(maxGasCost)} ETH of gas on top. Try at most ${eth(balance - maxGasCost)} ETH.`
+        : `Not enough ETH: have ${eth(balance)}, need ${eth(value + maxGasCost)} including gas.`,
+    );
+    this.name = "InsufficientFundsError";
+  }
+}
+
 function unwrap(item: { result: unknown } | { error: Error } | undefined, what: string): unknown {
   if (!item) throw new Error(`${what}: no answer`);
   if ("error" in item) throw new Error(`${what}: ${item.error.message}`);
@@ -38,16 +60,20 @@ export async function sendCalls(
     const label = calls.length > 1 ? ` ${i + 1}/${calls.length}` : "";
     onStatus?.(`Preparing transaction${label}…`);
     const txReq = { from: account.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
-    const [nonceR, feeR, tipR, gasR] = await client.batch(id, chainId, [
+    const [nonceR, feeR, tipR, gasR, balR] = await client.batch(id, chainId, [
       { method: "eth_getTransactionCount", params: [account.address, "pending"] },
       { method: "eth_getBlockByNumber", params: ["latest", false] },
       { method: "eth_maxPriorityFeePerGas", params: [] },
       { method: "eth_estimateGas", params: [txReq, "latest"] },
+      { method: "eth_getBalance", params: [account.address, "latest"] },
     ]);
     const nonce = Number(hexBig(unwrap(nonceR, "nonce")));
     const baseFee = hexBig((unwrap(feeR, "latest block") as { baseFeePerGas: string }).baseFeePerGas);
     const tip = hexBig(unwrap(tipR, "priority fee"));
     const gas = (hexBig(unwrap(gasR, "gas estimate")) * 12n) / 10n;
+    const maxFeePerGas = baseFee * 2n + tip;
+    const balance = hexBig(unwrap(balR, "balance"));
+    if (call.value + gas * maxFeePerGas > balance) throw new InsufficientFundsError(balance, call.value, gas * maxFeePerGas);
     const raw = await account.signTransaction({
       type: "eip1559",
       chainId,
@@ -57,7 +83,7 @@ export async function sendCalls(
       value: call.value,
       gas,
       maxPriorityFeePerGas: tip,
-      maxFeePerGas: baseFee * 2n + tip,
+      maxFeePerGas,
     });
     onStatus?.(`Sending transaction${label} over Tor…`);
     const hash = (await client.write(id, chainId, "eth_sendRawTransaction", [raw])) as Hex;
