@@ -88,7 +88,7 @@ class AppGraph(val app: Application) {
         nativeReady = { PrawlApp.nativeBls },
     )
     /** Light-client proof (carried in the bundle) first, then synced snapshots. Verified proofs are kept to forward. */
-    val depositSources = DepositSources(File(app.filesDir, "deposits"), lightClient.backend,
+    val depositSources = DepositSources(File(app.filesDir, "deposits"), lightClient.backend, allowLegacySnapshots = BuildConfig.DEBUG,
         onProofVerified = { coinId, proof -> lightClient.store.saveProof(coinId, proof) })
     /** One lock for every wallet instance: two spends can never interleave. */
     val walletLock = Any()
@@ -97,9 +97,15 @@ class AppGraph(val app: Application) {
     val escrow40: String = Eth.normalize40(BuildConfig.ESCROW)!!.also { require((BuildConfig.CHAIN_ID to it) in Escrows.PRODUCT) { "default escrow is not a known escrow" } }
     val chainId: String = BuildConfig.CHAIN_ID
 
-    val attestationPolicy = AttestationPolicy(BuildConfig.ALLOWED_APPS.split(',').map {
-        val (pkg, dig) = it.split(':'); AppIdentity(pkg.trim(), dig.trim().lowercase())
-    })
+    val attestationPolicy = run {
+        // audit F-11: the public debug signing certificate (password "android") must never be trusted by a release build
+        check(BuildConfig.DEBUG || !BuildConfig.ALLOWED_APPS.contains(AttestationPolicy.DEBUG_CERT_SHA256, ignoreCase = true)) {
+            "release build trusts the public debug signing certificate"
+        }
+        AttestationPolicy(BuildConfig.ALLOWED_APPS.split(',').map {
+            val (pkg, dig) = it.split(':'); AppIdentity(pkg.trim(), dig.trim().lowercase())
+        })
+    }
 
     fun checker() = AttestationVerifier(trust.anchors(), attestationPolicy)
 
@@ -109,25 +115,33 @@ class AppGraph(val app: Application) {
         acceptedEscrows = Escrows.PRODUCT,
     )
 
+    @Volatile private var reconciled = false
+
+    /** Once per process, before anything else touches the wallet: finish or clean up signatures a crash interrupted (audit F-06). */
+    private fun reconcileOnce(w: OfflineWallet): OfflineWallet {
+        if (!reconciled) synchronized(walletLock) { if (!reconciled) { reconciled = true; runCatching { w.reconcile() } } }
+        return w
+    }
+
     /** The wallet as the screens use it. */
-    fun wallet(log: (String) -> Unit = {}): OfflineWallet = OfflineWallet(
+    fun wallet(log: (String) -> Unit = {}): OfflineWallet = reconcileOnce(OfflineWallet(
         keys, notes, certStore, trust.anchors(), checker(), ::recipientPolicy, { depositSources.verifier() },
         ownerApprovalForNewKeys = { settings.ownerApproval }, log = log, lock = walletLock,
         depositProofFor = lightClient::proofFor, lcAdvertisement = lightClient::advertisement,
-    )
+    ))
 
     /**
      * The wallet as the harness uses it: harness policy (any escrow), owner approval off, and deposits backed by a
      * carried light-client proof or else the given snapshot file (the harness's `snapshot` extra).
      */
-    fun harnessWallet(snapshot: DepositVerifier?, log: (String) -> Unit, extraV31: Set<Pair<String, String>> = emptySet()): OfflineWallet = OfflineWallet(
+    fun harnessWallet(snapshot: DepositVerifier?, log: (String) -> Unit, extraV31: Set<Pair<String, String>> = emptySet()): OfflineWallet = reconcileOnce(OfflineWallet(
         keys, notes, certStore, trust.anchors(), checker(), { RecipientPolicy() },
         { CompositeDepositVerifier(listOfNotNull(
             LightClientDepositVerifier(lightClient.backend) { id, p -> lightClient.store.saveProof(id, p) }, snapshot)) },
         ownerApprovalForNewKeys = { false }, log = log, lock = walletLock,
         depositProofFor = lightClient::proofFor, lcAdvertisement = lightClient::advertisement,
         v31Escrows = Escrows.V31 + extraV31,
-    )
+    ))
 
     private val _version = MutableStateFlow(0)
     /** Bumped after anything changes the wallet; screens re-read on change. */

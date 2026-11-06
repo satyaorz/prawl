@@ -60,6 +60,8 @@ sealed interface ReceivePhase {
     data class Done(
         val accepted: Boolean, val valueWei: BigInteger?, val lines: List<VerifyLine>, val fails: List<String>,
         val status: String, val requestId: String, val ms: Long,
+        /** Paid less than the amount asked for: accepted, but shown amber, not green (audit F-10). */
+        val requestedWei: BigInteger? = null, val shortfall: Boolean = false,
     ) : ReceivePhase
     data class Failed(val message: String, val requestId: String?) : ReceivePhase
 }
@@ -101,20 +103,29 @@ class ReceiveViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 listener = l
                 phase.value = ReceivePhase.Waiting(qr.link(), transport, name, kh)
-                val sock = try { l.accept(180_000) } finally { closeListener() }
-                phase.value = ReceivePhase.Verifying(name)
-                val res = sock.use { s ->
-                    val link = SecureLink(g.bluetooth.link(s), secret, qr.sessionId(), SecureLink.Role.PAYEE)
-                    PaymentSession.payee(link, req, rich = true, accept = { w.accept(it, name) })
-                }
+                // keep listening until a peer proves it holds this code's secret: a stranger who merely connects, stays silent or sends
+                // garbage is dropped and the screen keeps waiting (audit F-07)
+                val res = try {
+                    PaymentSession.payeeListen(
+                        nextLink = { remaining ->
+                            val sock = try { l.accept(minOf(remaining, 180_000L).toInt()) } catch (e: Exception) { null }
+                            sock?.also { phase.value = ReceivePhase.Verifying(name) }
+                                ?.let { SecureLink(g.bluetooth.link(it), secret, qr.sessionId(), SecureLink.Role.PAYEE) }
+                        },
+                        request = req, accept = { w.accept(it, name, amountWei) },
+                        onUnauthenticated = { phase.value = ReceivePhase.Waiting(qr.link(), transport, name, kh) },
+                    )
+                } finally { closeListener() }
                 g.changed()
                 val rep = res.report
                 phase.value = when (res.status) {
+                    PaymentSession.PayeeStatus.UNAUTHENTICATED -> ReceivePhase.Failed(
+                        "No payer connected within 3 minutes. Your receive key is kept: tap Try again.", name)
                     PaymentSession.PayeeStatus.LINK_LOST -> ReceivePhase.Failed(
                         "Connection lost before the payment arrived. Your receive key is kept: tap Try again and let the payer scan the new code.", name)
                     PaymentSession.PayeeStatus.NO_PAYMENT -> ReceivePhase.Failed("The payer's phone refused to sign (its secure hardware said no). Nothing was received.", name)
                     else -> ReceivePhase.Done(res.status == PaymentSession.PayeeStatus.ACCEPTED, rep?.receivedValue, rep?.lines.orEmpty(),
-                        rep?.fails.orEmpty(), res.status.name, name, rep?.ms ?: 0)
+                        rep?.fails.orEmpty(), res.status.name, name, rep?.ms ?: 0, rep?.requestedWei, rep?.shortfall ?: false)
                 }
             } catch (e: Exception) {
                 closeListener()
@@ -197,9 +208,12 @@ fun ReceiveContent(
         }
         is ReceivePhase.Verifying -> PCard { StatusLine(Status.PENDING, "Payer connected. Checking the payment…", busy = true) }
         is ReceivePhase.Done -> {
-            PCard(border = (if (phase.accepted) Tw.emerald400 else Tw.red400).copy(alpha = 0.5f)) {
-                StatusLine(if (phase.accepted) Status.OK else Status.ERROR, if (phase.accepted) "Payment accepted" else "Payment rejected")
+            val amber = phase.accepted && phase.shortfall
+            PCard(border = (if (amber) Tw.amber400 else if (phase.accepted) Tw.emerald400 else Tw.red400).copy(alpha = 0.5f)) {
+                StatusLine(if (amber) Status.PENDING else if (phase.accepted) Status.OK else Status.ERROR,
+                    if (amber) "Accepted, but LESS than you asked for" else if (phase.accepted) "Payment accepted" else "Payment rejected")
                 if (phase.valueWei != null) Amount(Fmt.eth(phase.valueWei))
+                if (amber && phase.requestedWei != null) Secondary("You asked for ${Fmt.eth(phase.requestedWei)} ETH. The payment is yours, but do not treat the request as paid.", color = Tw.amber400)
                 Secondary(if (phase.accepted) "Verified offline in ${phase.ms} ms. The note is now yours, spendable once with your new one-time key."
                     else "Nothing was added. Reasons: " + phase.fails.joinToString("; "))
             }

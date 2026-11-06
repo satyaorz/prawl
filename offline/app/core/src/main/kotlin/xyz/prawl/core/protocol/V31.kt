@@ -18,12 +18,14 @@ object Escrows {
     const val SEPOLIA_V3 = "70b3b7edcd18087c999ec80e3c3b0227c7e0d6e5"
     /** PrawlEscrowV31: v3 plus commit-then-fund (private load), redeem-to-shield and refresh. */
     const val SEPOLIA_V31 = "236b1dc3b1a90e23728da6e361b0ab1c386cd779"
+    /** PrawlEscrowV32: v3.1 plus the contract audit's fixes, same ABI (private load, shield cash-out, refresh all work as in v3.1). */
+    const val SEPOLIA_V32 = "2492b9199d7029a0e0801bf226fd5afc75c99b12"
 
     /** Escrows whose plain deposit/redeem coins the product accepts and spends. */
-    val PRODUCT: Set<Pair<String, String>> = setOf(SEPOLIA to SEPOLIA_V3, SEPOLIA to SEPOLIA_V31)
+    val PRODUCT: Set<Pair<String, String>> = setOf(SEPOLIA to SEPOLIA_V3, SEPOLIA to SEPOLIA_V31, SEPOLIA to SEPOLIA_V32)
 
-    /** Escrows that implement redeemToShield, refresh and commitDeposit. Shield, refresh and private load are refused elsewhere. */
-    val V31: Set<Pair<String, String>> = setOf(SEPOLIA to SEPOLIA_V31)
+    /** Escrows that implement redeemToShield, refresh and commitDeposit (v3.1 and v3.2). Shield, refresh and private load are refused elsewhere. */
+    val V31: Set<Pair<String, String>> = setOf(SEPOLIA to SEPOLIA_V31, SEPOLIA to SEPOLIA_V32)
 
     /** The wrapped-ether token RAILGUN shields on each chain (Sepolia WETH). */
     val WETH: Map<String, String> = mapOf(SEPOLIA to "fff9976782d46cc05630d1f6ebab18b2324d6b14")

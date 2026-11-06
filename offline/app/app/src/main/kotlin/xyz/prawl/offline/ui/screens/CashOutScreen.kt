@@ -39,6 +39,7 @@ import xyz.prawl.offline.Nav
 import xyz.prawl.offline.graph
 import xyz.prawl.offline.ui.Fmt
 import xyz.prawl.offline.ui.components.CheckList
+import xyz.prawl.offline.ui.components.ConfirmDialog
 import xyz.prawl.offline.ui.components.Field
 import xyz.prawl.offline.ui.components.HandoffActions
 import xyz.prawl.offline.ui.components.Mono
@@ -105,6 +106,9 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
     val priv = mode == "private"
     val notes = if (priv) allNotes.filter { Escrows.isV31(it.header.chainId, it.header.escrow) } else allNotes
     var pickRaw by remember { mutableStateOf(allNotes.firstOrNull()?.alias) }
+    var askTick by remember { mutableStateOf(0) }
+    var ask by remember { mutableStateOf<JsonObject?>(null) }
+    var confirming by remember { mutableStateOf(false) }
 
     // private mode: parse the target and auto-pick the note whose value equals the request's
     val target: Result<JsonObject>? = remember(shieldText) { if (shieldText.isBlank()) null else runCatching { parseShieldTarget(shieldText) } }
@@ -114,6 +118,10 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
         else if (notes.any { it.alias == pickRaw }) pickRaw else notes.firstOrNull()?.alias
     val picked = notes.firstOrNull { it.alias == pick }
     val check = if (priv && picked != null && target?.isSuccess == true) g.wallet().checkShield(picked, target.getOrThrow()) else null
+    // HANDOFF v1.2 §11: each ask has a fresh nonce; the website echoes it in the shield-target, so the target is bound to THIS phone's request
+    androidx.compose.runtime.LaunchedEffect(priv, picked?.alias, askTick) {
+        ask = if (priv && picked != null) withContext(Dispatchers.IO) { runCatching { g.wallet().shieldAsk(picked.alias) }.getOrNull() } else null
+    }
 
     Page("Cash out", nav::back) {
         val current = signed.firstOrNull { it.alias == showing }
@@ -146,10 +154,12 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
             if (picked != null) {
                 Secondary("Cash out")
                 Mono(Fmt.eth(picked.value) + " ETH", style = Tw.bigMono.copy(fontSize = 22.sp))
-                Secondary("to a private balance. Show this amount to the wallet so it builds a request for exactly this value:")
-                QrImage(Handoff.httpsLink(BuildConfig.HANDOFF_SITE, "shield-ask", Handoff.encode(buildJsonObject {
-                    put("v", 1); put("t", "shield-ask"); put("chainId", picked.header.chainId.toLong()); put("escrow", "0x" + picked.header.escrow); put("value", picked.value.toString())
-                })))
+                Secondary("to a private balance. Show this code to the wallet: it builds a request for exactly this value and answers with the one-time number in the code.")
+                ask?.let { a ->
+                    QrImage(Handoff.httpsLink(BuildConfig.HANDOFF_SITE, "shield-ask", Handoff.encode(a)))
+                    Secondary("Request number ${a.str("nonce").take(8)}… · valid for 30 minutes, works once")
+                    SecondaryButton("New request code", { askTick++ })
+                }
             }
             Field(shieldText, { shieldText = it; error = null }, "Shield target link from the wallet", mono = true, singleLine = false,
                 error = target?.exceptionOrNull()?.let { "Not a shield target: ${it.message}" })
@@ -157,34 +167,56 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
                 QrScanner(onResult = { t -> scanningShield = false; shieldText = t })
             } else SecondaryButton("Scan shield target", { scanningShield = true })
             if (request != null) {
-                Secondary("Request value ${Fmt.eth(request.value)} ETH · token 0x${request.tokenAddress40.take(6)}…${request.tokenAddress40.takeLast(4)} · npk ${Fmt.hex("0x" + request.npk.toString(16).padStart(64, '0'), 12)}")
+                Secondary("Request value ${Fmt.eth(request.value)} ETH · token 0x${request.tokenAddress40.take(6)}…${request.tokenAddress40.takeLast(4)}")
+                Secondary("Destination (npk), in full:")
+                Mono("0x" + request.npk.toString(16).padStart(64, '0'), style = Tw.mono.copy(fontSize = 12.sp))
             }
             check?.let { CheckList(it.lines) }
+            check?.warning?.let { StatusLine(Status.PENDING, it) }
             Secondary("RAILGUN keeps its 0.25 % shield fee: the private note is worth 99.75 % of the value. The whole request is bound by your signature; nobody can swap the recipient or the encrypted note data.")
             if (picked != null && target?.isSuccess == true && request != null && request.value != picked.value && autoNote == null)
                 Secondary("No note is worth exactly ${Fmt.eth(request.value)} ETH. Ask the wallet for a request for ${Fmt.eth(picked.value)} ETH.", color = Tw.amber400)
         }
 
-        PrimaryButton(if (busy) "Signing…" else if (priv) "Approve & sign private cash out" else "Approve & sign redemption", {
-            val alias = pick ?: return@PrimaryButton
-            val act = activity ?: return@PrimaryButton
-            busy = true; error = null
-            scope.launch {
-                val r = withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (priv) g.wallet().redeemShield(alias, target!!.getOrThrow(), BiometricApprover(act))
-                        else g.wallet().redeem(alias, addr.addr40!!, BiometricApprover(act))
-                    }
-                }
-                busy = false
-                r.onSuccess { o ->
-                    when (o) {
-                        is OfflineWallet.RedeemOutcome.Signed -> { g.changed(); showing = alias }
-                        is OfflineWallet.RedeemOutcome.Refused -> error = o.reason
-                    }
-                }.onFailure { error = it.message ?: it.toString() }
-            }
+        PrimaryButton(if (busy) "Signing…" else if (priv) "Review & sign private cash out" else "Review & sign redemption", {
+            confirming = true
         }, enabled = pick != null && !busy && (if (priv) check?.ok == true else addr.ok))
+
+        // The confirmation shows the WHOLE destination (address, or the whole npk), never a prefix (audit F-03).
+        if (confirming && picked != null) {
+            val npkFull = request?.let { "0x" + it.npk.toString(16).padStart(64, '0') }
+            ConfirmDialog(
+                title = if (priv) "Cash out to this private balance?" else "Cash out to this address?",
+                text = (if (priv) "${Fmt.eth(picked.value)} ETH goes into the RAILGUN account with this key (npk). " else "${Fmt.eth(picked.value)} ETH is paid to this address. ") +
+                    "It cannot be redirected or undone after you approve. Compare every character with what your wallet shows.",
+                confirm = "Approve with fingerprint / PIN",
+                mono = if (priv) npkFull else addr.addr40?.let { Eth.checksum(it) },
+                warning = if (priv) check?.warning else null,
+                onConfirm = {
+                    val alias = picked.alias
+                    val act = activity
+                    if (act != null) {
+                        busy = true; error = null
+                        scope.launch {
+                            val r = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    if (priv) g.wallet().redeemShield(alias, target!!.getOrThrow(), BiometricApprover(act))
+                                    else g.wallet().redeem(alias, addr.addr40!!, BiometricApprover(act))
+                                }
+                            }
+                            busy = false
+                            r.onSuccess { o ->
+                                when (o) {
+                                    is OfflineWallet.RedeemOutcome.Signed -> { g.changed(); showing = alias }
+                                    is OfflineWallet.RedeemOutcome.Refused -> error = o.reason
+                                }
+                            }.onFailure { error = it.message ?: it.toString() }
+                        }
+                    }
+                },
+                onDismiss = { confirming = false },
+            )
+        }
 
         if (signed.isNotEmpty()) PCard(title = "Signed redemptions") {
             signed.forEach { s ->

@@ -10,7 +10,9 @@ import java.util.Locale
 import java.util.TimeZone
 
 object Fmt {
-    fun eth(w: BigInteger): String = Eth.ethShort(w, 6)
+    /** Amounts below 0.000001 ETH show as "<0.000001", never as "0" (audit F-10: 1 wei is not zero). */
+    fun eth(w: BigInteger): String = if (w.signum() > 0 && w < MICRO_ETH) "<0.000001" else Eth.ethShort(w, 6)
+    private val MICRO_ETH: BigInteger = BigInteger.TEN.pow(12)
 
     fun left(s: Long): String = when {
         s <= 0 -> "expired"

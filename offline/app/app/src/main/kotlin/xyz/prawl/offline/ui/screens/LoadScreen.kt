@@ -74,7 +74,7 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
 
     val addr = Eth.validateAddress(depositor)
     val priv = kind == "private"
-    val newEscrow40 = if (priv || escrowPick == "v31") Escrows.SEPOLIA_V31 else Escrows.SEPOLIA_V3
+    val newEscrow40 = when { escrowPick == "v32" -> Escrows.SEPOLIA_V32; priv || escrowPick == "v31" -> Escrows.SEPOLIA_V31; else -> Escrows.SEPOLIA_V3 }
     val wei = runCatching { Eth.wei(amount) }.getOrNull()?.takeIf { it.signum() > 0 }
     val d = days.toIntOrNull()?.takeIf { it in 1..29 }
 
@@ -123,7 +123,7 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
             Segmented(listOf("public" to "Public deposit", "private" to "Private (RAILGUN)"), kind) { kind = it }
             Secondary(if (priv) "Funds come from your RAILGUN balance (an unshield to a one-time deposit address), so the deposit is not linked to a public wallet. Needs escrow v3.1."
                 else "Your wallet sends a normal deposit transaction.")
-            if (!priv) Segmented(listOf("v31" to "Escrow v3.1", "v3" to "Escrow v3"), escrowPick) { escrowPick = it }
+            Segmented(if (priv) listOf("v31" to "Escrow v3.1", "v32" to "Escrow v3.2") else listOf("v32" to "v3.2", "v31" to "v3.1", "v3" to "v3"), escrowPick) { escrowPick = it }
             if (!priv && escrowPick == "v3") Secondary("v3 coins cannot be refreshed or cashed out into RAILGUN.", color = Tw.amber400)
             Field(depositor, { depositor = it }, if (priv) "Reclaim address (a fresh public address, 0x…)" else "Wallet address that will deposit (0x…)", mono = true,
                 error = if (depositor.isNotBlank() && !addr.ok) addr.note else null)

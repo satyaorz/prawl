@@ -65,14 +65,36 @@ object DepositCommitment {
  * The harness snapshot format `{"deposits":[{"coinId","value","expiry","k0"}]}` (built by `snapshot3` in
  * w3_lib.sh from mint files). Matching rule identical to `Wallet3Activity.accept3` step [1].
  */
-class SnapshotDepositVerifier(private val snapshot: JsonObject, override val name: String = "synced snapshot") : DepositVerifier {
+class SnapshotDepositVerifier(
+    private val snapshot: JsonObject,
+    override val name: String = "synced snapshot",
+    /**
+     * The harness's laptop-built snapshot binds only coinId, value, expiry and k0. With two escrows that lets a coin deposited in one
+     * be presented as another's, and `depositor` (unsigned, but part of the on-chain commitment) can be forged (audit F-08). So by
+     * default an entry must also carry and match `chainId`, `escrow` and `depositor`; only the debug harness passes `true`.
+     */
+    private val legacyUnbound: Boolean = false,
+) : DepositVerifier {
     override fun check(header: CoinHeader, genesisKey: PublicKey?, k0Hash: String?, bundle: Bundle, nowS: Long): DepositCheck {
         if (k0Hash == null) return DepositCheck(false, name, "genesis key unreadable")
+        var unbound = false
         val hit = snapshot.arr("deposits").objects().any { d ->
-            d.str("coinId") == header.coinId && d.str("value") == header.value.toString() &&
+            val base = d.str("coinId") == header.coinId && d.str("value") == header.value.toString() &&
                 d.long("expiry") == header.expiry && d.str("k0") == k0Hash
+            if (!base) false
+            else if (legacyUnbound) true
+            else {
+                val bound = d.optStr("chainId") == header.chainId && Eth.normalize40(d.optStr("escrow") ?: "") == header.escrow.lowercase() &&
+                    Eth.normalize40(d.optStr("depositor") ?: "") == header.depositor.lowercase()
+                if (!bound) unbound = true
+                bound
+            }
         }
-        return DepositCheck(hit, name, if (hit) "deposit listed in the synced snapshot" else "coin not in the synced snapshot")
+        return DepositCheck(hit, name, when {
+            hit -> "deposit listed in the synced snapshot"
+            unbound -> "snapshot entry does not name this coin's chain, escrow and depositor"
+            else -> "coin not in the synced snapshot"
+        })
     }
 }
 
@@ -149,6 +171,7 @@ class LightClientDepositVerifier(
 const val SEPOLIA_CHAIN_ID = "11155111"
 const val SEPOLIA_ESCROW_V3 = "70b3b7edcd18087c999ec80e3c3b0227c7e0d6e5"
 const val SEPOLIA_ESCROW_V31 = "236b1dc3b1a90e23728da6e361b0ab1c386cd779"
+const val SEPOLIA_ESCROW_V32 = "2492b9199d7029a0e0801bf226fd5afc75c99b12"
 
 /** Backed if any source vouches for the coin. */
 class CompositeDepositVerifier(private val sources: List<DepositVerifier>) : DepositVerifier {

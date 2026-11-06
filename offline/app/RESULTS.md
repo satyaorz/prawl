@@ -261,7 +261,7 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 
 ## 11. What was tested on the JVM (`./gradlew test`: all pass)
 
-**`:core`: 99 tests,** run for both debug and release (v3.1 adds 14, verdict delivery 5, audit F1/F2 13; see §14.5, §15, §16).
+**`:core`: 141 tests,** run for both debug and release (v3.1 adds 14, verdict delivery 5, audit F-01/F-02 13, the rest of the audit 39; see §14.5, §15, §16, §17).
 
 | Suite | What it covers |
 |---|---|
@@ -272,7 +272,7 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 | LightClientTest (7) | 49 of the 50 shared DepositProof vectors (the 50th needs a package-private threshold override). The **real escrow-v3 proof of coin web1 backs the real coin**, and altered value/depositor/expiry, a proof of another coin, a look-alike escrow, no cache and a swapped key all fail. The **real bundle `pay3_web1_bobw` is accepted on the proof alone, with no snapshot**. A 3-periods-stale recipient accepts after the payer attaches the stored updates, and learns the committees. Bootstrap needs an independent confirmation. The RLP of the real Gloas/Amsterdam header re-encodes exactly |
 | WalletFlowTest (10) | Software keys with single use emulated, three phones. Mint, then pending deposit → split/change → retry resends identical bytes → malicious re-spend refused (change key cleaned up) → 2nd hop over an **encrypted in-memory link** (rich verdict) → conservation across phones → redeem → HANDOFF payload. Also: payee-key check before signing, QR key-hash mismatch, one note per receive key, owner approval (a silent sign is refused), hop/lifetime pre-checks, wrong session secret → link lost with the key kept, label reuse, deposit-proof forwarding |
 
-**`:app`: 19 tests** per debug variant (12 earlier + 6 v3.1 screenshots + 1 QR-size test; 3 in release variants).
+**`:app`: 22 tests** per debug variant (12 earlier + 6 v3.1 screenshots + 1 QR-size test + 3 audit tests; 6 in release variants).
 - `QrRoundTripTest`: the real handoff links and receive codes encode and decode back exactly.
 - `ScreenshotTest`: 10 renders.
 - Release variants run only `QrRoundTripTest`.
@@ -501,3 +501,76 @@ Source: `raw/v3/audit_contracts/FINDINGS.md`. The contract is behaving as specif
 - It was **only compile-checked** (`javac` into a scratch directory). It was not run or rebuilt into a harness APK, and the payer side (`pay3`) was not changed.
 
 **Not done:** the contract-side F3/F4 hardening needs a redeploy, and the second reviewer's findings are still to come.
+
+
+## 17. App audit fixes F-03 .. F-13 (2026-11-06)
+Source: `raw/v3/audit_app/FINDINGS.md` (47 PoC tests by the reviewer). **F-01 and F-02 are in §16.** Every finding below has a test that fails on the old behaviour: `core/.../AuditFixesTest.kt` (39 tests), `CanonicalTest.kt` (13) and `app/.../AuditAppTest.kt` (3). I also mutated three fixes (F-04 hex-only lookup, F-05 delete-pending-first, F-12 last-duplicate-wins): the matching tests failed, then the code was restored.
+
+**Also in this round:** escrow **v3.2** (`0x2492B9199d7029a0e0801bf226Fd5afc75C99B12`, the audit-fixed v3.1 with the same ABI) is a third entry in the product allow-list, the light-client trust set, and the shield/refresh/private-load set. The Load screen offers it. The default for new coins is still v3.1 (one `BuildConfig` line flips it).
+
+| # | Status | What changed | Tests |
+|---|---|---|---|
+| F-03 | **Fixed** | Links and intents only navigate, to an EMPTY form: `payout`, `depositor`, `d`, `coinId`, `tx`, `shield` are ignored. A shield target is bound to the phone's own `shield-ask` nonce. The confirmation and the biometric prompt show the **full** payout address or the **full** npk | `f03_*` (6) in `AuditFixesTest`, `AuditAppTest.f03_*` |
+| F-06 | **Fixed** (one residual case, below) | Write-ahead **intent** before the key is used; ONE atomic **signed record** after (spent note with stored bundle + change note, or old note + pending refresh); applied with a retry; startup **reconcile**. `refresh()` can no longer delete the new coin's key after the old key signed | `f06_*` (6) |
+| F-05 | **Fixed** | Accept order: note, then idempotency record, then delete pending. `request()` refuses to replace an existing key alias | `f05_*` (3) |
+| F-04 | **Fixed** (app, `OtkVerify.java`, `otk_verifier.py`) | A serial is revoked if its hex OR its decimal form is listed | `f04_*` (2) and a real-chain run of the Python verifier |
+| F-11 | **Fixed in code; keystore NOT rotated** | `ALLOWED_APPS` per build type; release holds only a placeholder production digest; a Gradle gate and a runtime check refuse the debug digest | `AuditAppTest.f11_*`; the gate was run by hand |
+| F-07 | **Fixed** | Limits on the raw JSON before any parse or crypto; digit caps; chain length cap; JSON depth cap; read deadlines; authenticated HELLO; listener loop; `MAX_FRAME` 384 KiB | `f07_*` (9) |
+| F-08 | **Fixed** (product); harness keeps the legacy format | A snapshot entry must name chainId, escrow and depositor | `f08_*` (2) |
+| F-09 | **Fixed** | Label sanitised on accept; change aliases derive from the coin id; `mint` validates labels and never overwrites an unconfirmed signed payment | `f09_*` (2) |
+| F-10 | **Fixed (warn, not refuse)** | The payee passes the requested amount into `accept()`; a shortfall is accepted but shown amber; tiny amounts show `<0.000001` | `f10_*`, `AuditAppTest.f10_*` |
+| F-12 | **Fixed** | Duplicate tags, non-context ASN.1 classes and trailing bytes are rejected; each non-leaf must be a CA with a sufficient path length; `issuer(i) == subject(i+1)` | `f12_*` (6) |
+| F-13 | **Fixed** | The payer verifies a payee's chain in memory and stores only certificates an accepted chain uses; 16 KB per certificate; 5,000 certificates in total | `f13_*` (3) |
+
+### 17.1 F-03 details (agreed with the wallet session)
+- **`shield-ask`** (phone → website, QR): `{"v":1,"t":"shield-ask","chainId":11155111,"escrow":"0x…","value":"V","nonce":"<32 lowercase hex chars>"}`.
+  - The nonce is 16 bytes from `SecureRandom`, **new for every ask**.
+  - Only the last ask is kept, so a new ask invalidates the previous one, and it expires after 30 minutes.
+  - The cash-out screen asks once per picked note and has a "New request code" button.
+- **`shield-target`** (website → phone): the website echoes the nonce as a top-level `"nonce"` next to `request`.
+  - **Matching nonce:** accepted and bound. The nonce is consumed when the cash-out is signed.
+  - **Wrong, stale, used, or for another note:** refused, with the reason in the value-check lines.
+  - **No nonce** (the value was typed): still accepted, but flagged **"NOT BOUND to a request from this phone"**, in the screen and in the confirmation dialog.
+- **Full destination:**
+  - The confirmation dialog shows the whole checksummed address, or the whole 66-char npk, in monospace.
+  - The biometric prompt description carries the same text (cash-out, shield, refresh reclaim address). The pay prompt shows the amount and the first 16 hex of the payee's key.
+  - The shield card on the cash-out screen shows the npk in full.
+- **Limit:** because unbound targets are accepted by agreement, a user who pastes an attacker's target without a nonce is protected only by the warning and the full-destination confirmation, not by a hard refusal.
+- **Harness:** `shield_ask coin=<label>` writes `out/shield_ask_<coin>.json` (the payload with its nonce). `redeem … shield=<file>` accepts a target with or without a nonce, as above (a missing one is logged as a warning).
+
+### 17.2 F-06 details
+- **Order for every signing** (pay, redeem, shield, refresh): write-ahead intent, sign, **one** atomic signed record (it is kept until applied), apply, delete the record and the intent.
+- **`reconcile()`** (once per process from `AppGraph`, and the harness command `reconcile`):
+  - finishes any signed record;
+  - for an intent whose key never signed: deletes the keys made for it;
+  - for an intent whose key signed but whose signature was never stored: marks the note `signatureLost` and deletes the unused new keys, so there is no phantom balance.
+- **Cannot sign without the intent:** if the intent cannot be written, nothing is signed and the new keys are deleted.
+- **Residual risk (stated plainly):** if the disk fails so badly that even the signed record cannot be written three times, the signature exists only in memory. The bundle is still returned (`Paid.persisted = false`, shown amber to the payer) so that payment can be delivered, but after a restart the note is marked lost. Nothing in software can recover a one-time signature that was never stored.
+
+### 17.3 F-07 details
+- **Order inside the verifier:** hop count, then certificate-chain lengths (at most 8 ids, each 32 hex), then outputs per spend (at most 32), then the canonical-text gate (every number at most 78 digits), then everything else. A 2,000-spend bundle ends after one line; a 300,000-digit value is refused in milliseconds.
+- **JSON nesting** is capped at 32 (the reviewer's 200,000-deep document is an `IllegalArgumentException`, not a stack overflow).
+- **Read deadlines:** an idle deadline (the first byte of a frame) and a 20 s deadline once a frame has begun. A watchdog closes the socket, because a blocked Bluetooth read cannot be interrupted any other way. A frame at the limit still reads.
+- **Authenticated HELLO:**
+  - In an app-to-app session the payer's first frame is an AEAD-encrypted `HELLO`, sent before it spends time signing.
+  - The payee gives an unauthenticated connection 20 s, then drops it and **keeps listening** (`PaymentSession.payeeListen`).
+  - After HELLO it allows 150 s for the payment (the owner's fingerprint).
+  - Silent, garbage and wrong-secret strangers do not consume the session (tested: three strangers, then the real payer is accepted).
+- **Protocol change: both phones must run this build.** An older payer that signs before sending anything would be dropped after 20 s. The plaintext harness path (`bt3_*`, the Java harness) is unchanged and uses no HELLO.
+- **`MAX_FRAME` is 384 KiB, not 256 KiB:** a deposit proof with 3 committee updates for a stale recipient is 198 KB and 4 updates would be about 270 KB. 4 MB frames are refused after the 4-byte header.
+
+### 17.4 Other notes
+- **F-11, not done:** the shared debug keystore is still in the repo, with the well-known password. It is the signing key of the harness on the test phones, so rotating it breaks interop with the old harness; that needs your decision. To produce a release build set the production digest: `./gradlew assemblePrawlRelease -Pprawl.release.certSha256=<64 lowercase hex>`. The gate was exercised by hand: the debug digest in either case, and a malformed digest, make the build fail; a valid digest gives a release allow-list holding only it; with no property it holds an all-zero placeholder that trusts nothing. Release builds are unsigned (no release signing config exists).
+- **F-04, other consumers:** the ZK folder has no revocation-list code (I searched it). `OtkVerify.java` is compile-checked only; the edit to `Wallet2/3Activity`-side code is limited to `Wallet3Activity.accept3` (§16) and `OtkVerify.java`. `otk_verifier.py` was run on a real chain: the same serial now revokes whether it is listed in hex or in decimal.
+- **F-10, warn rather than refuse:** a refusal would strand the payer's note, which is already signed to the payee's one-time key. The payee sees an amber "Accepted, but LESS than you asked for".
+- **F-12, real chains:** the stricter chain rules were checked on the real Samsung factory chain and the OnePlus RKP chain (and all existing real-chain tests pass). Reviewer's not-yet-checked items, still open: the live revocation-list semantics for decimal entries (medium confidence, the fix covers both), and anything on a device.
+- **F-13, no eviction:** the certificate store refuses new entries at 5,000 rather than evicting, because held notes need their chains to be forwarded later. With the new rule only certificates of accepted chains are stored, so the cap is reached only by genuine payees.
+- **Not covered by any test:** the UI flows themselves (confirmation dialog, ask QR refresh), BiometricPrompt, BLE, a real disk failure, and the new `HELLO` exchange on real radios. Reconcile runs on a real `FileNoteStore` only through its interface, not under a real process kill.
+
+### 17.5 Idempotent accept covers the whole bundle (found on the phones by `w3_split.sh` S6)
+- **Bug (mine, from §15):** the "accepted again" shortcut was keyed on the final spend signature hash alone. A copy with altered outputs keeps its signature bytes, so it matched the stored record and was confirmed **without being verified** (`ACCEPTED (again)` instead of `REJECTED: signature invalid`). Nothing was credited, but a recipient must never confirm contents it did not verify.
+- **Fix:**
+  - The record now also stores `bundleHash` = `Canonical.bundleDigest`, a digest of the header (chainId, escrow, coinId, expiry, value, k0x, k0y, depositor, k0 chain) and, for every spend, its outputs (value and key), index, signature and next-key chain, plus any `redeem` object.
+  - Certificates, the optional deposit proof and the unsigned label are excluded, so a payer's real resend (stored bytes, certificates re-attached) is still recognised.
+  - The shortcut needs signature hash AND bundle digest to match. Anything else goes through full verification. A record from an older build (no `bundleHash`) never short-circuits.
+- **Tests** (written first and seen failing, reproducing S6): `idem_aTamperedCopyWithTheSameSignatureIsVerifiedAndRejectedNotConfirmed` (8 variants: your S6 edit, a sum-breaking value change, a swapped sibling key, a changed index, a replaced next chain, and changed header expiry, value and coinId, all REJECTED and none "Already accepted"); `idem_realPhoneVectorS6IsNotConfirmed` (the phone's own `pay3_s_tamper.json` against a record of `pay3_s_bob1.json`); and `idem_aByteIdenticalResendIsStillConfirmedAgainAndCreditedOnce` (byte-identical and re-attached resends are still confirmed, credited once).

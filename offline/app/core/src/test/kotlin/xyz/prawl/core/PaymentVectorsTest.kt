@@ -36,7 +36,7 @@ class PaymentVectorsTest {
 
     private fun verify(
         dir: File, bundle: JsonObject, reqFile: String,
-        deposits: DepositVerifier = SnapshotDepositVerifier(Vectors.json(dir, "snapshot.json")),
+        deposits: DepositVerifier = SnapshotDepositVerifier(Vectors.json(dir, "snapshot.json"), legacyUnbound = true),
         policy: RecipientPolicy = RecipientPolicy(),
         nowS: Long = Vectors.NOW_S,
         store: MemoryCertStore = Vectors.certStore(dir),

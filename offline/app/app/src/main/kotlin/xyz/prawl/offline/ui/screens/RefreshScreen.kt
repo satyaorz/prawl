@@ -72,6 +72,7 @@ fun RefreshScreen(nav: Nav, route: Route.Refresh) {
     var busy by remember { mutableStateOf<String?>(null) }
     var msg by remember { mutableStateOf<Pair<Status, String>?>(null) }
     var confirmManual by remember { mutableStateOf<PendingRefresh?>(null) }
+    var confirmSign by remember { mutableStateOf(false) }
     val addr = Eth.validateAddress(reclaim)
     val d = days.toIntOrNull()?.takeIf { it in 1..(OfflineWallet.REFRESH_MAX_S / 86400).toInt() }
     val current = pendings.firstOrNull { it.coinId == shown }
@@ -111,9 +112,12 @@ fun RefreshScreen(nav: Nav, route: Route.Refresh) {
                 Secondary("The reclaim address gets back whatever is unspent after the new expiry. The wallet submitting the refresh cannot change it: it is part of what you sign. " +
                     "Submit within a day or so, while the new expiry is still inside the escrow's 30-day window.")
             }
-            PrimaryButton("Approve & sign refresh", {
-                val alias = pick ?: return@PrimaryButton
-                val act = activity ?: return@PrimaryButton
+            PrimaryButton("Review & sign refresh", { confirmSign = true }, enabled = pick != null && addr.ok && d != null && busy == null)
+            if (confirmSign) ConfirmDialog("Refresh into a coin with this reclaim address?",
+                "The note's whole value moves into a new coin that expires in ${d ?: 0} days. After that, whatever is unspent can only be reclaimed to this address. Compare every character.",
+                "Approve with fingerprint / PIN", mono = addr.addr40?.let { Eth.checksum(it) }, onDismiss = { confirmSign = false }, onConfirm = {
+                val alias = pick ?: return@ConfirmDialog
+                val act = activity ?: return@ConfirmDialog
                 busy = "Waiting for your approval…"; msg = null
                 scope.launch {
                     val r = withContext(Dispatchers.IO) { runCatching { g.wallet().refresh(alias, d!! * 86400L, addr.addr40!!, BiometricApprover(act)) } }
@@ -125,7 +129,7 @@ fun RefreshScreen(nav: Nav, route: Route.Refresh) {
                         }
                     }.onFailure { msg = Status.ERROR to (it.message ?: it.toString()) }
                 }
-            }, enabled = pick != null && addr.ok && d != null && busy == null)
+            })
         }
 
         val others = pendings.filter { it.coinId != shown }

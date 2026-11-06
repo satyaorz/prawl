@@ -55,7 +55,9 @@ sealed interface PayPhase {
     data class Amount(val qr: PayQr) : PayPhase
     data class Working(val qr: PayQr, val step: String) : PayPhase
     data class Done(val qr: PayQr, val amountWei: BigInteger, val changeWei: BigInteger, val resent: Boolean,
-                    val accepted: Boolean, val verdict: String, val lines: List<VerifyLine>, val fails: List<String>) : PayPhase
+                    val accepted: Boolean, val verdict: String, val lines: List<VerifyLine>, val fails: List<String>,
+                    /** false: the signature exists only in memory (disk failure); the wallet cannot recover it after a restart (audit F-06). */
+                    val persisted: Boolean = true) : PayPhase
     /** Signed and stored, but no verdict: retrying to the same code resends the same bytes. */
     data class VerdictLost(val qr: PayQr, val amountWei: BigInteger, val error: String) : PayPhase
     data class Failed(val qr: PayQr?, val message: String) : PayPhase
@@ -102,7 +104,7 @@ class PayViewModel(app: Application) : AndroidViewModel(app) {
                     is PaymentSession.PayerResult.Refused -> PayPhase.Failed(qr, res.outcome.reason)
                     is PaymentSession.PayerResult.VerdictLost -> PayPhase.VerdictLost(qr, res.outcome.amount, res.error)
                     is PaymentSession.PayerResult.Answered -> PayPhase.Done(qr, res.outcome.amount, res.outcome.change, res.outcome.resent,
-                        res.verdict.accepted, res.verdict.verdict, res.verdict.lines, res.verdict.fails)
+                        res.verdict.accepted, res.verdict.verdict, res.verdict.lines, res.verdict.fails, res.outcome.persisted)
                 }
             } catch (e: Exception) {
                 g.changed()
@@ -196,6 +198,7 @@ fun PayDoneContent(p: PayPhase.Done, onDone: () -> Unit) {
         StatusLine(if (p.accepted) Status.OK else Status.ERROR, if (p.accepted) "Payee accepted the payment" else "Payee rejected the payment (${p.verdict})")
         Amount(Fmt.eth(p.amountWei))
         if (p.resent) Secondary("Resent the payment already signed to this payee's key (safe retry).")
+        if (!p.persisted) StatusLine(Status.PENDING, "Signed, but this phone could not save it. Do not rely on a retry: if the payee did not get it, the note is lost.")
         if (p.changeWei.signum() > 0) Secondary("Change: ${Fmt.eth(p.changeWei)} ETH, on a fresh one-time key.")
         if (!p.accepted) Secondary("The note is signed to this payee's key and cannot go elsewhere. If they fix the problem (e.g. sync deposits), pay their code again to resend.")
     }

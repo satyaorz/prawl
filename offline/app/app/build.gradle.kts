@@ -10,8 +10,13 @@ val site: String = (findProperty("prawl.site") as String?) ?: "https://<site>"
 val escrow = "0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779"
 val chainId = "11155111"
 // SHA-256 of keystore/prawl-debug.keystore's certificate: the same key that signed the Java harness, so the
-// attestation policy (package + signing cert) recognises keys made by either app.
+// attestation policy (package + signing cert) recognises keys made by either DEBUG app. That keystore is in the repo with the
+// well-known password "android": its digest must NEVER be trusted by a release build (audit F-11).
 val debugCertSha256 = "e6e0daae1031f70e5a267a383878ac564a935106f75600310feda6bf1ea92eaf"
+// The production signing certificate's SHA-256 (64 lowercase hex): -Pprawl.release.certSha256=... The default is a PLACEHOLDER that matches
+// no real certificate, so an unconfigured release build trusts no key at all (fail safe) instead of the debug certificate.
+val releaseCertSha256: String = ((findProperty("prawl.release.certSha256") as String?) ?: "0".repeat(64)).lowercase()
+val releaseAllowedApps = "xyz.prawl.offline:$releaseCertSha256"
 
 android {
     namespace = "xyz.prawl.offline"
@@ -31,9 +36,6 @@ android {
         buildConfigField("String", "BEACON_CHECKERS", "\"https://lodestar-sepolia.chainsafe.io,https://ethereum-sepolia-beacon-api.publicnode.com\"")
         buildConfigField("String", "EL_RPC", "\"https://0xrpc.io/sep\"")
         buildConfigField("String", "EL_RPC2", "\"https://sepolia.rpc.thirdweb.com\"")
-        // Apps whose keys this wallet accepts: "package:certSha256,…". Release builds must list the release key.
-        buildConfigField("String", "ALLOWED_APPS",
-            "\"xyz.prawl.offline:$debugCertSha256,xyz.prawl.otktest:$debugCertSha256\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -64,10 +66,16 @@ android {
     }
 
     buildTypes {
-        debug { signingConfig = signingConfigs.getByName("debug") }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+            // Apps whose keys this wallet accepts: "package:certSha256,…". Debug: the app and the Java harness, both debug-signed.
+            buildConfigField("String", "ALLOWED_APPS", "\"xyz.prawl.offline:$debugCertSha256,xyz.prawl.otktest:$debugCertSha256\"")
+        }
         release {
             isMinifyEnabled = false
-            // no signing config: release builds must be signed with the production key (and ALLOWED_APPS updated)
+            // Release: ONLY the production certificate (placeholder until -Pprawl.release.certSha256 is given); never the debug one.
+            buildConfigField("String", "ALLOWED_APPS", "\"$releaseAllowedApps\"")
+            // no signing config: release builds must be signed with the production key
         }
     }
 
@@ -125,3 +133,14 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     debugImplementation(libs.compose.ui.test.manifest)
 }
+
+// Fails every release build whose allow-list holds the public debug certificate, or whose digest is not 64 lowercase hex (audit F-11).
+val verifyReleaseAllowedApps = tasks.register("verifyReleaseAllowedApps") {
+    doLast {
+        if (!Regex("[0-9a-f]{64}").matches(releaseCertSha256)) throw GradleException("prawl.release.certSha256 must be 64 lowercase hex digits (got '$releaseCertSha256')")
+        if (releaseAllowedApps.contains(debugCertSha256, ignoreCase = true) || releaseCertSha256 == debugCertSha256)
+            throw GradleException("The release ALLOWED_APPS contains the public DEBUG signing certificate ($debugCertSha256). " +
+                "Anyone can sign an app with it (keystore password 'android'), so its hardware keys would pass the 'created by an allowed app' rule.")
+    }
+}
+tasks.matching { it.name.startsWith("generate") && it.name.endsWith("ReleaseBuildConfig") }.configureEach { dependsOn(verifyReleaseAllowedApps) }

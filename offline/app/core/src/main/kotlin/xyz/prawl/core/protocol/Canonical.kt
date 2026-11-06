@@ -12,6 +12,7 @@ import xyz.prawl.core.util.Bytes
 import xyz.prawl.core.util.EcdsaDer
 import xyz.prawl.core.util.arr
 import xyz.prawl.core.util.objects
+import xyz.prawl.core.util.optObj
 import xyz.prawl.core.util.optStr
 import java.math.BigInteger
 
@@ -114,6 +115,34 @@ object Canonical {
         }
         return p
     }
+
+    /**
+     * Digest of EVERYTHING in an accepted bundle that carries meaning: the header fields, and for every spend its outputs (value and key),
+     * followed index, signature and next-key chain. Two bundles with the same digest are the same payment, byte for byte in content.
+     * Certificates, the optional deposit proof and the unsigned label are excluded (a resend may re-attach different ones). Null if the
+     * bundle is not shaped as expected, in which case nothing may be short-circuited.
+     *
+     * The idempotent-accept record is keyed by this, NOT by the final signature alone: a copy with altered outputs keeps its signature
+     * bytes (found by w3_split.sh S6 on the phones), and must be verified, not confirmed.
+     */
+    fun bundleDigest(b: Bundle): String? = try {
+        val h = b.json["header"] as JsonObject
+        val sb = StringBuilder("PRAWL-BUNDLE-v1")
+        fun f(x: String?) { sb.append('\u0000').append(x?.length ?: -1).append(':').append(x ?: "") }
+        fun raw(o: JsonObject, k: String) = (o[k] as? JsonPrimitive)?.content
+        for (k in listOf("v", "chainId", "escrow", "coinId", "expiry", "value", "k0x", "k0y", "depositor")) f(raw(h, k))
+        h.arr("k0").forEach { f((it as JsonPrimitive).content) }
+        f("path")
+        for (s in b.json.arr("path")) {
+            val so = s as JsonObject
+            f("spend")
+            so.arr("outputs").forEach { o -> o as JsonObject; f(raw(o, "value")); f(raw(o, "key")) }
+            f("index"); f(raw(so, "index")); f("sig"); f(raw(so, "sig"))
+            f("next"); so.arr("next").forEach { f((it as JsonPrimitive).content) }
+        }
+        b.json.optObj("redeem")?.let { r -> f("redeem"); f(r.toString()) }
+        Bytes.sha256Hex(sb.toString())
+    } catch (e: Exception) { null }
 
     /** The raw spend records of a bundle, or null if the structure is wrong. */
     fun spendRecords(b: Bundle): List<JsonObject>? = try { b.json.arr("path").map { it as? JsonObject ?: return null } } catch (e: Exception) { null }

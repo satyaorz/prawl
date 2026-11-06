@@ -58,6 +58,9 @@ import java.util.UUID
  *   load_private coin eth depositor=<reclaim addr> [expiresIn] [chainId] [escrow] [tip=<eth>] -> out/mint3_<coin>.json,
  *                                                       out/handoff_load_private_<coin>.json (params + depositAddress)
  *   any command: v31escrow=<addr> [chainId] also treats that escrow as v3.1 (local anvil)
+ * Audit fixes (v3/audit_app):
+ *   shield_ask coin [note=<alias>]                      -> out/shield_ask_<coin>.json (payload with nonce); echo "nonce" in the shield-target
+ *   reconcile                                           finishes/cleans interrupted signatures (also runs once at start)
  * New:
  *   ble_receive name [snapshot] [transport=rfcomm]      -> out/qr_<name>.txt (the receive code), then listens (encrypted)
  *   ble_pay     coin amount qr                          (qr = file in files/in holding the prawl://offline/pay link)
@@ -106,7 +109,8 @@ class HarnessActivity : Activity() {
     private fun read(name: String) = File(inDir, name).readText()
     private fun write(name: String, s: String) = File(outDir, name).writeText(s)
 
-    private fun snapshot(name: String?) = name?.let { SnapshotDepositVerifier(Js.parse(read(it))) }
+    /** The harness's laptop-built snapshots bind no escrow or depositor: allowed here (debug only), never in the product (audit F-08). */
+    private fun snapshot(name: String?) = name?.let { SnapshotDepositVerifier(Js.parse(read(it)), legacyUnbound = true) }
     /** Extra escrow treated as v3.1 (local anvil tests): extras `v31escrow` (+ `chainId`, default 11155111). */
     private var v31Extra: Set<Pair<String, String>> = emptySet()
 
@@ -235,9 +239,10 @@ class HarnessActivity : Activity() {
                 val s = g.bluetooth.connectRfcommByAddress(x.getString("addr")!!, BluetoothTransport.HARNESS_UUID)
                 val w = wallet()
                 val amount = Eth.wei(x.getString("amount")!!)
+                // plaintext link to the Java harness: no HELLO frame (it would be read as the payment)
                 val r = s.use { PaymentSession.payer(g.bluetooth.link(it), { req ->
                     w.pay(amount, req, BiometricApprover(this), OfflineWallet.PayOptions(coinLabel = x.getString("coin")))
-                }, ::log) }
+                }, ::log, hello = false) }
                 log("BT total ${(System.nanoTime() - t0) / 1_000_000} ms")
                 return payerStatus(r)
             }
@@ -254,12 +259,14 @@ class HarnessActivity : Activity() {
                 write("qr_$name.txt", qr.link())
                 log("QR ${qr.link()}")
                 log("BT LISTENING as '$name' (${qr.transport}, encrypted)")
-                val s = try { listener.accept(120_000) } finally { listener.close() }
                 val t0 = System.nanoTime()
-                val r = s.use {
-                    PaymentSession.payee(SecureLink(g.bluetooth.link(it), secret, qr.sessionId(), SecureLink.Role.PAYEE), req, rich = true,
-                        accept = { b -> w.accept(b, name) }, log = ::log)
-                }
+                // keeps listening until a peer authenticates (silent or garbage connections are dropped)
+                val r = try {
+                    PaymentSession.payeeListen({ rem ->
+                        val s = try { listener.accept(minOf(rem, 120_000L).toInt()) } catch (e: Exception) { null }
+                        s?.let { SecureLink(g.bluetooth.link(it), secret, qr.sessionId(), SecureLink.Role.PAYEE) }
+                    }, req, { b -> w.accept(b, name) }, ::log, totalMs = 120_000L, onUnauthenticated = { log("unauthenticated connection dropped") })
+                } finally { listener.close() }
                 log("BT session ${(System.nanoTime() - t0) / 1_000_000} ms, payment ${r.paymentBytes} B")
                 return r.status.name
             }
@@ -287,6 +294,18 @@ class HarnessActivity : Activity() {
                 r.error?.let { log("error: $it") }
                 return if (r.pass) "PASS" else "FAIL"
             }
+            "shield_ask" -> {
+                // coin=<label>: writes out/shield_ask_<coin>.json = the shield-ask payload with its nonce (HANDOFF v1.2 §11). The website's
+                // shield-target must echo that "nonce" at top level; a target with no nonce is accepted but flagged "not bound".
+                val coin = x.getString("coin")!!
+                val note = g.notes.notes().firstOrNull { !it.spent && !it.pendingDeposit && it.label == coin && (x.getString("note") == null || it.alias == x.getString("note")) }
+                    ?: run { log("no unspent note of $coin"); return "NONE" }
+                val a = wallet().shieldAsk(note.alias)
+                write("shield_ask_$coin.json", a.toString())
+                log("shield-ask for ${note.alias}: ${a}")
+                return "OK"
+            }
+            "reconcile" -> { log("reconcile acted on ${wallet().reconcile()} record(s)"); return "OK" }
             "lc_sync" -> { log(g.lightClient.syncCommittees()); return "OK" }
             "lc_proof" -> {
                 val note = g.notes.notes().firstOrNull { it.label == x.getString("coin") && it.isGenesis } ?: return "NONE"

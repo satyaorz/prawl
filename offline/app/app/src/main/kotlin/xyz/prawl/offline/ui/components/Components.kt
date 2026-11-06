@@ -190,11 +190,23 @@ fun Chip(text: String, status: Status) {
 }
 
 @Composable
-fun ConfirmDialog(title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit) {
+fun ConfirmDialog(
+    title: String, text: String, confirm: String, onConfirm: () -> Unit, onDismiss: () -> Unit,
+    /** A FULL address or key, shown whole in monospace (never abbreviated: audit F-03). */
+    mono: String? = null,
+    /** An amber warning shown above the text. */
+    warning: String? = null,
+) {
     AlertDialog(
         onDismissRequest = onDismiss, containerColor = Tw.zinc900,
         title = { Text(title, style = Tw.heading.copy(fontSize = 16.sp)) },
-        text = { Text(text, style = Tw.body) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (warning != null) Text(warning, style = Tw.body.copy(color = Tw.amber400))
+                Text(text, style = Tw.body)
+                if (mono != null) Text(mono, style = Tw.mono.copy(fontSize = 12.sp))
+            }
+        },
         confirmButton = { TextButton(onClick = { onDismiss(); onConfirm() }) { Text(confirm, color = Tw.emerald400) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = Tw.zinc400) } },
     )

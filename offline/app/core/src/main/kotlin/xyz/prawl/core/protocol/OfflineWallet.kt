@@ -74,11 +74,6 @@ class OfflineWallet(
     val lcAdvertisement: () -> JsonObject? = { null },
     /** Escrows that implement shield cash-out, refresh and private load (v3.1). Those operations are refused on any other escrow. */
     val v31Escrows: Set<Pair<String, String>> = Escrows.V31,
-    /**
-     * A shield target is accepted only if it echoes the nonce this phone put in its own `shield-ask` QR (audit F-03): a link or a
-     * pasted target from anywhere else cannot steer a cash-out. Only the debug harness switches this off.
-     */
-    val requireShieldNonce: Boolean = true,
 ) {
     val certs = CertResolver(certStore, anchors)
     private val rnd = SecureRandom()
@@ -476,10 +471,14 @@ class OfflineWallet(
     /** [requestedWei]: the amount the payee asked for (QR `a`); a smaller payment is still accepted but flagged ([VerificationReport.shortfall], audit F-10). */
     fun accept(bundleJson: JsonObject, name: String, requestedWei: BigInteger? = null): VerificationReport = synchronized(lock) {
         val b = Bundle(bundleJson)
-        // idempotent accept: the same payment arriving again after it was accepted (the payer lost our verdict)
+        // Idempotent accept: the SAME payment arriving again after it was accepted (the payer lost our verdict). "Same" means the whole
+        // accepted bundle (header, every spend's outputs, index, signature, next chain), not just the final signature: an altered copy keeps
+        // its signature bytes and must go through full verification, which rejects it. A record without a bundle digest (older build) never matches.
         val sigHash = finalSigHash(b)
+        val digest = Canonical.bundleDigest(b)
         val acc = notes.accepted(name)
-        if (acc != null && sigHash != null && acc.optStr("sigHash") == sigHash && (acc.optStr("until")?.toLongOrNull() ?: 0) >= nowS()) {
+        if (acc != null && sigHash != null && digest != null && acc.optStr("sigHash") == sigHash && acc.optStr("bundleHash") == digest &&
+            (acc.optStr("until")?.toLongOrNull() ?: 0) >= nowS()) {
             val rep = VerificationReport(name)
             rep.receivedValue = BigInteger(acc.str("value")); rep.noteId = acc.optStr("noteId")
             rep.coinLabel = b.header.label; rep.coinId = b.header.coinId; rep.hops = b.path.size
@@ -505,6 +504,7 @@ class OfflineWallet(
         val keepAccepted = {
             if (sigHash != null && pendingChain != null) notes.putAccepted(name, buildJsonObject {
                 put("chain", pendingChain.arr("chain")); put("sigHash", sigHash); put("value", rep.receivedValue.toString())
+                digest?.let { put("bundleHash", it) }
                 put("noteId", rep.noteId!!); put("at", nowS()); put("until", nowS() + acceptedKeepS)
             })
         }
@@ -576,9 +576,15 @@ class OfflineWallet(
     // ================================================================ v3.1: cash out into a RAILGUN shield
 
     /** Result of checking a website `shield-target` against a note (also shown to the user as "value check" lines). */
-    class ShieldCheck(val request: ShieldRequest?, val lines: List<VerifyLine>) {
+    class ShieldCheck(val request: ShieldRequest?, val lines: List<VerifyLine>, val nonceSupplied: Boolean = false, val bound: Boolean = false) {
         val ok: Boolean get() = request != null && lines.all { it.ok }
         val failures: List<String> get() = lines.filter { !it.ok }.map { "${it.title}: ${it.detail}" }
+        /**
+         * A target with no nonce (the user typed the value into the website) is accepted, but it is not tied to a request this phone
+         * made: the UI must show this in the confirmation, next to the full destination (audit F-03).
+         */
+        val warning: String? get() = if (request != null && !nonceSupplied)
+            "NOT BOUND to a request from this phone: nothing proves this target came from your wallet. Check the full destination in the confirmation character by character." else null
     }
 
     /**
@@ -594,14 +600,18 @@ class OfflineWallet(
             return ShieldCheck(null, listOf(VerifyLine("0", "Shield request readable", false, e.message ?: "malformed")))
         }
         val lines = ArrayList<VerifyLine>()
-        if (requireShieldNonce) {
-            val want = notes.record("shieldask", note.alias)?.takeIf { it.str("at").toLong() + SHIELD_ASK_TTL_S > nowS() && it.str("value") == note.value.toString() }?.optStr("nonce")
-            val got = target.optStr("nonce")?.lowercase()
-            val ok = want != null && got != null && got == want.lowercase()
+        // HANDOFF v1.2 §11: a target that carries a nonce must echo the one from THIS phone's last shield-ask; a wrong, stale or used nonce is refused
+        val got = target.optStr("nonce")?.lowercase()
+        var bound = false
+        if (got != null) {
+            val last = notes.record("shieldask", "last")?.takeIf { it.str("at").toLong() + SHIELD_ASK_TTL_S > nowS() }
+            val ok = last != null && last.str("alias") == note.alias && last.str("value") == note.value.toString() &&
+                java.security.MessageDigest.isEqual(last.str("nonce").toByteArray(), got.toByteArray())
+            bound = ok
             lines.add(VerifyLine("0", "Answers this phone's own request (nonce)", ok, when {
-                ok -> "the target echoes the nonce of the shield-ask this phone showed"
-                want == null -> "this phone has no open request for this note: open the private cash-out and let the wallet scan the QR first"
-                else -> "the target does not echo the nonce of this phone's request: it did not come from the wallet that scanned it"
+                ok -> "the target echoes the nonce of the shield-ask this phone showed for this note"
+                last == null -> "this phone has no open shield-ask (the nonce was already used, or expired): show a new one"
+                else -> "the target's nonce is not the one of this phone's last request: it did not come from the wallet that scanned it"
             }))
         }
         val v31 = Escrows.isV31(h.chainId, h.escrow, v31Escrows)
@@ -619,27 +629,25 @@ class OfflineWallet(
             if (tokenOk) "token 0x${req.tokenAddress40}" else "tokenType ${req.tokenType}, token 0x${req.tokenAddress40}, subID ${req.tokenSubId}"))
         val valueOk = req.value == note.value
         lines.add(VerifyLine("4", "Shield value equals the note", valueOk, "${Eth.eth(req.value)} ETH vs note ${Eth.eth(note.value)} ETH"))
-        return ShieldCheck(req, lines)
+        return ShieldCheck(req, lines, nonceSupplied = got != null, bound = bound)
     }
 
     /** How long a `shield-ask` nonce stays valid. */
     val SHIELD_ASK_TTL_S = 30 * 60L
 
     /**
-     * The `shield-ask` QR for note [alias] (HANDOFF v1.2 §11): `{v, t:"shield-ask", chainId, escrow, value, nonce}`. The nonce is fresh
-     * random bytes kept by this phone; [redeemShield] accepts only a target that echoes it, so a target from a link, another app or a
-     * paste cannot pick the destination of a cash-out (audit F-03). Re-showing the QR within the TTL reuses the nonce.
+     * The `shield-ask` QR for note [alias] (HANDOFF v1.2 §11):
+     * `{"v":1,"t":"shield-ask","chainId":11155111,"escrow":"0x…","value":"V","nonce":"<32 lowercase hex chars>"}`.
+     * The nonce is 16 fresh random bytes, NEW for every ask; only the last ask is kept, so a new ask invalidates the previous one, and
+     * [redeemShield] consumes it. A target that carries a nonce must echo it (audit F-03).
      */
     fun shieldAsk(alias: String): JsonObject = synchronized(lock) {
         val note = notes.note(alias) ?: throw IllegalArgumentException("no note $alias")
         require(!note.spent && !note.pendingDeposit) { "note is not spendable" }
         val h = note.header
         require(Escrows.isV31(h.chainId, h.escrow, v31Escrows)) { "this coin is on an escrow that cannot pay into RAILGUN" }
-        val now = nowS()
-        val old = notes.record("shieldask", alias)?.takeIf { it.str("value") == note.value.toString() && it.str("at").toLong() + SHIELD_ASK_TTL_S > now }
-        val nonce = old?.str("nonce") ?: ("0x" + Bytes.hex(ByteArray(32).also { rnd.nextBytes(it) })).also { n ->
-            notes.putRecord("shieldask", alias, buildJsonObject { put("nonce", n); put("value", note.value.toString()); put("at", now) })
-        }
+        val nonce = Bytes.hex(ByteArray(16).also { rnd.nextBytes(it) })
+        notes.putRecord("shieldask", "last", buildJsonObject { put("alias", alias); put("nonce", nonce); put("value", note.value.toString()); put("at", nowS()) })
         buildJsonObject {
             put("v", 1); put("t", "shield-ask"); put("chainId", h.chainId.toLong()); put("escrow", "0x${h.escrow}")
             put("value", note.value.toString()); put("nonce", nonce)
@@ -657,6 +665,7 @@ class OfflineWallet(
         val chk = checkShield(note, target)
         if (!chk.ok) { log("REFUSED: ${chk.failures}"); return RedeemOutcome.Refused("refused: " + chk.failures.joinToString("; ")) }
         val req = chk.request!!
+        chk.warning?.let { log("WARNING: $it") }
         val sh = req.hash()
         val outs = listOf(Output(note.value, req.outputKey(h.chainId, h.escrow)))
         writeIntent("shield", alias)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
@@ -681,7 +690,7 @@ class OfflineWallet(
         val full = carry(red, null)
         val npk = req.json.optStr("npk") ?: ""
         commitSigned(alias, listOf(Note(note.json.with("spent", true).with("redeemedTo", "RAILGUN shield npk ${npk.take(18)}…").with("redeemBundle", full.toString()).with("redeemedAt", nowS()))))
-        runCatching { notes.deleteRecord("shieldask", alias) }          // a nonce is single-use
+        runCatching { if (notes.record("shieldask", "last")?.optStr("alias") == alias) notes.deleteRecord("shieldask", "last") }   // a nonce works once
         log("REDEEM-TO-SHIELD SIGNED: ${Eth.eth(note.value)} ETH note $alias -> RAILGUN npk ${npk.take(18)}… (shieldHash ${sh.take(16)}…)")
         RedeemOutcome.Signed(full, note)
     }

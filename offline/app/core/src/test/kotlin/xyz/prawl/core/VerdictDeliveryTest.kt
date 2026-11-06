@@ -79,7 +79,7 @@ class VerdictDeliveryTest {
 
     // ---- wallets
     private val deposits = ArrayList<kotlinx.serialization.json.JsonObject>()
-    private val dv: () -> DepositVerifier = { SnapshotDepositVerifier(buildJsonObject { put("deposits", JsonArray(deposits.toList())) }) }
+    private val dv: () -> DepositVerifier = { SnapshotDepositVerifier(buildJsonObject { put("deposits", JsonArray(deposits.toList())) }, legacyUnbound = true) }
     private var now = Vectors.NOW_S * 1000
     private fun wallet() = OfflineWallet(FakeKeyVault(), MemoryNoteStore(), MemoryCertStore(), Vectors.anchors, FakeChecker(), { RecipientPolicy() }, dv, nowMillis = { now })
 

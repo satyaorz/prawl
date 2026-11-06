@@ -28,7 +28,8 @@ import java.math.BigInteger
  * payer can show why a payment was rejected.
  */
 object PaymentSession {
-    enum class PayeeStatus { ACCEPTED, REJECTED, LINK_LOST, NO_PAYMENT }
+    /** UNAUTHENTICATED: the peer never produced a frame that decrypts under this session's secret (silent, wrong secret, garbage); the receive key is untouched. */
+    enum class PayeeStatus { ACCEPTED, REJECTED, LINK_LOST, NO_PAYMENT, UNAUTHENTICATED }
 
     class PayeeResult(val status: PayeeStatus, val report: VerificationReport?, val paymentBytes: Int)
 
@@ -37,12 +38,26 @@ object PaymentSession {
         link: Link, request: ReceiveRequest, rich: Boolean, accept: (JsonObject) -> VerificationReport, log: (String) -> Unit = {},
         /** How long to wait for the payer's close-ack / disconnect after the verdict before closing ourselves. */
         ackTimeoutMs: Long = ACK_TIMEOUT_MS,
+        /** Rich (app-to-app, encrypted) sessions: how long a peer may take to produce its first authenticated frame (HELLO). */
+        helloTimeoutMs: Long = HELLO_TIMEOUT_MS,
+        /** How long an authenticated peer may take to deliver the payment (it may be waiting for the owner's fingerprint). */
+        paymentTimeoutMs: Long = PAYMENT_TIMEOUT_MS,
     ): PayeeResult {
         link.send(request.json.toString())
-        val pay = try { link.recv() } catch (e: Exception) {
-            log("link lost before payment arrived; receive key kept for retry")
-            return PayeeResult(PayeeStatus.LINK_LOST, null, 0)
+        var first: String
+        try { first = link.recv(if (rich) helloTimeoutMs else paymentTimeoutMs) } catch (e: Exception) {
+            return if (rich) {
+                // nobody has proved they hold this session's secret: drop them, the receive key and the listener stay as they were
+                log("no authenticated frame (${e.javaClass.simpleName}); dropping this connection")
+                PayeeResult(PayeeStatus.UNAUTHENTICATED, null, 0)
+            } else { log("link lost before payment arrived; receive key kept for retry"); PayeeResult(PayeeStatus.LINK_LOST, null, 0) }
         }
+        val pay = if (rich && first == HELLO) {
+            try { link.recv(paymentTimeoutMs) } catch (e: Exception) {
+                log("link lost before payment arrived; receive key kept for retry")
+                return PayeeResult(PayeeStatus.LINK_LOST, null, 0)
+            }
+        } else first
         if (pay == "{}") {
             log("payer sent no payment (payer's secure hardware refused)")
             runCatching { link.send(if (rich) verdictJson("NOTHING", null).toString() else "NOTHING") }
@@ -62,6 +77,33 @@ object PaymentSession {
         // the payer to acknowledge / hang up first; only then is our close safe.
         awaitPeerDone(link, ackTimeoutMs)
         return PayeeResult(if (rep.accepted) PayeeStatus.ACCEPTED else PayeeStatus.REJECTED, rep, pay.length)
+    }
+
+    /** First frame of a payer in an app-to-app session: proves it holds the QR's secret (AEAD), sent BEFORE it spends time signing. */
+    const val HELLO = "HELLO"
+    const val HELLO_TIMEOUT_MS = 20_000L
+    const val PAYMENT_TIMEOUT_MS = 150_000L
+    const val VERDICT_TIMEOUT_MS = 60_000L
+
+    /**
+     * Receive side of one QR: keep listening until a peer proves it holds the session secret (audit F-07). [nextLink] returns the next
+     * connection (null when [totalMs] runs out); a connection that is silent, or whose frames do not authenticate, is dropped and the
+     * listener keeps going, so a stranger who merely connects cannot hold the receive screen. Each link is closed when its session ends.
+     */
+    fun payeeListen(
+        nextLink: (remainingMs: Long) -> Link?, request: ReceiveRequest, accept: (JsonObject) -> VerificationReport, log: (String) -> Unit = {},
+        totalMs: Long = 180_000L, onUnauthenticated: () -> Unit = {},
+        ackTimeoutMs: Long = ACK_TIMEOUT_MS, helloTimeoutMs: Long = HELLO_TIMEOUT_MS, paymentTimeoutMs: Long = PAYMENT_TIMEOUT_MS,
+    ): PayeeResult {
+        val end = System.nanoTime() + totalMs * 1_000_000
+        while (true) {
+            val remaining = (end - System.nanoTime()) / 1_000_000
+            if (remaining <= 0) return PayeeResult(PayeeStatus.LINK_LOST, null, 0)
+            val link = nextLink(remaining) ?: return PayeeResult(PayeeStatus.LINK_LOST, null, 0)
+            val res = try { payee(link, request, true, accept, log, ackTimeoutMs, helloTimeoutMs, paymentTimeoutMs) } finally { runCatching { link.close() } }
+            if (res.status != PayeeStatus.UNAUTHENTICATED) return res
+            onUnauthenticated()
+        }
     }
 
     /** Frame the payer sends once it has read the verdict ("close-ack"). Old harness payers just disconnect instead. */
@@ -92,15 +134,17 @@ object PaymentSession {
     }
 
     /** Runs the payer side; [pay] receives the payee's request (checks + signing happen there). */
-    fun payer(link: Link, pay: (ReceiveRequest) -> OfflineWallet.PayOutcome, log: (String) -> Unit = {}): PayerResult {
-        val req = ReceiveRequest(Js.parse(link.recv()))
+    fun payer(link: Link, pay: (ReceiveRequest) -> OfflineWallet.PayOutcome, log: (String) -> Unit = {}, hello: Boolean = true): PayerResult {
+        val req = ReceiveRequest(Js.parse(link.recv(HELLO_TIMEOUT_MS)))
+        // prove we hold the session secret before spending time (the owner's fingerprint) on the payment
+        if (hello) runCatching { link.send(HELLO) }
         log("BT got request from '${req.name}'")
         when (val o = pay(req)) {
             is OfflineWallet.PayOutcome.Refused -> { runCatching { link.send("{}") }; return PayerResult.Refused(o) }
             is OfflineWallet.PayOutcome.Paid -> {
                 return try {
                     link.send(o.bundle.toString())
-                    val v = parseVerdict(link.recv())
+                    val v = parseVerdict(link.recv(VERDICT_TIMEOUT_MS))
                     log("BT payee verdict: ${v.verdict}")
                     // tell the payee it may close now (it waits for this so the verdict is never cut off)
                     runCatching { link.send(ACK) }

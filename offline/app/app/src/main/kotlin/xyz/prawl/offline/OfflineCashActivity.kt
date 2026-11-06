@@ -51,12 +51,13 @@ val LocalHostActivity = staticCompositionLocalOf<ComponentActivity?> { null }
  * Entry point of the native offline-cash part. Works standalone (launcher) and as the native half next to a
  * Trusted Web Activity wallet shell, which can open it with:
  *  - an explicit intent, action `xyz.prawl.offline.action.OPEN`, extra `screen` =
- *    balance | receive | pay | load | cashout | device | settings (optional extras `depositor`, `payout`);
- *  - a deep link `prawl://offline/<screen>`, `prawl://offline/pay?d=…` (a receive code),
- *    `prawl://offline/load?depositor=0x…`, `prawl://offline/deposited?coinId=0x…&tx=0x…` (asks the user to confirm),
- *    `prawl://offline/shield-target?d=…` (website's RAILGUN shield target: opens private cash-out, signs nothing by itself),
- *    `prawl://offline/refreshed?coinId=0x…` (opens the pending refresh to confirm).
- * Links only navigate and pre-fill; nothing is signed or marked without the user acting on the screen.
+ *    balance | receive | pay | load | cashout | device | settings | refresh;
+ *  - a deep link `prawl://offline/<screen>` (the same names, plus `deposited`, `refreshed`, `redeem` and `shield-target`).
+ *
+ * **Links and intents ONLY navigate, and always to an EMPTY form** (audit F-03). The entry is exported and BROWSABLE, so any web page
+ * or app can fire it; a payout address, shield target, depositor or receive code arriving that way would be the destination of the
+ * user's money, chosen by someone else. Every parameter (`payout`, `depositor`, `d`, `coinId`, `tx`) is ignored. The user types, pastes
+ * or scans the destination inside the app, and a shield target must answer the nonce of the `shield-ask` this phone showed.
  */
 class OfflineCashActivity : ComponentActivity() {
     private val stack = mutableStateListOf<Route>(Route.Balance)
@@ -82,24 +83,19 @@ class OfflineCashActivity : ComponentActivity() {
 
         fun routeFor(intent: Intent?): Route? {
             intent ?: return null
-            if (intent.action == ACTION_OPEN) return screen(intent.getStringExtra("screen"), intent.getStringExtra("depositor"), intent.getStringExtra("payout"))
+            if (intent.action == ACTION_OPEN) return screen(intent.getStringExtra("screen"))
             val uri: Uri = intent.data ?: return null
             if (uri.scheme != "prawl" || uri.host != "offline") return null
-            val kind = uri.pathSegments.firstOrNull() ?: return Route.Balance
-            return when (kind) {
-                "pay" -> Route.Pay(uri.toString())
-                "deposited" -> Route.Load(coinId = uri.getQueryParameter("coinId"), tx = uri.getQueryParameter("tx"))
-                "shield-target" -> Route.CashOut(shield = uri.toString())
-                "refreshed" -> Route.Refresh(pendingCoinId = uri.getQueryParameter("coinId"))
-                else -> screen(kind, uri.getQueryParameter("depositor"), uri.getQueryParameter("payout"))
-            }
+            return screen(uri.pathSegments.firstOrNull())
         }
 
-        private fun screen(name: String?, depositor: String?, payout: String?): Route = when (name) {
+        /** Screen by name, always with an empty form: no value from outside is ever carried into a route. */
+        private fun screen(name: String?): Route = when (name) {
             "receive" -> Route.Receive
             "pay" -> Route.Pay()
-            "load" -> Route.Load(depositor = depositor)
-            "cashout", "redeem" -> Route.CashOut(payout)
+            "load", "deposited" -> Route.Load()
+            "cashout", "redeem", "shield-target" -> Route.CashOut()
+            "refresh", "refreshed" -> Route.Refresh()
             "device" -> Route.Device
             "settings" -> Route.Settings
             else -> Route.Balance

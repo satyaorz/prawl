@@ -35,7 +35,7 @@ import kotlin.concurrent.thread
 class WalletFlowTest {
     private val deposits = ArrayList<kotlinx.serialization.json.JsonObject>()
     private val depositVerifier: () -> DepositVerifier = {
-        SnapshotDepositVerifier(buildJsonObject { put("deposits", JsonArray(deposits.toList())) })
+        SnapshotDepositVerifier(buildJsonObject { put("deposits", JsonArray(deposits.toList())) }, legacyUnbound = true)
     }
     private var now = Vectors.NOW_S * 1000
 
@@ -203,7 +203,7 @@ class WalletFlowTest {
         val t = thread { st = PaymentSession.payee(payee, req, true, { bob.w.accept(it, "z") }).status }
         assertThrows { PaymentSession.payer(payer, { error("must not get here") }) }
         payer.close(); t.join(5000)
-        assertEquals(PaymentSession.PayeeStatus.LINK_LOST, st)
+        assertEquals("a peer that never authenticates is dropped, the receive key is untouched", PaymentSession.PayeeStatus.UNAUTHENTICATED, st)
         assertNotNull("receive key kept for retry", bob.w.pendingKeyHash("z"))
     }
 
