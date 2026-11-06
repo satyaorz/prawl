@@ -91,6 +91,54 @@ describe("wallet sync", () => {
     }
   });
 
+  describe("private operations", () => {
+    const recipient = `0x${"22".repeat(20)}` as `0x${string}`;
+    const okTx = { hash: `0x${"ab".repeat(32)}`, status: "success", blockNumber: 1n, gasUsed: 1n };
+
+    it("repeats the prepare step after a transient bundler error, but submits only once", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        if (prepares === 1) throw new Error("Bundler error: Other: HTTP error: error sending request");
+        return { signed: {}, userOpHash: `0x${"11".repeat(32)}` };
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockResolvedValue(okTx);
+      try {
+        // Real timers: the retry waits 4 s, and the rest of the flow awaits real WebCrypto.
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(true);
+        expect(prepares).toBe(2);
+        expect(tx.sendUserOp).toHaveBeenCalledTimes(1);
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear(); // the unshield wrote a history entry; later tests count their own
+      }
+    }, 20_000);
+
+    it("does not repeat a refusal that is not a network error", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        throw new Error("Bundler error: AA21 didn't pay prefund");
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      try {
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(false);
+        expect(prepares).toBe(1);
+        expect(tx.sendUserOp).not.toHaveBeenCalled();
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear();
+      }
+    });
+  });
+
   it("runs one sync at a time and skips PPOI submission when nothing is queued", async () => {
     reset(0);
     await wallet.createWallet();

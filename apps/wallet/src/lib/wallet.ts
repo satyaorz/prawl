@@ -725,6 +725,9 @@ function explain(kind: "send" | "unshield", e: unknown): string {
  * wallet's public account: gas comes out of the private balance, so the
  * sender needs no ETH and has no history to link to.
  */
+/** Network-level failures while preparing a private operation (not a refusal by the bundler or the contract). */
+const TRANSIENT_PREPARE_ERROR = /error sending request|HTTP error|timed out|timeout|network|fetch failed|connection (reset|closed|refused)|ECONN/i;
+
 async function privateOp(
   kind: "send" | "unshield",
   amountWei: bigint,
@@ -747,7 +750,21 @@ async function privateOp(
     const oneTimeKey = generatePrivateKey();
     const sender = privateKeyToAddress(oneTimeKey);
     railgun().useAccount(sender);
-    const prepared = await run(oneTimeKey);
+    // Preparing the operation reads from the public bundler over Tor (gas estimate, state overrides) and only builds
+    // and signs; nothing is submitted. A network error there is transient and safe to repeat; the SUBMISSION below
+    // is never retried (a retry could pay twice).
+    let prepared: Awaited<ReturnType<typeof run>> | undefined;
+    for (let attempt = 0; prepared === undefined; attempt++) {
+      try {
+        prepared = await run(oneTimeKey);
+      } catch (e) {
+        const text = e instanceof Error ? e.message : String(e);
+        if (attempt >= 2 || !TRANSIENT_PREPARE_ERROR.test(text)) throw e;
+        status("The bundler did not answer; trying again…");
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (myEpoch !== epoch) throw new Error("wallet was locked or changed");
+      }
+    }
     status("Sending to the bundler over Tor…");
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
     await remember(opLog, myEpoch, kind, amountWei, to, [tx]);
