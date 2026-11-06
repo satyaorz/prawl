@@ -1,4 +1,5 @@
 import java.security.KeyStore
+import java.util.Properties
 import java.security.MessageDigest
 
 plugins {
@@ -6,6 +7,12 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
+
+// The phone vectors some tests need (device attestation chains from our own phones; NOT in the repo). Resolved from -Pprawl.raw=<dir>, the
+// PRAWL_RAW environment variable or prawl.raw=<dir> in local.properties. Absent: those tests are skipped, the rest run.
+val prawlRaw: String? = (findProperty("prawl.raw") as String?)
+    ?: System.getenv("PRAWL_RAW")
+    ?: Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) } }.getProperty("prawl.raw")
 
 // Build-time config (override with -Pprawl.site=https://my-wallet.vercel.app etc.)
 val site: String = (findProperty("prawl.site") as String?) ?: "https://<site>"
@@ -114,7 +121,9 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
             it.systemProperty("prawl.screenshots", rootProject.layout.projectDirectory.dir("docs/screenshots").asFile.canonicalPath)
-            it.systemProperty("prawl.raw", rootProject.layout.projectDirectory.dir("../..").asFile.canonicalPath)
+            prawlRaw?.let { raw -> it.systemProperty("prawl.raw", raw) }
+            // Tests built on the phone vectors / the research screenshots only run when those are available.
+            if (prawlRaw == null) it.exclude("**/QrRoundTripTest*", "**/ScreenshotTest*")
         }
     }
 }

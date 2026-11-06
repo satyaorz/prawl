@@ -1,8 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
 }
+
+// The phone vectors some tests need (device attestation chains from our own phones; NOT in the repo). Resolved from -Pprawl.raw=<dir>, the
+// PRAWL_RAW environment variable or prawl.raw=<dir> in local.properties. Absent: those tests are skipped, the rest run.
+val prawlRaw: String? = (findProperty("prawl.raw") as String?)
+    ?: System.getenv("PRAWL_RAW")
+    ?: Properties().apply { rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) } }.getProperty("prawl.raw")
 
 android {
     namespace = "xyz.prawl.core"
@@ -17,8 +25,8 @@ android {
     }
     testOptions {
         unitTests.all { t ->
-            // Real phone vectors are read in place (read-only) from the research tree: raw/ is two levels up.
-            t.systemProperty("prawl.raw", rootProject.layout.projectDirectory.dir("../..").asFile.canonicalPath)
+            // Real phone vectors are read in place (read-only); without them those tests are skipped (see prawlRaw above).
+            prawlRaw?.let { t.systemProperty("prawl.raw", it) }
             t.systemProperty("prawl.assets", layout.projectDirectory.dir("src/main/assets").asFile.canonicalPath)
             // blst JNI shim built for the laptop JVM (copied from raw/v3/deposit_proofs/java/native/lib/linux-x86_64)
             t.systemProperty("prawl.native", layout.projectDirectory.file("src/test/native/linux-x86_64/libprawlbls.so").asFile.canonicalPath)

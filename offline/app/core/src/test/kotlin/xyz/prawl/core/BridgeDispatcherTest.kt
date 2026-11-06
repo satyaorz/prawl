@@ -196,7 +196,7 @@ class BridgeDispatcherTest {
 
     // ------------------------------------------------------------ shield flow, the order the website follows
 
-    private val kohaku = Js.parse(File(Vectors.raw, "v3/escrow_v31/fixtures/railgun_shield_1e15.json").readText())
+    private val kohaku = Vectors.kohaku
     private fun target(nonce: String, npk: String? = null): JsonObject {
         var req = kohaku.obj("request")
         if (npk != null) req = JsonObject(LinkedHashMap(req).also { it["npk"] = kotlinx.serialization.json.JsonPrimitive(npk) })

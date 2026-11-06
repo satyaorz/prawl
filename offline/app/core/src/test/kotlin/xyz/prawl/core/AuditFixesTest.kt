@@ -105,7 +105,7 @@ class AuditFixesTest {
 
     // ================================================================== F-03: destination binding
 
-    private val kohaku = Js.parse(File(Vectors.raw, "v3/escrow_v31/fixtures/railgun_shield_1e15.json").readText())
+    private val kohaku = Vectors.kohaku
     private fun target(nonce: String?, value: String? = null, npk: String? = null): JsonObject {
         var req = kohaku.obj("request")
         if (value != null) req = req.with("value", value)
