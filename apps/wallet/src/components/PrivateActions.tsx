@@ -1,14 +1,15 @@
 import { useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
+import type { Balance } from "@prawl/railgun";
 import { useWallet } from "../lib/use-wallet";
 import { privateSendEth, unshieldEth } from "../lib/wallet";
 
 type Tab = "send" | "unshield";
 
 /** Spendable private ETH: WETH notes whose PPOI status is Valid. */
-function spendable(balances: { asset: string; amount: string; poiStatus: string | null }[] | undefined, weth?: string): bigint {
+function spendable(balances: Balance[] | undefined, weth?: string): bigint {
   return (balances ?? [])
-    .filter((b) => b.asset.toLowerCase() === weth && b.poiStatus === "Valid")
+    .filter((b) => b.token !== undefined && b.token === weth && b.poiStatus === "Valid")
     .reduce((sum, b) => sum + BigInt(b.amount), 0n);
 }
 

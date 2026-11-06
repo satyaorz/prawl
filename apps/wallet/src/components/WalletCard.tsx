@@ -104,7 +104,7 @@ export function WalletCard() {
           {w.balances.length === 0 && <li className="text-sm text-zinc-400">No private funds yet.</li>}
           {w.balances.map((b) => (
             <li key={`${b.asset}-${b.poiStatus}`} className="flex justify-between font-mono text-sm">
-              <span className="text-zinc-400">{b.asset.toLowerCase() === w.wrappedBaseToken ? "ETH" : short(b.asset, 6, 4)}</span>
+              <span className="text-zinc-400">{b.token && b.token === w.wrappedBaseToken ? "ETH" : short(b.token ?? b.asset, 6, 4)}</span>
               <span>
                 {formatEther(BigInt(b.amount))}{" "}
                 {b.poiStatus && (

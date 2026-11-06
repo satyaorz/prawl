@@ -42,7 +42,7 @@ export function fakeWasm(opts: { syncDelayMs?: number } = {}) {
       freed++;
     }
     balancesJson() {
-      return this.#hold(() => JSON.stringify([{ asset: "0xtoken", amount: "100", poiStatus: "Valid" }]));
+      return this.#hold(() => JSON.stringify([{ asset: "erc20:0xFFF9976782d46CC05630D1f6eBAb18b2324d6B14", amount: "100", poiStatus: "Valid" }, { asset: "erc721:0x0000000000000000000000000000000000000001/7", amount: "1", poiStatus: null }]));
     }
     notesJson() {
       return this.#hold(() => "[]");

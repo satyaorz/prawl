@@ -17,7 +17,9 @@ describe("RailgunWallet", () => {
     // These would throw "recursive use" against the raw bindings.
     const [balances, checkpoint] = await Promise.all([wallet.balances(), wallet.checkpoint()]);
     await sync;
-    expect(balances[0]).toEqual({ asset: "0xtoken", amount: "100", poiStatus: "Valid" });
+    // The core prints CAIP-style assets; ERC-20s also get a lower-case token address.
+    expect(balances[0]).toEqual({ asset: "erc20:0xFFF9976782d46CC05630D1f6eBAb18b2324d6B14", token: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", amount: "100", poiStatus: "Valid" });
+    expect(balances[1]).toEqual({ asset: "erc721:0x0000000000000000000000000000000000000001/7", amount: "1", poiStatus: null });
     expect(JSON.parse(checkpoint)).toHaveProperty("synced");
     expect(wallet.syncedBlock).toBe(5_000_100n);
   });

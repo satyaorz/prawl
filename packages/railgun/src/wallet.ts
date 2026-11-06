@@ -8,12 +8,20 @@ import { Serial } from "./serial";
 import type { Call, Hex, RailgunWasm, WasmChain, WasmPoiSession } from "./wasm-types";
 
 export interface Balance {
-  /** Token address (lower-case hex), as the core prints it. */
+  /** Asset as the core prints it (CAIP-style): "erc20:0x…", "erc721:0x…/id", "erc1155:0x…/id". */
   asset: string;
+  /** Lower-case token address when the asset is an ERC-20, else undefined. */
+  token?: Hex;
   /** Decimal string, base units. */
   amount: string;
-  /** PPOI status for this amount, e.g. "Valid", "ShieldPending"; null when unknown. */
+  /** PPOI status for this amount: "Valid", "Missing", "ProofSubmitted", "ShieldBlocked", "Unavailable"; null when unknown. */
   poiStatus: string | null;
+}
+
+/** ERC-20 address from the core's asset string ("erc20:0x…"; a bare address is accepted too). */
+export function erc20Token(asset: string): Hex | undefined {
+  const m = /^(?:erc20:)?(0x[0-9a-fA-F]{40})$/.exec(asset);
+  return m ? (m[1]!.toLowerCase() as Hex) : undefined;
 }
 
 /** Outcome of one pass over the queued PPOI proofs (kohaku PoiProcessReport). */
@@ -171,11 +179,10 @@ export class RailgunWallet {
 
   async balances(): Promise<Balance[]> {
     const raw = await this.#run((s) => s.balancesJson());
-    return (JSON.parse(raw) as Array<{ asset: string; amount: string; poiStatus?: string | null }>).map((b) => ({
-      asset: b.asset,
-      amount: b.amount,
-      poiStatus: b.poiStatus ?? null,
-    }));
+    return (JSON.parse(raw) as Array<{ asset: string; amount: string; poiStatus?: string | null }>).map((b) => {
+      const token = erc20Token(b.asset);
+      return { asset: b.asset, ...(token ? { token } : {}), amount: b.amount, poiStatus: b.poiStatus ?? null };
+    });
   }
 
   async notes(): Promise<Note[]> {
