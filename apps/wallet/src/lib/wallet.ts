@@ -34,6 +34,8 @@ export interface WalletState {
   restored?: boolean;
   /** True when this open scans RAILGUN history from the start (no checkpoint, no usable snapshot). */
   fullScan?: boolean;
+  /** A restored wallet's scan restarts here (its birth, bounded) on top of the snapshot. */
+  replayFrom?: bigint;
   /** Block of the public pool snapshot a new or restored wallet started from. */
   snapshotBlock?: bigint;
   lastSyncMs?: number;
@@ -109,6 +111,7 @@ async function openRailgun(opts: StartOptions): Promise<void> {
     restored: opened.restored,
     fullScan: opened.fullScan,
     snapshotBlock: opened.snapshotBlock ? BigInt(opened.snapshotBlock) : undefined,
+    replayFrom: opened.replayFrom ? BigInt(opened.replayFrom) : undefined,
   });
   await sync();
   startAutoSync();

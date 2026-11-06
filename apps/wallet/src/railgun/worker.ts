@@ -9,7 +9,7 @@
  * Checkpoints are sealed here with the wallet's storage key before storage.
  */
 import { seal, open as openSealed, type Sealed } from "@prawl/keys";
-import { RailgunWallet, isPublicSnapshot, seedFreshAccount, snapshotBlock, type RailgunWasm } from "@prawl/railgun";
+import { RailgunWallet, isPublicSnapshot, restoreStartBlock, seedFreshAccount, snapshotBlock, type RailgunWasm } from "@prawl/railgun";
 import { store } from "../lib/store";
 import type { FromWorker, OpenArgs, Ops, ToWorker } from "./protocol";
 
@@ -67,12 +67,6 @@ async function loadSnapshot(chainId: number): Promise<string | undefined> {
     return undefined;
   }
 }
-
-/**
- * A snapshot taken this long before the wallet was born is safe to start a
- * restore from: covers clock skew between the creating device and the chain.
- */
-const SNAPSHOT_SLACK_S = 2 * 3600;
 
 /** Block timestamp over the RAILGUN transport (so over Tor, on the shared RAILGUN circuit). */
 async function blockTimestamp(rpcUrl: string, block: bigint): Promise<number | undefined> {
@@ -133,22 +127,30 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
     }
     let fromSnapshot: bigint | undefined;
     let expectedAddress: string | undefined;
+    let replayFrom: bigint | undefined;
     if (!checkpoint && (args.fresh || args.bornAt !== undefined)) {
       const snap = await loadSnapshot(args.chainId);
       const block = snap ? snapshotBlock(snap) : undefined;
-      // A new wallet cannot own older notes. A restored one can skip history
-      // from before it was born: use the snapshot only if it is clearly older.
-      let usable = args.fresh;
-      if (!usable && block !== undefined && args.bornAt !== undefined) {
+      // A new wallet cannot own older notes: start at the snapshot. A restored
+      // one starts at a block no later than its birth and the core replays
+      // from there on top of the snapshot's trees.
+      let seedAt: bigint | undefined = args.fresh ? block : undefined;
+      if (!args.fresh && block !== undefined && args.bornAt !== undefined) {
         const ts = await blockTimestamp(args.rpcUrl, block).catch(() => undefined);
-        usable = ts !== undefined && ts + SNAPSHOT_SLACK_S <= args.bornAt;
+        const c = wasm.Chain.fromChainId(BigInt(args.chainId));
+        const deploymentBlock = c ? BigInt(c.deploymentBlock) : undefined;
+        c?.free();
+        if (ts !== undefined && deploymentBlock !== undefined) {
+          seedAt = restoreStartBlock({ chainId: args.chainId, snapshotBlock: block, snapshotTime: ts, bornAt: args.bornAt, deploymentBlock });
+        }
       }
-      if (snap && usable) {
+      if (snap && seedAt !== undefined) {
         const addr = wasm.RailgunAddress.fromPrivateKeys(args.spendingKey, args.viewingKey, BigInt(args.chainId));
         expectedAddress = addr.toString();
         addr.free();
-        checkpoint = seedFreshAccount(snap, expectedAddress);
+        checkpoint = seedFreshAccount(snap, expectedAddress, seedAt);
         fromSnapshot = block;
+        if (block !== undefined && seedAt < block) replayFrom = seedAt;
       }
     }
     const openWith = (cp: string | undefined) =>
@@ -165,6 +167,7 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
       // The seeded account is not this wallet's: never trust the snapshot, do a full sync.
       await wallet.close();
       fromSnapshot = undefined;
+      replayFrom = undefined;
       checkpoint = undefined;
       wallet = await openWith(undefined);
     }
@@ -174,6 +177,7 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
       syncedBlock: wallet.syncedBlock.toString(),
       restored: !!checkpoint && fromSnapshot === undefined,
       fullScan: !checkpoint,
+      ...(replayFrom !== undefined ? { replayFrom: replayFrom.toString() } : {}),
       ...(fromSnapshot !== undefined ? { snapshotBlock: fromSnapshot.toString() } : {}),
     };
   },

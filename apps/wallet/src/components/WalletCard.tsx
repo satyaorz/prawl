@@ -87,8 +87,10 @@ export function WalletCard() {
             Scanning the private pool over Tor
             {w.restored
               ? " from your saved checkpoint"
-              : w.snapshotBlock
-                ? " from the pool snapshot (your wallet is newer)"
+              : w.replayFrom
+                ? " from the pool snapshot, replaying since your wallet was created"
+                : w.snapshotBlock
+                ? " from the latest pool snapshot"
                 : w.fullScan
                   ? " from the start of RAILGUN history (first open on this device)"
                   : ""}
