@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { formatEther, parseEther } from "viem";
 import { useWallet } from "../lib/use-wallet";
+
+/** Public ETH kept back for the shield transaction's gas (~1.14M gas measured); sendCalls checks the real cost. */
+const SHIELD_GAS_RESERVE_WEI = 3_000_000_000_000_000n;
 import { shieldEth } from "../lib/wallet";
 
 /** Public account (the way in) and moving its ETH into the private balance. */
@@ -38,6 +41,14 @@ export function ShieldForm() {
         Send Sepolia ETH to your public account, then shield it. The chain sees the deposit, not who owns it afterwards.
       </p>
       <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          disabled={!w.publicWei || w.publicWei <= SHIELD_GAS_RESERVE_WEI}
+          onClick={() => w.publicWei && setAmount(formatEther(w.publicWei - SHIELD_GAS_RESERVE_WEI))}
+          className="rounded-lg border border-zinc-700 px-3 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-40"
+        >
+          Max
+        </button>
         <input
           value={amount}
           onChange={(e) => setAmount(e.target.value.trim())}

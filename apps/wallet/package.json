@@ -15,6 +15,7 @@
     "@prawl/anon-rpc": "workspace:*",
     "@prawl/keys": "workspace:*",
     "@prawl/railgun": "workspace:*",
+    "qrcode": "1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "viem": "2.57.14"
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.4",
     "@types/node": "^26.6.6",
+    "@types/qrcode": "1.5.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
