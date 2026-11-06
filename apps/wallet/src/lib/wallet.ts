@@ -208,7 +208,7 @@ export function devSetState(patch: Partial<WalletState>): void {
 
 // Dev only: reachable from the page (and from the site's screenshot script),
 // because a dynamic import() of this module is a second instance with its own state.
-if (import.meta.env.DEV) (window as unknown as { __prowlDevSetState?: typeof devSetState }).__prowlDevSetState = devSetState;
+if (import.meta.env.DEV && typeof window !== "undefined") (window as unknown as { __prowlDevSetState?: typeof devSetState }).__prowlDevSetState = devSetState;
 
 void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id }));
 
