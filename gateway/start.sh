@@ -40,7 +40,8 @@ JSON
 
 LOG=$G/logs/gateway.log
 touch "$LOG"
-N0=$(grep -c "wrote bootstrap.zip" "$LOG" || true)
+# A sync either writes a new snapshot or finds the consensus unchanged; both end with "next sync in".
+N0=$(grep -c "next sync in" "$LOG" || true)
 env -u GITHUB_TOKEN HOME="$G/home" XDG_CONFIG_HOME="$G/home/.config" XDG_DATA_HOME="$G/home/.local/share" \
   XDG_CACHE_HOME="$G/home/.cache" XDG_STATE_HOME="$G/home/.local/state" RUST_LOG=${RUST_LOG:-info} \
   setsid nohup "$BIN" -c "$G/config.json5" run --no-mirror >> "$LOG" 2>&1 < /dev/null &
@@ -48,7 +49,7 @@ PID=$!
 echo "$PID" > "$G/gateway.pid"
 echo "started pid $PID, waiting for first directory sync..."
 for _ in $(seq 1 240); do
-  [ "$(grep -c "wrote bootstrap.zip" "$LOG" || true)" -gt "$N0" ] && break
+  [ "$(grep -c "next sync in" "$LOG" || true)" -gt "$N0" ] && break
   kill -0 "$PID" 2>/dev/null || { echo "gateway exited; see $LOG"; exit 1; }
   sleep 0.5
 done
