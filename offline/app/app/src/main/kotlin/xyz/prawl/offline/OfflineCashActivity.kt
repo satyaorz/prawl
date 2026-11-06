@@ -3,6 +3,7 @@ package xyz.prawl.offline
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -105,6 +106,17 @@ class OfflineCashActivity : ComponentActivity() {
     /** A native confirmation the bridge is waiting on (the page asked to spend; only the user can approve). */
     class PendingConfirm(val c: BridgeConfirm, val result: CompletableFuture<Boolean>)
 
+    /** Keeps Google's revocation list under 12 h old without the user having to remember. Silent: offline or an error just leaves the old list. */
+    private fun refreshRevocationInBackground(g: AppGraph) {
+        if (!g.settings.autoRevocation) return
+        Thread {
+            try {
+                val age = System.currentTimeMillis() / 1000 - g.trust.anchors().revocationFetchedAt
+                if (age > 12 * 3600L) { g.trust.fetchFromGoogle(); g.changed() }
+            } catch (e: Exception) { Log.i("PRAWL_REV", "revocation refresh skipped: ${e.javaClass.simpleName}") }
+        }.apply { isDaemon = true; name = "revocation-refresh" }.start()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
@@ -112,6 +124,7 @@ class OfflineCashActivity : ComponentActivity() {
         // DEBUG builds only: `-e site http://localhost:4173` (through adb reverse) is remembered; an empty value clears it.
         if (BuildConfig.DEBUG) intent.getStringExtra("site")?.let { prefs.edit().putString("debugSite", it.ifBlank { null }).apply() }
         val g = graph
+        refreshRevocationInBackground(g)
         val host = object : BridgeHost {
             override fun wallet(): OfflineWallet = g.wallet()
             override fun notes(): List<Note> = g.notes.notes()
