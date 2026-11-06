@@ -1,4 +1,4 @@
-# Prowl
+# Prowl  
 
 A privacy-first Ethereum wallet for the browser.
 
