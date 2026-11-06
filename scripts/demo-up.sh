@@ -13,7 +13,12 @@ PIDF=$ROOT/.local/preview.pid
 echo "== gateway"
 gateway/start.sh
 echo "== pool snapshot (resumes from the last one)"
-node packages/railgun/scripts/build-snapshot.mjs | tail -2
+# A public RPC node can lag a block behind the one that answered the head ("block range extends beyond
+# current head"): retry; if it still fails, the older snapshot only makes a new wallet sync a bit longer.
+for try in 1 2 3; do
+  if node packages/railgun/scripts/build-snapshot.mjs 2>&1 | tail -2; then break; fi
+  [ "$try" = 3 ] && echo "snapshot not refreshed; continuing with the existing one" || sleep 6
+done
 echo "== build"
 pnpm --filter ./apps/wallet build | tail -2
 echo "== preview"
