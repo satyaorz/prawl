@@ -9,7 +9,7 @@
  * Checkpoints are sealed here with the wallet's storage key before storage.
  */
 import { seal, open as openSealed, type Sealed } from "@prawl/keys";
-import { RailgunWallet, type RailgunWasm } from "@prawl/railgun";
+import { RailgunWallet, isPublicSnapshot, seedFreshAccount, snapshotBlock, type RailgunWasm } from "@prawl/railgun";
 import { store } from "../lib/store";
 import type { FromWorker, OpenArgs, Ops, ToWorker } from "./protocol";
 
@@ -56,6 +56,18 @@ function loadWasm(): Promise<RailgunWasm> {
   return wasmPromise;
 }
 
+/** Our own public pool snapshot (same origin). Anything that is not a clean public snapshot is ignored. */
+async function loadSnapshot(chainId: number): Promise<string | undefined> {
+  try {
+    const res = await realFetch(`/railgun/snapshot-${chainId}.json`, { credentials: "omit" });
+    if (!res.ok) return undefined;
+    const text = await res.text();
+    return isPublicSnapshot(text) ? text : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ------------------------------------------------------------------ state
 let wallet: RailgunWallet | undefined;
 let storageKey: CryptoKey | undefined;
@@ -100,15 +112,42 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
         checkpoint = undefined; // other wallet or corrupt: resync
       }
     }
-    wallet = await RailgunWallet.open({
-      wasm,
-      chainId: args.chainId,
-      rpcUrl: args.rpcUrl,
-      spendingKey: args.spendingKey,
-      viewingKey: args.viewingKey,
-      ...(checkpoint ? { checkpoint } : {}),
-    });
-    return { address: wallet.address, syncedBlock: wallet.syncedBlock.toString(), restored: !!checkpoint };
+    let fromSnapshot: bigint | undefined;
+    let expectedAddress: string | undefined;
+    if (!checkpoint && args.fresh) {
+      const snap = await loadSnapshot(args.chainId);
+      if (snap) {
+        const addr = wasm.RailgunAddress.fromPrivateKeys(args.spendingKey, args.viewingKey, BigInt(args.chainId));
+        expectedAddress = addr.toString();
+        addr.free();
+        checkpoint = seedFreshAccount(snap, expectedAddress);
+        fromSnapshot = snapshotBlock(snap);
+      }
+    }
+    const openWith = (cp: string | undefined) =>
+      RailgunWallet.open({
+        wasm,
+        chainId: args.chainId,
+        rpcUrl: args.rpcUrl,
+        spendingKey: args.spendingKey,
+        viewingKey: args.viewingKey,
+        ...(cp ? { checkpoint: cp } : {}),
+      });
+    wallet = await openWith(checkpoint);
+    if (expectedAddress !== undefined && wallet.address !== expectedAddress) {
+      // The seeded account is not this wallet's: never trust the snapshot, do a full sync.
+      await wallet.close();
+      fromSnapshot = undefined;
+      checkpoint = undefined;
+      wallet = await openWith(undefined);
+    }
+    if (fromSnapshot !== undefined) await saveCheckpoint(await wallet.checkpoint());
+    return {
+      address: wallet.address,
+      syncedBlock: wallet.syncedBlock.toString(),
+      restored: !!checkpoint && fromSnapshot === undefined,
+      ...(fromSnapshot !== undefined ? { snapshotBlock: fromSnapshot.toString() } : {}),
+    };
   },
 
   async sync(args: { head: string; windowBlocks?: string }) {

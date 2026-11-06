@@ -28,6 +28,8 @@ export interface WalletState {
   balances?: Balance[];
   wrappedBaseToken?: string;
   restored?: boolean;
+  /** Block of the public pool snapshot a new wallet started from. */
+  snapshotBlock?: bigint;
   lastSyncMs?: number;
   error?: string;
 }
@@ -55,7 +57,7 @@ void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id })
 
 railgun().onProgress((p) => update({ syncedBlock: BigInt(p.synced), head: BigInt(p.head) }));
 
-async function start(root: Uint8Array): Promise<void> {
+async function start(root: Uint8Array, fresh: boolean): Promise<void> {
   keys = await deriveWalletKeys(root);
   root.fill(0);
   const evmAddress = privateKeyToAddress(keys.evmAccount);
@@ -71,6 +73,7 @@ async function start(root: Uint8Array): Promise<void> {
     viewingKey: keys.railgunViewing,
     storageKey: keys.storage,
     checkpointName,
+    fresh,
   });
   update({
     railgunAddress: opened.address,
@@ -78,6 +81,7 @@ async function start(root: Uint8Array): Promise<void> {
     deploymentBlock: BigInt(deployment.deploymentBlock),
     wrappedBaseToken: deployment.wrappedBaseToken.toLowerCase(),
     restored: opened.restored,
+    ...(opened.snapshotBlock ? { snapshotBlock: BigInt(opened.snapshotBlock) } : {}),
   });
   await sync();
 }
@@ -113,7 +117,7 @@ export function createWallet(): Promise<void> {
     const { root, credentialId } = await createPasskey();
     await store.set(CREDENTIAL_KEY, credentialId);
     update({ hasPasskey: true });
-    await start(root);
+    await start(root, true);
   });
 }
 
@@ -124,7 +128,7 @@ export function unlockWallet(): Promise<void> {
     const { root, credentialId } = await unlockWithPasskey(remembered);
     if (!remembered) await store.set(CREDENTIAL_KEY, credentialId);
     update({ hasPasskey: true });
-    await start(root);
+    await start(root, false);
   });
 }
 

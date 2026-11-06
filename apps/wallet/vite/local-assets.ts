@@ -5,6 +5,7 @@
  *   /anon-rpc/worker-0x<keccak>.js  <- .local/worker/*-0x<keccak>.js (+ .br/.gz if present)
  *   /tor/bootstrap.zip.zst          <- .local/tor/bootstrap.zip.zst (written by gateway/start.sh)
  *   /railgun/<file>                 <- .local/railgun/web/<file> (packages/railgun/scripts/build-wasm.sh)
+ *   /railgun/snapshot-<chain>.json  <- public pool snapshot (packages/railgun/scripts/build-snapshot.mjs)
  *
  * It also exposes the local gateway address (.local/gateway/kps-address) to
  * the app as `import.meta.env.VITE_PRAWL_GATEWAY`, unless that is already set.
@@ -53,7 +54,7 @@ export function prawlLocalAssets(root: string): Plugin {
     }
     if (url.startsWith("/railgun/")) {
       const name = url.slice("/railgun/".length);
-      const type = RAILGUN_FILES[name];
+      const type = RAILGUN_FILES[name] ?? (/^snapshot-\d+\.json$/.test(name) ? "application/json" : undefined);
       const file = path.join(railgunDir, name);
       if (!type || !existsSync(file)) {
         res.statusCode = 404;
@@ -63,6 +64,13 @@ export function prawlLocalAssets(root: string): Plugin {
       res.setHeader("content-type", type);
       res.setHeader("cache-control", "no-cache");
       res.setHeader("x-content-type-options", "nosniff");
+      res.setHeader("vary", "accept-encoding");
+      const gz = `${file}.gz`;
+      if (/\bgzip\b/.test(String(req.headers["accept-encoding"] ?? "")) && existsSync(gz)) {
+        res.setHeader("content-encoding", "gzip");
+        res.end(readFileSync(gz));
+        return;
+      }
       res.end(readFileSync(file));
       return;
     }

@@ -20,11 +20,17 @@ export interface OpenArgs {
   storageKey: CryptoKey;
   /** Record name the sealed checkpoint is stored under. */
   checkpointName: string;
+  /**
+   * True only for a wallet created just now: it cannot own notes from before
+   * it existed, so with no saved checkpoint it may start from our public pool
+   * snapshot instead of replaying all history. Never for a restored wallet.
+   */
+  fresh: boolean;
 }
 
 export interface Ops {
   deployment(chainId: number): Deployment;
-  open(args: OpenArgs): { address: string; syncedBlock: string; restored: boolean };
+  open(args: OpenArgs): { address: string; syncedBlock: string; restored: boolean; snapshotBlock?: string };
   sync(args: { head: string; windowBlocks?: string }): { syncedBlock: string };
   refreshPoi(): void;
   balances(): Balance[];

@@ -75,7 +75,8 @@ export function WalletCard() {
             <div className="h-full bg-emerald-400 transition-all" style={{ width: `${pct}%` }} />
           </div>
           <p className="mt-1 text-xs text-zinc-500">
-            Scanning the private pool over Tor{w.restored ? " from your saved checkpoint" : ""}… {pct.toFixed(0)}%
+            Scanning the private pool over Tor
+            {w.restored ? " from your saved checkpoint" : w.snapshotBlock ? " from the latest pool snapshot" : ""}… {pct.toFixed(0)}%
           </p>
         </div>
       )}
