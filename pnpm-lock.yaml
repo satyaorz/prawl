@@ -90,6 +90,19 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@26.6.6)(vite@8.3.6(@types/node@26.6.6)(jiti@2.7.0))
 
+  packages/railgun:
+    dependencies:
+      '@prawl/anon-rpc':
+        specifier: workspace:*
+        version: link:../anon-rpc
+    devDependencies:
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@26.6.6)(vite@8.3.6(@types/node@26.6.6)(jiti@2.7.0))
+
 packages:
 
   '@adraffy/ens-normalize@1.11.1':
