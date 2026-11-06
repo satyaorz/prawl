@@ -7,10 +7,45 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import android.app.Activity
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import xyz.prawl.core.android.BiometricApprover
+import xyz.prawl.core.bridge.BridgeConfirm
+import xyz.prawl.core.bridge.BridgeDispatcher
+import xyz.prawl.core.bridge.BridgeHost
+import xyz.prawl.core.bridge.SiteConfig
+import xyz.prawl.core.keys.SpendApprover
+import xyz.prawl.core.model.Note
+import xyz.prawl.core.protocol.Escrows
+import xyz.prawl.core.protocol.OfflineWallet
+import xyz.prawl.offline.ui.WalletTab
+import xyz.prawl.offline.ui.WalletWebView
+import xyz.prawl.offline.ui.components.ConfirmDialog
+import xyz.prawl.offline.ui.theme.Tw
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import xyz.prawl.offline.ui.screens.BalanceScreen
 import xyz.prawl.offline.ui.screens.CashOutScreen
 import xyz.prawl.offline.ui.screens.DeviceCheckScreen
@@ -61,22 +96,72 @@ val LocalHostActivity = staticCompositionLocalOf<ComponentActivity?> { null }
  */
 class OfflineCashActivity : ComponentActivity() {
     private val stack = mutableStateListOf<Route>(Route.Balance)
+    /** 0 = Wallet (the website), 1 = Offline cash (native screens). */
+    private var tab by mutableIntStateOf(1)
+    private var pending by mutableStateOf<PendingConfirm?>(null)
+    private var web: WalletWebView? = null
+    private var siteProblem: String? = null
+
+    /** A native confirmation the bridge is waiting on (the page asked to spend; only the user can approve). */
+    class PendingConfirm(val c: BridgeConfirm, val result: CompletableFuture<Boolean>)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        routeFor(intent)?.let { if (it != Route.Balance) stack.add(it) }
+        val prefs = getSharedPreferences("prawl_settings", MODE_PRIVATE)
+        // DEBUG builds only: `-e site http://localhost:4173` (through adb reverse) is remembered; an empty value clears it.
+        if (BuildConfig.DEBUG) intent.getStringExtra("site")?.let { prefs.edit().putString("debugSite", it.ifBlank { null }).apply() }
+        val g = graph
+        val host = object : BridgeHost {
+            override fun wallet(): OfflineWallet = g.wallet()
+            override fun notes(): List<Note> = g.notes.notes()
+            override val chainId = g.chainId
+            override val publicEscrow40 = g.escrow40
+            override val privateEscrow40 = Escrows.SEPOLIA_V31
+            override fun approver(): SpendApprover? = BiometricApprover(this@OfflineCashActivity)
+            override fun confirm(c: BridgeConfirm): Boolean {
+                val f = CompletableFuture<Boolean>()
+                runOnUiThread { pending = PendingConfirm(c, f) }
+                return try { f.get(120, TimeUnit.SECONDS) } catch (e: Exception) { runOnUiThread { pending = null }; false }
+            }
+            override fun changed() = g.changed()
+            override fun nowS() = System.currentTimeMillis() / 1000
+        }
+        val r = SiteConfig.resolve(BuildConfig.HANDOFF_SITE, BuildConfig.DEBUG, prefs.getString("debugSite", null))
+        siteProblem = r.problem
+        web = r.resolved?.let { WalletWebView(this, BridgeDispatcher(host), it, BuildConfig.DEBUG) { screen -> runOnUiThread { openNative(screen) } } }
+        tab = if (web != null) 0 else 1
+        routeFor(intent)?.let { if (it != Route.Balance) stack.add(it); tab = 1 }
         setContent {
             CompositionLocalProvider(LocalHostActivity provides this) {
-                PrawlTheme { App(Nav(stack)) }
+                PrawlTheme {
+                    Shell(tab, { tab = it }, web, siteProblem, Nav(stack), pending, this)
+                    pending?.let { pc ->
+                        ConfirmDialog(
+                            title = pc.c.title, text = pc.c.text, confirm = "Approve with fingerprint / PIN",
+                            mono = pc.c.mono, warning = pc.c.warning,
+                            onConfirm = { pending = null; pc.result.complete(true) },
+                            onDismiss = { pending = null; pc.result.complete(false) },
+                        )
+                    }
+                }
             }
         }
     }
 
+    /** A `prawl://offline/<screen>` link inside the wallet page: show that native screen, always an empty form. */
+    private fun openNative(screen: String?) {
+        val r = screen(screen)
+        if (r == Route.Balance) Nav(stack).home() else stack.add(r)
+        tab = 1
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        routeFor(intent)?.let { r -> if (r == Route.Balance) Nav(stack).home() else stack.add(r) }
+        routeFor(intent)?.let { r -> if (r == Route.Balance) Nav(stack).home() else stack.add(r); tab = 1 }
     }
+
+    override fun onDestroy() { web?.destroy(); super.onDestroy() }
 
     companion object {
         const val ACTION_OPEN = "xyz.prawl.offline.action.OPEN"
@@ -90,7 +175,7 @@ class OfflineCashActivity : ComponentActivity() {
         }
 
         /** Screen by name, always with an empty form: no value from outside is ever carried into a route. */
-        private fun screen(name: String?): Route = when (name) {
+        internal fun screen(name: String?): Route = when (name) {
             "receive" -> Route.Receive
             "pay" -> Route.Pay()
             "load", "deposited" -> Route.Load()
@@ -100,6 +185,28 @@ class OfflineCashActivity : ComponentActivity() {
             "settings" -> Route.Settings
             else -> Route.Balance
         }
+    }
+}
+
+/** Bottom tabs: Wallet (the website) and Offline cash (native). */
+@Composable
+private fun Shell(tab: Int, onTab: (Int) -> Unit, web: WalletWebView?, problem: String?, nav: Nav, pending: OfflineCashActivity.PendingConfirm?, activity: Activity) {
+    Column(Modifier.fillMaxSize().background(Tw.zinc900)) {
+        Box(Modifier.weight(1f).then(if (tab == 0) Modifier.statusBarsPadding() else Modifier)) {
+            if (tab == 0 || web != null) WalletTab(web, problem, visible = tab == 0, onOpenOffline = { onTab(1) }, activity = activity)
+            if (tab == 1) App(nav)
+        }
+        Row(Modifier.fillMaxWidth().background(Tw.zinc900).navigationBarsPadding().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+            TabItem("Wallet", tab == 0, Modifier.weight(1f)) { onTab(0) }
+            TabItem("Offline cash", tab == 1, Modifier.weight(1f)) { onTab(1) }
+        }
+    }
+}
+
+@Composable
+private fun TabItem(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(modifier.height(56.dp).clickable(onClick = onClick), contentAlignment = Alignment.Center) {
+        Text(label, color = if (selected) Tw.emerald400 else Tw.zinc500, fontSize = 14.sp)
     }
 }
 

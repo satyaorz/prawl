@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG builds only: the main config plus plain http to localhost, so the Wallet tab can show a site served on the laptop through
+     `adb reverse tcp:4173 tcp:4173`. Release builds use app/src/main/res/xml/network_security_config.xml (https only). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">unstable.sepolia.beacon-api.nimbus.team</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
