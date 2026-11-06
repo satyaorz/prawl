@@ -30,7 +30,7 @@ contract MockBatchSwap is VeilBatchSwap {
         swapReserve = swapReserve_;
     }
 
-    function _swapExactInput(IERC20 tokenIn, IERC20 tokenOut, uint256 amountIn, uint64 lotA, uint64 lotB) internal override returns (uint256) {
+    function _swapExactInput(IERC20 tokenIn, IERC20 tokenOut, uint256 amountIn, uint256, uint64 lotA, uint64 lotB) internal override returns (uint256) {
         // 1:1 mock: the reserve pre-approved this contract and holds tokenOut.
         bool aToB = address(tokenIn) == address(cTokenA.underlying());
         uint256 inputLot = aToB ? lotA : lotB;

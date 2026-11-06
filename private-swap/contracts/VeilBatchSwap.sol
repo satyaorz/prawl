@@ -51,13 +51,24 @@ import {ILotPriceOracle} from "./interfaces/ILotPriceOracle.sol";
 contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     using SafeERC20 for IERC20;
 
-    uint256 public constant VERSION = 4;
+    uint256 public constant VERSION = 5;
 
     uint8 public constant DIR_A_TO_B = 1; // sell c-tokenA, receive c-tokenB
     uint8 public constant DIR_B_TO_A = 2;
 
     /// Max orders per round — bounds the O(n²) encrypted netting gas.
     uint256 public constant MAX_ORDERS_PER_ROUND = 6;
+
+    /// The net Uniswap leg must return at least this share of the quoted lot
+    /// price (the router enforces it, and every order's private minimum is
+    /// checked against it). A fully matched lot returns 100%.
+    uint256 public constant SLIPPAGE_FLOOR_BPS = 9700;
+
+    /// The pool's live price may differ from the round's snapshot by at most
+    /// this much when a round is prepared and executed. The snapshot is a spot
+    /// read taken at the first order, so without this bound the price could
+    /// be pushed, snapshotted, and unwound before settlement.
+    uint256 public constant MAX_PRICE_DEVIATION_BPS = 200;
 
     // A round snapshots a public oracle quote as exact A:B lots. Every order
     // in that round uses the same quote; direction and amount stay encrypted.
@@ -142,6 +153,7 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     error AlreadyRefunded();
     error InvalidOraclePrice();
     error StaleOraclePrice();
+    error PriceMovedSinceSnapshot();
 
     constructor(
         address router_,
@@ -312,11 +324,11 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
         euint64 lotsB = FHE.div(amt, price.lotB);
         ebool validA = FHE.and(FHE.eq(FHE.mul(lotsA, price.lotA), amt), FHE.le(lotsA, price.maxLots));
         ebool validB = FHE.and(FHE.eq(FHE.mul(lotsB, price.lotB), amt), FHE.le(lotsB, price.maxLots));
-        // The net Uniswap leg must return at least 90% of the quoted lot
-        // price. A matched lot returns 100%. Compare each private minimum
-        // against this worst-case floor before accepting any encrypted debit.
-        euint64 floorA = FHE.asEuint64(FHE.div(FHE.mul(FHE.asEuint128(lotsA), uint128(price.lotB) * 9000), uint128(10000)));
-        euint64 floorB = FHE.asEuint64(FHE.div(FHE.mul(FHE.asEuint128(lotsB), uint128(price.lotA) * 9000), uint128(10000)));
+        // The net Uniswap leg must return at least SLIPPAGE_FLOOR_BPS of the
+        // quoted lot price. A matched lot returns 100%. Compare each private
+        // minimum against this worst-case floor before accepting any debit.
+        euint64 floorA = FHE.asEuint64(FHE.div(FHE.mul(FHE.asEuint128(lotsA), uint128(price.lotB) * uint128(SLIPPAGE_FLOOR_BPS)), uint128(10000)));
+        euint64 floorB = FHE.asEuint64(FHE.div(FHE.mul(FHE.asEuint128(lotsB), uint128(price.lotA) * uint128(SLIPPAGE_FLOOR_BPS)), uint128(10000)));
         validA = FHE.and(validA, FHE.le(minOutput, floorA));
         validB = FHE.and(validB, FHE.le(minOutput, floorB));
         debitA = FHE.select(FHE.and(FHE.eq(dir, DIR_A_TO_B), validA), amt, FHE.asEuint64(0));
@@ -446,7 +458,10 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
         uint64 inputLot = surplusSide == DIR_A_TO_B ? price.lotA : price.lotB;
         uint64 outputLot = surplusSide == DIR_A_TO_B ? price.lotB : price.lotA;
         uint64 inputUnits = net * inputLot;
-        round.minSwapOutput = (uint256(net) * outputLot * 9000 + 9999) / 10000;
+        round.minSwapOutput = (uint256(net) * outputLot * SLIPPAGE_FLOOR_BPS + 9999) / 10000;
+        // Do not burn the residual for unwrap if the pool has moved away from
+        // the snapshot: the round then simply expires and refunds.
+        if (net > 0) _requireSpotNearSnapshot(price);
 
         bytes32 unwrapHandle = 0;
         if (net > 0) {
@@ -484,12 +499,13 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             uint256 rateIn = surplusWrapper.rate();
             uint256 rateOut = outputWrapper.rate();
 
-            surplusWrapper.finalizeUnwrap(euint64.wrap(round.unwrapHandle), unwrapCleartext, decryptionProof);
+            _requireSpotNearSnapshot(price);
+            _finalizeUnwrapOnce(surplusWrapper, round.unwrapHandle, unwrapCleartext, decryptionProof);
 
             IERC20 inputToken = IERC20(surplusWrapper.underlying());
             IERC20 outputToken = IERC20(outputWrapper.underlying());
             uint256 underlyingIn = uint256(expectedInput) * rateIn;
-            uint256 amountOut = _swapExactInput(inputToken, outputToken, underlyingIn, price.lotA, price.lotB);
+            uint256 amountOut = _swapExactInput(inputToken, outputToken, underlyingIn, uint256(round.minSwapOutput) * rateOut, price.lotA, price.lotB);
             uint256 outputInWrapperUnits = amountOut / rateOut;
             if (outputInWrapperUnits > type(uint64).max) revert SwapOutputOverflow();
             swapOutput = uint64(outputInWrapperUnits);
@@ -574,7 +590,7 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             ERC7984ERC20Wrapper wrapper = round.surplusSide == DIR_A_TO_B ? cTokenA : cTokenB;
             uint64 expected = round.netSwapped * (round.surplusSide == DIR_A_TO_B ? price.lotA : price.lotB);
             if (unwrapCleartext != expected) revert UnwrapMismatch(unwrapCleartext, expected);
-            wrapper.finalizeUnwrap(euint64.wrap(round.unwrapHandle), unwrapCleartext, proof);
+            _finalizeUnwrapOnce(wrapper, round.unwrapHandle, unwrapCleartext, proof);
             IERC20 underlying = IERC20(wrapper.underlying());
             uint256 underlyingAmount = uint256(expected) * wrapper.rate();
             underlying.forceApprove(address(wrapper), underlyingAmount);
@@ -652,8 +668,29 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     // Uniswap v4 swap — net leg only
     // ------------------------------------------------------------------
 
-    function _swapExactInput(IERC20 tokenIn, IERC20 tokenOut, uint256 amountIn, uint64, uint64) internal virtual returns (uint256 amountOut) {
-        if (amountIn > type(uint128).max) revert SwapInputOverflow();
+    /// @dev `unwrapRequest` is permissionless: anyone holding the public
+    /// decryption proof can finalize it, and a request can be finalized only
+    /// once. If somebody already did, the tokens are already in this contract
+    /// and finalizing again would revert, which would lock the round (settle
+    /// and refund both depend on this step). Finalize only if still pending.
+    function _finalizeUnwrapOnce(ERC7984ERC20Wrapper wrapper, bytes32 handle, uint64 cleartext, bytes calldata proof) internal {
+        euint64 request = euint64.wrap(handle);
+        if (wrapper.unwrapRequester(request) != address(0)) wrapper.finalizeUnwrap(request, cleartext, proof);
+    }
+
+    /// @dev Revert if the pool's live price is not within MAX_PRICE_DEVIATION_BPS
+    /// of the round's snapshot. Compares the lotB/lotA ratios by cross-multiplication.
+    function _requireSpotNearSnapshot(RoundPrice storage snapshot) internal view {
+        (uint64 liveA, uint64 liveB, uint256 updatedAt) = priceOracle.latestLotPrice();
+        if (liveA == 0 || liveB == 0 || updatedAt == 0) revert InvalidOraclePrice();
+        uint256 snap = uint256(snapshot.lotB) * liveA; // snapshot price, scaled by liveA
+        uint256 live = uint256(liveB) * snapshot.lotA; // live price, scaled by snapshot.lotA
+        uint256 diff = snap > live ? snap - live : live - snap;
+        if (diff * 10000 > snap * MAX_PRICE_DEVIATION_BPS) revert PriceMovedSinceSnapshot();
+    }
+
+    function _swapExactInput(IERC20 tokenIn, IERC20 tokenOut, uint256 amountIn, uint256 minAmountOut, uint64, uint64) internal virtual returns (uint256 amountOut) {
+        if (amountIn > type(uint128).max || minAmountOut > type(uint128).max) revert SwapInputOverflow();
         Currency inputCurrency = Currency.wrap(address(tokenIn));
         Currency outputCurrency = Currency.wrap(address(tokenOut));
         bool zeroForOne = Currency.unwrap(poolKey.currency0) == address(tokenIn);
@@ -665,7 +702,7 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
                 poolKey: poolKey,
                 zeroForOne: zeroForOne,
                 amountIn: uint128(amountIn),
-                amountOutMinimum: 0, // guarded below via balance check + slippage floor
+                amountOutMinimum: uint128(minAmountOut), // the slippage floor, enforced by the router
                 hookData: bytes('')
             })
         );

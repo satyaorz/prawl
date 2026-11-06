@@ -240,7 +240,7 @@ describe("VeilBatchSwap v3 (confidential orders)", function () {
     const amount = 10n * 10n ** 6n;
     await wrap(signers.alice, tokenA, cA, amount);
     await fund(signers.alice, cA, amount);
-    await order(signers.alice, DIR_A_TO_B, amount, 9n * 10n ** 6n + 1n);
+    await order(signers.alice, DIR_A_TO_B, amount, 97n * 10n ** 5n + 1n); // one unit above the 97% floor
     expect(await fundedBalance(signers.alice, 0)).to.equal(amount);
   });
 
@@ -294,12 +294,87 @@ describe("VeilBatchSwap v3 (confidential orders)", function () {
     for (const user of [signers.alice, signers.bob]) {
       await wrap(user, tokenA, cA, amount);
       await fund(user, cA, amount);
-      await order(user, DIR_A_TO_B, amount, 9n * 10n ** 6n);
+      await order(user, DIR_A_TO_B, amount, 97n * 10n ** 5n); // exactly the 97% floor
     }
-    await (await batch.setOutputBps(9000)).wait();
+    await (await batch.setOutputBps(9700)).wait();
     await settleAndCredit();
-    expect(await fundedBalance(signers.alice, 1)).to.equal(9n * 10n ** 6n);
-    expect(await fundedBalance(signers.bob, 1)).to.equal(9n * 10n ** 6n);
+    expect(await fundedBalance(signers.alice, 1)).to.equal(97n * 10n ** 5n);
+    expect(await fundedBalance(signers.bob, 1)).to.equal(97n * 10n ** 5n);
+  });
+
+  /** Two same-direction orders leave a net residual, so settlement burns a residual for unwrap. */
+  async function prepareOneSidedRound(amount: bigint) {
+    await wrap(signers.alice, tokenA, cA, amount);
+    await fund(signers.alice, cA, amount);
+    await wrap(signers.bob, tokenA, cA, amount);
+    await fund(signers.bob, cA, amount);
+    await order(signers.alice, DIR_A_TO_B, amount);
+    await order(signers.bob, DIR_A_TO_B, amount);
+    await (await batch.closeRound()).wait();
+    const closed = await batch.rounds(1);
+    const roundProof = await fhevm.publicDecrypt([closed.netEnc, closed.surplusEnc]);
+    await (await batch.prepareSettle(1, roundProof.abiEncodedClearValues, roundProof.decryptionProof)).wait();
+    const prepared = await batch.rounds(1);
+    const unwrapProof = await fhevm.publicDecrypt([prepared.unwrapHandle]);
+    return { prepared, cleartext: unwrapProof.clearValues[prepared.unwrapHandle] as bigint, proof: unwrapProof.decryptionProof };
+  }
+
+  it("settles even if a third party finalized the unwrap first", async function () {
+    const amount = 5n * 10n ** 6n;
+    const { prepared, cleartext, proof } = await prepareOneSidedRound(amount);
+    // finalizeUnwrap is permissionless and works only once. Someone doing it
+    // early must not lock the round.
+    await (await cA.connect(signers.bob).finalizeUnwrap(prepared.unwrapHandle, cleartext, proof)).wait();
+    await (await batch.executeSettle(1, cleartext, proof)).wait();
+    expect((await batch.rounds(1)).executed).to.equal(true);
+    for (const u of [signers.alice, signers.bob]) await (await batch.creditOrder(1, u.address)).wait();
+    expect(await fundedBalance(signers.alice, 1)).to.equal(amount);
+    expect(await fundedBalance(signers.bob, 1)).to.equal(amount);
+  });
+
+  it("refunds even if a third party finalized the unwrap first", async function () {
+    const amount = 5n * 10n ** 6n;
+    const { prepared, cleartext, proof } = await prepareOneSidedRound(amount);
+    await (await cA.connect(signers.bob).finalizeUnwrap(prepared.unwrapHandle, cleartext, proof)).wait();
+    await ethers.provider.send("evm_increaseTime", [3601]);
+    await ethers.provider.send("evm_mine", []);
+    await (await batch.expireRound(1, cleartext, proof)).wait();
+    await (await batch.refundOrder(1, signers.alice.address)).wait();
+    await (await batch.refundOrder(1, signers.bob.address)).wait();
+    expect(await fundedBalance(signers.alice, 0)).to.equal(amount);
+    expect(await fundedBalance(signers.bob, 0)).to.equal(amount);
+  });
+
+  it("refuses to settle when the pool price moved after the snapshot", async function () {
+    const now = async () => (await ethers.provider.getBlock("latest"))!.timestamp;
+    await (await oracle.setPrice(100, 100, await now())).wait();
+    const amount = 10n * 10n ** 6n; // a multiple of both lots
+    const { prepared, cleartext, proof } = await prepareOneSidedRound(amount);
+    // 3% away from the snapshot: over the 2% bound.
+    await (await oracle.setPrice(100, 103, await now())).wait();
+    await expect(batch.executeSettle(1, cleartext, proof)).to.be.revertedWithCustomError(batch, "PriceMovedSinceSnapshot");
+    // Back within the bound (1%): settles.
+    await (await oracle.setPrice(100, 101, await now())).wait();
+    await (await batch.executeSettle(1, cleartext, proof)).wait();
+    expect((await batch.rounds(1)).executed).to.equal(true);
+    void prepared;
+  });
+
+  it("does not burn the residual for unwrap when the price already moved", async function () {
+    const now = async () => (await ethers.provider.getBlock("latest"))!.timestamp;
+    await (await oracle.setPrice(100, 100, await now())).wait();
+    const amount = 10n * 10n ** 6n;
+    for (const u of [signers.alice, signers.bob]) {
+      await wrap(u, tokenA, cA, amount);
+      await fund(u, cA, amount);
+      await order(u, DIR_A_TO_B, amount);
+    }
+    await (await batch.closeRound()).wait();
+    const closed = await batch.rounds(1);
+    const roundProof = await fhevm.publicDecrypt([closed.netEnc, closed.surplusEnc]);
+    await (await oracle.setPrice(100, 90, await now())).wait();
+    await expect(batch.prepareSettle(1, roundProof.abiEncodedClearValues, roundProof.decryptionProof)).to.be.revertedWithCustomError(batch, "PriceMovedSinceSnapshot");
+    expect((await batch.rounds(1)).prepared).to.equal(false);
   });
 
   it("expires an unfilled open round and refunds without a keeper", async function () {

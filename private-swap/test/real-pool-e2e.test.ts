@@ -266,7 +266,7 @@ describe("VeilBatchSwap against a real Uniswap v4 pool", function () {
   });
 
   it("enforces the on-chain slippage floor from the oracle quote", async function () {
-    // prepareSettle records minSwapOutput = 90% of the oracle-quoted output for
+    // prepareSettle records minSwapOutput = the slippage floor (97%) of the oracle-quoted output for
     // the net residual. executeSettle reverts if the real pool delivers less,
     // so the floor is a hard on-chain guard, not an advisory estimate.
     // Two lots of A against one lot of B leaves a one-lot residual that must go
@@ -291,9 +291,11 @@ describe("VeilBatchSwap against a real Uniswap v4 pool", function () {
     const prepared = await batch.rounds(roundId);
     const price = await batch.roundPrices(roundId);
     const outputLot = surplus === DIR_A_TO_B ? BigInt(price[1]) : BigInt(price[0]);
-    // 90% of the quoted output, rounded up — exactly what the contract computes.
-    const expectedFloor = (net * outputLot * 9000n + 9999n) / 10000n;
-    expect(BigInt(prepared.minSwapOutput), "the floor is 90% of the quoted output").to.equal(expectedFloor);
+    // The floor share of the quoted output, rounded up — exactly what the contract computes.
+    const floorBps = BigInt(await batch.SLIPPAGE_FLOOR_BPS());
+    expect(floorBps, "the floor is 97%").to.equal(9700n);
+    const expectedFloor = (net * outputLot * floorBps + 9999n) / 10000n;
+    expect(BigInt(prepared.minSwapOutput), "the floor is the configured share of the quoted output").to.equal(expectedFloor);
 
     // The real pool delivers at least the floor at a 1:1 quoted price, so
     // settlement succeeds and its output is recorded.
