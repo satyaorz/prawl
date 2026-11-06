@@ -90,7 +90,9 @@ public final class OtkVerify {
             if (!pinned) r.fails.add("root is not a pinned Google attestation root");
             // 2. revocation + RKP detection + validity (RKP certs must be in validity)
             for (X509Certificate c : chain) {
-                if (revoked.contains(c.getSerialNumber().toString(16))) r.fails.add("revoked serial " + c.getSerialNumber().toString(16));
+                // Google's list writes 64-bit serials in DECIMAL and longer ones in hex (audit F-04): check both renderings
+                if (revoked.contains(c.getSerialNumber().toString(16)) || revoked.contains(c.getSerialNumber().toString(10)))
+                    r.fails.add("revoked serial " + c.getSerialNumber().toString(16));
                 if (c.getExtensionValue(OID_PROV_INFO) != null) r.rkp = true;
             }
             if (r.rkp) for (int i = 0; i + 1 < chain.size(); i++) {

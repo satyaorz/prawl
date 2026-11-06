@@ -6,7 +6,7 @@ import java.math.BigInteger
  * Minimal DER TLV reader (high-tag-number form, long lengths). Byte-for-byte port of `OtkVerify.Der`
  * from the Java harness, so the attestation extension is parsed exactly as on the tested phones.
  */
-class Der private constructor(val tag: Int, val constructed: Boolean, val value: ByteArray, val end: Int) {
+class Der private constructor(val tag: Int, val constructed: Boolean, val value: ByteArray, val end: Int, val cls: Int = 0) {
     fun children(): List<Der> {
         val out = ArrayList<Der>()
         var i = 0
@@ -19,6 +19,9 @@ class Der private constructor(val tag: Int, val constructed: Boolean, val value:
     fun intVal(): BigInteger = BigInteger(value)
 
     companion object {
+        /** ASN.1 class of the identifier: 0 universal, 1 application, 2 context-specific, 3 private. */
+        const val CONTEXT = 2
+
         fun parse(b: ByteArray, start: Int): Der {
             var i = start
             val b0 = b[i++].toInt() and 0xff
@@ -39,7 +42,7 @@ class Der private constructor(val tag: Int, val constructed: Boolean, val value:
                 for (k in 0 until n) len = (len shl 8) or (b[i++].toInt() and 0xff)
             }
             if (len < 0 || i + len > b.size) throw IllegalArgumentException("DER length out of range")
-            return Der(tag, constructed, b.copyOfRange(i, i + len), i + len)
+            return Der(tag, constructed, b.copyOfRange(i, i + len), i + len, b0 ushr 6)
         }
     }
 }

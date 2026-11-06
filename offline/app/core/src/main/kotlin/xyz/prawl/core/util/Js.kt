@@ -19,11 +19,25 @@ import kotlinx.serialization.json.contentOrNull
 object Js {
     val parser = Json { ignoreUnknownKeys = true; isLenient = false }
 
-    fun parse(s: String): JsonObject = parser.parseToJsonElement(s) as? JsonObject
-        ?: throw IllegalArgumentException("not a JSON object")
+    /** Deepest nesting accepted. Honest messages nest to about 8; the recursive parser overflows the stack around 10^4 (audit F-07). */
+    const val MAX_DEPTH = 32
 
-    fun parseArray(s: String): JsonArray = parser.parseToJsonElement(s) as? JsonArray
-        ?: throw IllegalArgumentException("not a JSON array")
+    /** Linear, string-aware scan: throws if brackets nest deeper than [MAX_DEPTH], so a hostile frame cannot crash the parser with an Error. */
+    fun checkDepth(s: String) {
+        var depth = 0; var inStr = false; var esc = false
+        for (c in s) {
+            if (inStr) { if (esc) esc = false else if (c == '\\') esc = true else if (c == '"') inStr = false; continue }
+            when (c) {
+                '"' -> inStr = true
+                '{', '[' -> if (++depth > MAX_DEPTH) throw IllegalArgumentException("JSON nests deeper than $MAX_DEPTH")
+                '}', ']' -> depth--
+            }
+        }
+    }
+
+    fun parse(s: String): JsonObject { checkDepth(s); return parser.parseToJsonElement(s) as? JsonObject ?: throw IllegalArgumentException("not a JSON object") }
+
+    fun parseArray(s: String): JsonArray { checkDepth(s); return parser.parseToJsonElement(s) as? JsonArray ?: throw IllegalArgumentException("not a JSON array") }
 }
 
 class JsonFieldException(msg: String) : IllegalArgumentException(msg)

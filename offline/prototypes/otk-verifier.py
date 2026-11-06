@@ -153,10 +153,12 @@ def verify(chain_path, roots, status, now):
     if not google:
         res["errors"].append("root public key is not a Google attestation root")
     # 2. revocation (offline, cached list) + validity window
+    # Google's list writes 64-bit serials in DECIMAL and longer ones in hex (audit F-04): look the serial up in both renderings
     for c in chain:
-        sn = format(c.serial_number, "x")
-        if sn in status["entries"]:
-            res["errors"].append(f"revoked serial {sn}: {status['entries'][sn]}")
+        for sn in (format(c.serial_number, "x"), str(c.serial_number)):
+            if sn in status["entries"]:
+                res["errors"].append(f"revoked serial {sn}: {status['entries'][sn]}")
+                break
     res["rkp"] = any(OID_PROV_INFO in [e.oid.dotted_string for e in c.extensions] for c in chain)
     for c in chain[:-1]:
         if not (c.not_valid_before_utc <= now <= c.not_valid_after_utc):

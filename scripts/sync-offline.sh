@@ -32,6 +32,9 @@ copy "$A/onchain_real" contracts '/src/***' '/test/***' '/script/***' '/tools/*.
 # Protocol v3: spec, deployments, escrow with splitting + Sepolia deposit/redeem tooling (no logs, fixtures, phone vectors).
 copy v3/escrow_v3 contracts-v3 '/src/***' '/test/***' '/script/***' '/tools/*.py' '/tools/*.sh' \
   '/lib/nitro-validator/***' '/foundry.toml' '/run_all.sh'
+# Escrow v3.2 = v3.1 + the contract audit's fixes (deployed on Sepolia; see DEPLOYMENTS.md)
+copy v3/escrow_v32 contracts-v32 '/src/***' '/test/***' '/script/***' '/tools/*.py' '/tools/*.sh' \
+  '/lib/nitro-validator/***' '/foundry.toml' '/AUDIT_PATCH.diff'
 rsync -a "$SRC/v3/SPEC.md" "$DST/SPEC-v3.md"
 rsync -a "$SRC/v3/DEPLOYMENTS.md" "$DST/DEPLOYMENTS.md"
 rsync -a "$SRC/v3/HANDOFF.md" "$DST/HANDOFF.md"

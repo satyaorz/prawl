@@ -20,13 +20,27 @@ interface CertStore {
 
     companion object {
         fun certId(der: ByteArray): String = Bytes.hex(Bytes.sha256(der).copyOfRange(0, 16))
+
+        /** Largest certificate accepted anywhere (real attestation certificates are 1-2.5 KB; a 4096-bit root is 1.4 KB). */
+        const val MAX_CERT_BYTES = 16 * 1024
+        /** Most certificates the store will hold: refuses more rather than evicting (held notes need their chains to be forwarded). */
+        const val MAX_CERTS = 5000
+        /** Longest attestation chain (cert id list) accepted from a peer; real chains have 4-5. */
+        const val MAX_CHAIN = 8
+
+        fun checkSize(der: ByteArray) { require(der.size in 1..MAX_CERT_BYTES) { "certificate of ${der.size} bytes is outside 1..$MAX_CERT_BYTES" } }
     }
 }
 
 class MemoryCertStore : CertStore {
     private val m = LinkedHashMap<String, ByteArray>()
     @Synchronized override fun get(id: String) = m[id]
-    @Synchronized override fun put(der: ByteArray): String = CertStore.certId(der).also { m.putIfAbsent(it, der) }
+    @Synchronized override fun put(der: ByteArray): String {
+        CertStore.checkSize(der)
+        val id = CertStore.certId(der)
+        if (!m.containsKey(id)) { check(m.size < CertStore.MAX_CERTS) { "certificate store is full" }; m[id] = der }
+        return id
+    }
     @Synchronized override fun ids() = m.keys.toList()
 }
 
@@ -39,9 +53,11 @@ class FileCertStore(private val dir: File) : CertStore {
         return if (f.exists()) f.readBytes() else null
     }
     @Synchronized override fun put(der: ByteArray): String {
+        CertStore.checkSize(der)
         val id = CertStore.certId(der)
         val f = File(dir, id)
         if (!f.exists()) {
+            check(ids().size < CertStore.MAX_CERTS) { "certificate store is full" }
             val tmp = File(dir, "$id.tmp")
             tmp.writeBytes(der)
             if (!tmp.renameTo(f)) { tmp.delete(); if (!f.exists()) throw java.io.IOException("cannot store cert $id") }
@@ -62,6 +78,7 @@ class CertResolver(private val store: CertStore, private val anchors: TrustAncho
 
     fun get(id: String, carried: JsonObject? = null): ByteArray {
         carried?.optStr(id)?.let { b64 ->
+            if (b64.length > CertStore.MAX_CERT_BYTES * 4 / 3 + 8) throw MissingCertException("carried certificate $id is too large")
             val d = Bytes.unb64(b64)
             if (CertStore.certId(d) != id) throw MissingCertException("cert hash mismatch $id")
             return d
@@ -78,9 +95,13 @@ class CertResolver(private val store: CertStore, private val anchors: TrustAncho
 
     fun leafKeyHash(ids: List<String>, carried: JsonObject? = null): String = Bytes.sha256Hex(leafKey(ids, carried).encoded)
 
-    /** Stores every carried certificate (after a payment was accepted). */
-    fun absorb(carried: JsonObject?) {
-        carried?.keys?.forEach { id -> store.put(get(id, carried)) }
+    /**
+     * Stores the carried certificates that [referenced] chains actually use (after a payment was accepted, or a chain verified).
+     * Anything else in the carried map is junk a peer attached: it is dropped, never stored (audit F-13).
+     */
+    fun absorb(carried: JsonObject?, referenced: Collection<String>) {
+        if (carried == null) return
+        for (id in referenced.toSet()) if (carried.containsKey(id) && id !in rootIds) store.put(get(id, carried))
     }
 
     /**

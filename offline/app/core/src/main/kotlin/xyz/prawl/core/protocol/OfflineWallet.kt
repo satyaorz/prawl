@@ -29,6 +29,7 @@ import xyz.prawl.core.util.arr
 import xyz.prawl.core.util.jsonArrayOf
 import xyz.prawl.core.util.optStr
 import xyz.prawl.core.util.str
+import xyz.prawl.core.util.objects
 import xyz.prawl.core.util.strings
 import xyz.prawl.core.util.with
 import xyz.prawl.core.util.without
@@ -73,6 +74,11 @@ class OfflineWallet(
     val lcAdvertisement: () -> JsonObject? = { null },
     /** Escrows that implement shield cash-out, refresh and private load (v3.1). Those operations are refused on any other escrow. */
     val v31Escrows: Set<Pair<String, String>> = Escrows.V31,
+    /**
+     * A shield target is accepted only if it echoes the nonce this phone put in its own `shield-ask` QR (audit F-03): a link or a
+     * pasted target from anywhere else cannot steer a cash-out. Only the debug harness switches this off.
+     */
+    val requireShieldNonce: Boolean = true,
 ) {
     val certs = CertResolver(certStore, anchors)
     private val rnd = SecureRandom()
@@ -83,6 +89,86 @@ class OfflineWallet(
      * Audit F1: a note is only signed from if everything that goes into the message text is in the canonical form the escrow
      * rebuilds. (Notes accepted by this app were checked on receipt; this also covers notes from older apps.)
      */
+    // ---------------------------------------------------------------- crash safety around signatures (audit F-06)
+    //
+    // A hardware signature cannot be repeated: the one-time key is gone the moment it signs. So the order is
+    //   1. write-ahead INTENT record (before the key is used): what is about to be signed and which new keys were made for it;
+    //   2. sign;
+    //   3. write ONE atomic SIGNED record holding everything the signature produced (the spent note with its stored bundle, the
+    //      change note, a pending-refresh record);
+    //   4. apply it (put the notes), then delete the signed record and the intent.
+    // `reconcile()` at startup finishes step 4 for any signed record, and cleans up intents whose signing never happened.
+
+    /** Writes the write-ahead intent. Returns an error text (and signs nothing) if it cannot be saved. */
+    private fun writeIntent(op: String, alias: String, newKeys: List<String> = emptyList(), extra: Map<String, String> = emptyMap()): String? = try {
+        notes.putRecord("intent", alias, buildJsonObject {
+            put("op", op); put("note", alias); put("newKeys", jsonArrayOf(newKeys)); put("at", nowS())
+            extra.forEach { (k, v) -> put(k, v) }
+        }); null
+    } catch (e: Exception) { "could not save the write-ahead record before signing, so nothing was signed (${e.message})" }
+
+    private fun dropIntent(alias: String) { runCatching { notes.deleteRecord("intent", alias) } }
+
+    /**
+     * Persists what a signature produced. The signed record is written first, atomically and with retries; applying it may fail and
+     * is retried here and by [reconcile]. Returns false only if even the signed record could not be written (the signature then
+     * exists only in memory: the caller still hands the bundle on, but the wallet cannot recover it after a restart).
+     */
+    private fun commitSigned(alias: String, noteWrites: List<Note>, recordWrites: List<Triple<String, String, JsonObject>> = emptyList()): Boolean {
+        val rec = buildJsonObject {
+            put("notes", JsonArray(noteWrites.map { it.json }))
+            put("records", JsonArray(recordWrites.map { (k, n, j) -> buildJsonObject { put("kind", k); put("name", n); put("json", j) } }))
+        }
+        var saved = false
+        for (attempt in 1..3) {
+            try { notes.putRecord("signed", alias, rec); saved = true; break }
+            catch (e: Exception) { log("WARNING: could not write the signed record (attempt $attempt): ${e.message}") }
+        }
+        if (!saved) log("WARNING: the signature exists only in memory; applying it directly")
+        for (attempt in 1..2) if (applySigned(alias, rec)) break
+        return saved
+    }
+
+    /** Applies a signed record (idempotent). Returns true when everything was written and the record and intent were removed. */
+    private fun applySigned(alias: String, rec: JsonObject): Boolean = try {
+        rec.arr("notes").objects().forEach { notes.put(Note(it)) }
+        rec.arr("records").objects().forEach { notes.putRecord(it.str("kind"), it.str("name"), it["json"] as JsonObject) }
+        notes.deleteRecord("signed", alias)
+        notes.deleteRecord("intent", alias)
+        true
+    } catch (e: Exception) { log("apply of the signed record for $alias failed, reconcile will retry: ${e.message}"); false }
+
+    /**
+     * Startup reconcile (call once per process, and it is cheap to call again): finishes interrupted signatures and clears intents.
+     * Returns the number of records it acted on.
+     */
+    fun reconcile(): Int = synchronized(lock) {
+        var acted = 0
+        for (n in notes.recordNames("signed")) {
+            val rec = notes.record("signed", n) ?: continue
+            if (applySigned(n, rec)) { acted++; log("RECONCILE: finished the interrupted signature of $n") }
+        }
+        for (n in notes.recordNames("intent")) {
+            val it = notes.record("intent", n) ?: continue
+            val note = notes.note(n)
+            val keyAlive = keys.exists(n)
+            val newKeys = runCatching { it.arr("newKeys").strings() }.getOrDefault(emptyList())
+            when {
+                keyAlive && note?.spent != true -> {            // the key never signed: forget the keys made for it
+                    newKeys.forEach { k -> if (notes.note(k) == null && notes.record("refresh", k) == null) keys.delete(k) }
+                    notes.deleteRecord("intent", n); acted++; log("RECONCILE: signing of $n never happened; removed its unused new keys")
+                }
+                !keyAlive && note != null && !note.spent -> {   // the key signed but no signature was stored: it is gone for good
+                    notes.put(Note(note.json.with("spent", true).with("signatureLost", true)))
+                    newKeys.forEach { k -> if (notes.note(k) == null) keys.delete(k) }
+                    notes.deleteRecord("intent", n); acted++; log("RECONCILE: the signature of $n was lost in a crash; the note is marked lost")
+                }
+                else -> { notes.deleteRecord("intent", n); acted++ }
+            }
+        }
+        acted
+    }
+
     private fun canonicalRefusal(note: Note): String? =
         Canonical.noteProblems(note).firstOrNull()?.let { "refusing to sign: this note's data is not in the canonical form the escrow can verify ($it)" }
 
@@ -130,8 +216,14 @@ class OfflineWallet(
         require(tipWei.signum() >= 0) { "tip must not be negative" }
         if (privateLoad) require(Escrows.isV31(chainId, escrow40, v31Escrows)) { "private load needs escrow v3.1; 0x$escrow40 does not support it" }
         else require(tipWei.signum() == 0) { "a tip applies only to private load" }
+        require(Canonical.isSafeLabel(label)) { "label must be 1-24 letters, digits, '_' or '-'" }
         val alias = "n_${label}_g"
-        notes.note(alias)?.let { if (!it.spent) throw IllegalStateException("label '$label' already holds an unspent coin") }
+        // never overwrite a record that may be the only copy of a signed payment or redemption (audit F-09)
+        notes.note(alias)?.let {
+            if (!it.spent) throw IllegalStateException("label '$label' already holds an unspent coin")
+            if (it.signedBundle != null || it.json.containsKey("redeemBundle")) throw IllegalStateException("label '$label' belongs to a note whose signed payment may still be unconfirmed; choose another")
+        }
+        if (keys.exists(alias)) throw IllegalStateException("a key named $alias already exists; refusing to replace it")
         var id: ByteArray
         do { id = ByteArray(32).also { rnd.nextBytes(it) } } while (Refresh.isReserved(Bytes.hex(id)))   // "RFSH" ids belong to refreshed coins
         val c0 = newKey(alias, spec)
@@ -190,6 +282,8 @@ class OfflineWallet(
             log("receive key $alias already accepted a payment: re-presenting it for the payer's resend")
         } else {
             notes.note(alias)?.let { if (!it.spent) throw IllegalStateException("receive name '$name' already holds a note") }
+            // audit F-05: a one-time key under this alias with no record is a payment's key; replacing it would destroy it
+            if (keys.exists(alias)) throw IllegalStateException("receive key $alias already exists without a record; refusing to replace it")
             c = newKey(alias, spec)
             notes.putPending(name, buildJsonObject { put("chain", c) })
         }
@@ -217,7 +311,9 @@ class OfflineWallet(
     // ================================================================ pay
 
     sealed class PayOutcome {
-        class Paid(val bundle: JsonObject, val amount: BigInteger, val change: BigInteger, val fromAlias: String, val resent: Boolean, val payeeCheck: AttestationResult) : PayOutcome()
+        /** [persisted] is false only if the wallet could not save the signed record (disk failure): hand the bundle on now, it cannot be recovered after a restart. */
+        class Paid(val bundle: JsonObject, val amount: BigInteger, val change: BigInteger, val fromAlias: String, val resent: Boolean, val payeeCheck: AttestationResult,
+                   val persisted: Boolean = true) : PayOutcome()
         class Refused(val reason: String, val payeeCheck: AttestationResult? = null) : PayOutcome()
     }
 
@@ -234,20 +330,22 @@ class OfflineWallet(
 
     fun pay(amount: BigInteger, reqIn: ReceiveRequest, approver: SpendApprover?, opts: PayOptions = PayOptions()): PayOutcome = synchronized(lock) {
         if (amount.signum() <= 0) return PayOutcome.Refused("amount must be positive")
-        val req = reqIn.json
         val reqCerts = reqIn.certs
         val to = reqIn.chain
-        for (id in to) if (reqCerts.containsKey(id)) certStore.put(certs.get(id, reqCerts))
-        val toKey = try { certs.leafKeyHash(to) } catch (e: Exception) { return PayOutcome.Refused("payee request unreadable: ${e.message}") }
+        // bounds before any crypto or write (audit F-07, F-13): a hostile payee's request is checked and used from memory
+        if (to.isEmpty() || to.size > CertStore.MAX_CHAIN) return PayOutcome.Refused("payee's certificate chain has ${to.size} entries (1..${CertStore.MAX_CHAIN} allowed)")
+        val toKey = try { certs.leafKeyHash(to, reqCerts) } catch (e: Exception) { return PayOutcome.Refused("payee request unreadable: ${e.message}") }
         if (opts.expectedKeyHash != null && !opts.expectedKeyHash.equals(toKey, ignoreCase = true)) {
             log("REFUSING TO PAY: the key received over the link is not the one in the payee's QR")
             return PayOutcome.Refused("the payee's key does not match the scanned QR code")
         }
         // Check the payee's key is a genuine hardware one-time key BEFORE spending: paying a software key
         // would let the payee equivocate and freeze the coin's subtree.
-        val pr = try { checker.verify(certs.chain(to)) } catch (e: Exception) { AttestationResult().apply { fails.add(e.message ?: "unreadable") } }
+        val pr = try { checker.verify(certs.chain(to, reqCerts)) } catch (e: Exception) { AttestationResult().apply { fails.add(e.message ?: "unreadable") } }
         log("  payee key check: " + pr.summary())
         if (!pr.ok) { log("REFUSING TO PAY: payee key is not a hardware one-time key"); return PayOutcome.Refused("payee key is not a hardware one-time key: ${pr.fails.joinToString("; ")}", pr) }
+        // only now (the chain verified) keep the certificates it uses; junk the payee attached is dropped (audit F-13)
+        try { certs.absorb(reqCerts, to) } catch (e: Exception) { return PayOutcome.Refused("could not store the payee's certificates: ${e.message}") }
         // retry: a note already signed to this exact key -> resend the same bytes
         if (opts.forceNote == null) for (n in notes.notes()) if (n.signedTo == toKey && n.signedBundle != null) {
             log("RESEND: note ${n.alias} was already signed to this recipient key")
@@ -278,7 +376,7 @@ class OfflineWallet(
         var chgAlias: String? = null
         var chgChain: JsonArray? = null
         if (change.signum() > 0) {
-            chgAlias = freshAlias("n_${h.label}_c${nowMillis()}")
+            chgAlias = freshAlias("n_${h.coinId.take(8)}_c${nowMillis()}")      // from the coin id, never from the attacker-chosen label (audit F-09)
             chgChain = newKey(chgAlias, KeySpec(userAuthPerUse = ownerApprovalForNewKeys()))
             outs.add(Output(change, certs.leafKeyHash(chgChain.strings())))
         }
@@ -286,13 +384,18 @@ class OfflineWallet(
         val msg = Protocol.spendMessage(h, depth, note.noteId, outs)
         log("PAY ${Eth.eth(amount)} ETH of note ${note.alias} (${Eth.eth(v)} ETH, depth $depth) -> '${reqIn.name}'" +
             (if (chgAlias != null) " + change ${Eth.eth(change)} ETH -> own new key $chgAlias" else ""))
+        writeIntent("pay", note.alias, listOfNotNull(chgAlias), mapOf("to" to toKey, "msgHash" to Bytes.sha256Hex(msg)))?.let { err ->
+            if (chgAlias != null) keys.delete(chgAlias)
+            log("REFUSED: $err"); return PayOutcome.Refused(err)
+        }
         val sig: ByteArray = try {
             keys.sign(note.alias, msg, approver, ApprovalPrompt("Prawl: approve payment", "Pay ${Eth.eth(amount)} ETH offline",
-                "Signs this note over once. The secure hardware will not sign it again."))
+                "Pays ${Eth.eth(amount)} ETH to the one-time key ${toKey.take(16)}…\nSigns this note over once. The secure hardware will not sign it again."))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
             log("REFUSED BY SECURE HARDWARE: $m")
             if (chgAlias != null) keys.delete(chgAlias)
+            dropIntent(note.alias)
             return PayOutcome.Refused("refused by the secure hardware: $m")
         }
         val sigB64 = Bytes.b64(sig)
@@ -300,18 +403,19 @@ class OfflineWallet(
         val spendTo = buildJsonObject { put("outputs", Output.toJson(outs)); put("index", 0); put("sig", sigB64); put("next", JsonArray(to.map { JsonPrimitive(it) })) }
         val path = JsonArray(note.json.arr("path") + spendTo)
         val bundle = buildJsonObject { put("header", h.json); put("path", path) }
-        // persist before sending (retry = same bytes)
-        notes.put(Note(note.json.with("spent", true).with("signedTo", toKey).with("signedBundle", bundle.toString())))
-        if (chgAlias != null) {
+        // ONE atomic record with the spent note (stored bundle: retry = same bytes) and the change note (audit F-06)
+        val spentNote = Note(note.json.with("spent", true).with("signedTo", toKey).with("signedBundle", bundle.toString()))
+        val changeNote = if (chgAlias != null) {
             val spendChg = spendTo.with("index", 1).with("next", chgChain!!)
             val cpath = JsonArray(note.json.arr("path") + spendChg)
-            notes.put(Note(buildJsonObject {
+            Note(buildJsonObject {
                 put("header", h.json); put("path", cpath); put("alias", chgAlias); put("value", change.toString())
                 put("noteId", Protocol.childNoteId(sigB64, 1))
-            }))
-        }
+            })
+        } else null
+        val persisted = commitSigned(note.alias, listOfNotNull(spentNote, changeNote))
         log("SIGNED spend at depth $depth (${sig.size} B sig), ${outs.size} outputs")
-        PayOutcome.Paid(carry(bundle, reqIn), amount, change, note.alias, false, pr)
+        PayOutcome.Paid(carry(bundle, reqIn), amount, change, note.alias, false, pr, persisted)
     }
 
     /**
@@ -369,7 +473,8 @@ class OfflineWallet(
     private fun finalSigHash(b: Bundle): String? =
         runCatching { b.path.lastOrNull()?.let { Bytes.sha256Hex(Bytes.unb64(it.sig)) } }.getOrNull()
 
-    fun accept(bundleJson: JsonObject, name: String): VerificationReport = synchronized(lock) {
+    /** [requestedWei]: the amount the payee asked for (QR `a`); a smaller payment is still accepted but flagged ([VerificationReport.shortfall], audit F-10). */
+    fun accept(bundleJson: JsonObject, name: String, requestedWei: BigInteger? = null): VerificationReport = synchronized(lock) {
         val b = Bundle(bundleJson)
         // idempotent accept: the same payment arriving again after it was accepted (the payer lost our verdict)
         val sigHash = finalSigHash(b)
@@ -392,19 +497,33 @@ class OfflineWallet(
             rep.fails.add("receive key already used")
         }
         if (!rep.accepted) { log("REJECTED in ${rep.ms} ms: ${rep.fails}"); return rep }
-        if (existing != null) { log("ACCEPTED (again) in ${rep.ms} ms: retry of a payment already held as recv_$name"); return rep }
-        certs.absorb(b.certs)
+        rep.requestedWei = requestedWei
+        if (requestedWei != null) rep.lines.add(VerifyLine("4", "Amount matches the request", rep.receivedValue >= requestedWei,
+            if (rep.receivedValue >= requestedWei) "${Eth.eth(rep.receivedValue)} ETH for ${Eth.eth(requestedWei)} ETH asked"
+            else "paid ${Eth.eth(rep.receivedValue)} ETH but ${Eth.eth(requestedWei)} ETH was asked"))
         val pendingChain = notes.pendingChain(name)
-        notes.deletePending(name)
-        val h = b.header.json.let { if (it.containsKey("label")) it else it.with("label", "coin") }
+        val keepAccepted = {
+            if (sigHash != null && pendingChain != null) notes.putAccepted(name, buildJsonObject {
+                put("chain", pendingChain.arr("chain")); put("sigHash", sigHash); put("value", rep.receivedValue.toString())
+                put("noteId", rep.noteId!!); put("at", nowS()); put("until", nowS() + acceptedKeepS)
+            })
+        }
+        if (existing != null) {
+            log("ACCEPTED (again) in ${rep.ms} ms: retry of a payment already held as recv_$name")
+            keepAccepted(); notes.deletePending(name)       // finish the bookkeeping a crash may have interrupted
+            return rep
+        }
+        // audit F-05 order: note first, then the idempotency record, and only then forget the pending key. A failure at any step
+        // leaves the pending record, so the payer's retry finds the same key instead of a replaced one.
+        certs.absorb(b.certs, b.header.k0 + b.path.flatMap { it.next })
+        val hj = b.header.json
+        val h = hj.with("label", Canonical.safeLabel(hj.optStr("label"), b.header.coinId))   // label is attacker-chosen and not signed (audit F-09)
         notes.put(Note(buildJsonObject {
             put("header", h); put("path", bundleJson["path"]!!); put("alias", "recv_$name")
             put("value", rep.receivedValue.toString()); put("noteId", rep.noteId!!); put("receivedAt", nowS())
         }))
-        if (sigHash != null && pendingChain != null) notes.putAccepted(name, buildJsonObject {
-            put("chain", pendingChain.arr("chain")); put("sigHash", sigHash); put("value", rep.receivedValue.toString())
-            put("noteId", rep.noteId!!); put("at", nowS()); put("until", nowS() + acceptedKeepS)
-        })
+        keepAccepted()
+        notes.deletePending(name)
         log("ACCEPTED in ${rep.ms} ms: I hold a ${Eth.eth(rep.receivedValue)} ETH note of coin ${b.header.label}, spendable once with recv_$name")
         rep
     }
@@ -430,12 +549,16 @@ class OfflineWallet(
         canonicalRefusal(note)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
         val outs = listOf(Output(note.value, Protocol.redeemKey(h.chainId, h.escrow, payout40)))
         val depth = note.depth
+        writeIntent("redeem", alias)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
         val sig = try {
+            // the FULL destination is in the prompt: a truncated address is what a look-alike address exploits (audit F-03)
             keys.sign(alias, Protocol.spendMessage(h, depth, note.noteId, outs), approver,
-                ApprovalPrompt("Prawl: approve cash out", "Redeem ${Eth.eth(note.value)} ETH to 0x${payout40.take(6)}…${payout40.takeLast(4)}"))
+                ApprovalPrompt("Prawl: approve cash out", "Redeem ${Eth.eth(note.value)} ETH",
+                    "Pays out to this address. Check every character:\n${Eth.checksum(payout40)}"))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
             log("REFUSED BY SECURE HARDWARE: $m")
+            dropIntent(alias)
             return RedeemOutcome.Refused("refused by the secure hardware: $m")
         }
         val red = buildJsonObject {
@@ -445,7 +568,7 @@ class OfflineWallet(
             })
         }
         val full = carry(red, null)
-        notes.put(Note(note.json.with("spent", true).with("redeemedTo", "0x$payout40").with("redeemBundle", full.toString()).with("redeemedAt", nowS())))
+        commitSigned(alias, listOf(Note(note.json.with("spent", true).with("redeemedTo", "0x$payout40").with("redeemBundle", full.toString()).with("redeemedAt", nowS()))))
         log("REDEEM SIGNED: ${Eth.eth(note.value)} ETH note $alias -> 0x$payout40")
         RedeemOutcome.Signed(full, note)
     }
@@ -471,6 +594,16 @@ class OfflineWallet(
             return ShieldCheck(null, listOf(VerifyLine("0", "Shield request readable", false, e.message ?: "malformed")))
         }
         val lines = ArrayList<VerifyLine>()
+        if (requireShieldNonce) {
+            val want = notes.record("shieldask", note.alias)?.takeIf { it.str("at").toLong() + SHIELD_ASK_TTL_S > nowS() && it.str("value") == note.value.toString() }?.optStr("nonce")
+            val got = target.optStr("nonce")?.lowercase()
+            val ok = want != null && got != null && got == want.lowercase()
+            lines.add(VerifyLine("0", "Answers this phone's own request (nonce)", ok, when {
+                ok -> "the target echoes the nonce of the shield-ask this phone showed"
+                want == null -> "this phone has no open request for this note: open the private cash-out and let the wallet scan the QR first"
+                else -> "the target does not echo the nonce of this phone's request: it did not come from the wallet that scanned it"
+            }))
+        }
         val v31 = Escrows.isV31(h.chainId, h.escrow, v31Escrows)
         lines.add(VerifyLine("1", "Coin is on escrow v3.1", v31,
             if (v31) "0x${h.escrow}" else "this coin is on escrow 0x${h.escrow}, which cannot pay into RAILGUN; cash it out to an address"))
@@ -489,6 +622,30 @@ class OfflineWallet(
         return ShieldCheck(req, lines)
     }
 
+    /** How long a `shield-ask` nonce stays valid. */
+    val SHIELD_ASK_TTL_S = 30 * 60L
+
+    /**
+     * The `shield-ask` QR for note [alias] (HANDOFF v1.2 §11): `{v, t:"shield-ask", chainId, escrow, value, nonce}`. The nonce is fresh
+     * random bytes kept by this phone; [redeemShield] accepts only a target that echoes it, so a target from a link, another app or a
+     * paste cannot pick the destination of a cash-out (audit F-03). Re-showing the QR within the TTL reuses the nonce.
+     */
+    fun shieldAsk(alias: String): JsonObject = synchronized(lock) {
+        val note = notes.note(alias) ?: throw IllegalArgumentException("no note $alias")
+        require(!note.spent && !note.pendingDeposit) { "note is not spendable" }
+        val h = note.header
+        require(Escrows.isV31(h.chainId, h.escrow, v31Escrows)) { "this coin is on an escrow that cannot pay into RAILGUN" }
+        val now = nowS()
+        val old = notes.record("shieldask", alias)?.takeIf { it.str("value") == note.value.toString() && it.str("at").toLong() + SHIELD_ASK_TTL_S > now }
+        val nonce = old?.str("nonce") ?: ("0x" + Bytes.hex(ByteArray(32).also { rnd.nextBytes(it) })).also { n ->
+            notes.putRecord("shieldask", alias, buildJsonObject { put("nonce", n); put("value", note.value.toString()); put("at", now) })
+        }
+        buildJsonObject {
+            put("v", 1); put("t", "shield-ask"); put("chainId", h.chainId.toLong()); put("escrow", "0x${h.escrow}")
+            put("value", note.value.toString()); put("nonce", nonce)
+        }
+    }
+
     /** Signs a redemption of note [alias] into the RAILGUN shield [target] (`shield-target` object or a bare request). */
     fun redeemShield(alias: String, target: JsonObject, approver: SpendApprover?, checkExpiry: Boolean = true): RedeemOutcome = synchronized(lock) {
         val note = notes.note(alias) ?: return RedeemOutcome.Refused("no note $alias")
@@ -502,12 +659,16 @@ class OfflineWallet(
         val req = chk.request!!
         val sh = req.hash()
         val outs = listOf(Output(note.value, req.outputKey(h.chainId, h.escrow)))
+        writeIntent("shield", alias)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
+        val npkFull = "0x" + req.npk.toString(16).padStart(64, '0')
         val sig = try {
             keys.sign(alias, Protocol.spendMessage(h, note.depth, note.noteId, outs), approver,
-                ApprovalPrompt("Prawl: approve private cash out", "Shield ${Eth.eth(note.value)} ETH into your private balance"))
+                ApprovalPrompt("Prawl: approve private cash out", "Shield ${Eth.eth(note.value)} ETH into a private balance",
+                    "Into the RAILGUN account with this key. Check every character:\n$npkFull"))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
             log("REFUSED BY SECURE HARDWARE: $m")
+            dropIntent(alias)
             return RedeemOutcome.Refused("refused by the secure hardware: $m")
         }
         val red = buildJsonObject {
@@ -519,7 +680,8 @@ class OfflineWallet(
         }
         val full = carry(red, null)
         val npk = req.json.optStr("npk") ?: ""
-        notes.put(Note(note.json.with("spent", true).with("redeemedTo", "RAILGUN shield npk ${npk.take(18)}…").with("redeemBundle", full.toString()).with("redeemedAt", nowS())))
+        commitSigned(alias, listOf(Note(note.json.with("spent", true).with("redeemedTo", "RAILGUN shield npk ${npk.take(18)}…").with("redeemBundle", full.toString()).with("redeemedAt", nowS()))))
+        runCatching { notes.deleteRecord("shieldask", alias) }          // a nonce is single-use
         log("REDEEM-TO-SHIELD SIGNED: ${Eth.eth(note.value)} ETH note $alias -> RAILGUN npk ${npk.take(18)}… (shieldHash ${sh.take(16)}…)")
         RedeemOutcome.Signed(full, note)
     }
@@ -539,7 +701,8 @@ class OfflineWallet(
         class Refused(val reason: String) : RefreshOutcome()
     }
 
-    private fun uniqueLabel(base: String): String {
+    private fun uniqueLabel(base0: String): String {
+        val base = Canonical.safeLabel(base0, "0".repeat(6))
         val taken = notes.notes().filter { !it.spent || it.pendingDeposit }.map { it.label }.toSet()
         if (base !in taken) return base
         var i = 2
@@ -568,10 +731,11 @@ class OfflineWallet(
         if (expiresInS < REFRESH_MIN_S || expiresInS > REFRESH_MAX_S)
             return RefreshOutcome.Refused("new lifetime must be between 1 and ${REFRESH_MAX_S / 86400} days (the escrow allows at most 30 from submission)")
         val newExpiry = now + expiresInS
-        val label = uniqueLabel(newLabel ?: (h.label + "r"))
+        val label = uniqueLabel((newLabel ?: (Canonical.safeLabel(h.label, h.coinId) + "r")).take(24))
         val newAlias = freshAlias("n_${label}_g")
+        writeIntent("refresh", alias, listOf(newAlias))?.let { log("REFUSED: $it"); return RefreshOutcome.Refused(it) }
         val c0 = newKey(newAlias, KeySpec(userAuthPerUse = ownerApprovalForNewKeys()))
-        var persisted = false
+        var signed = false
         try {
             val k0 = certs.leafKey(c0.strings()) as ECPublicKey
             val newK0Hash = certs.leafKeyHash(c0.strings())
@@ -581,13 +745,15 @@ class OfflineWallet(
             val newCoinId = Refresh.coinId(Refresh.messageHash(msg), 0)
             check(Refresh.isReserved(newCoinId))
             val sig = try {
-                keys.sign(alias, msg, approver, ApprovalPrompt("Prawl: approve refresh", "Move ${Eth.eth(note.value)} ETH into a new coin (${expiresInS / 86400} days)"))
+                keys.sign(alias, msg, approver, ApprovalPrompt("Prawl: approve refresh", "Move ${Eth.eth(note.value)} ETH into a new coin (${expiresInS / 86400} days)",
+                    "The new coin's reclaim address. Check every character:\n${Eth.checksum(dep40)}"))
             } catch (t: Throwable) {
                 val m = (t.message ?: t.toString()).lineSequence().first()
                 log("REFUSED BY SECURE HARDWARE: $m")
-                keys.delete(newAlias)
+                keys.delete(newAlias); dropIntent(alias)
                 return RefreshOutcome.Refused("refused by the secure hardware: $m")
             }
+            signed = true      // from here on the old key is spent: the new key must NEVER be deleted (audit F-06)
             val k0x = k0.w.affineX.toString(16); val k0y = k0.w.affineY.toString(16)
             val red = buildJsonObject {
                 put("header", h.json); put("path", note.json["path"]!!)
@@ -602,18 +768,19 @@ class OfflineWallet(
                 put("v", 3); put("label", label); put("coinId", newCoinId); put("chainId", h.chainId); put("escrow", h.escrow)
                 put("expiry", newExpiry); put("value", note.value.toString()); put("k0", c0); put("k0x", k0x); put("k0y", k0y); put("depositor", dep40)
             }
-            // persist before anything is shown: the old key is spent, so this record is the money
-            notes.putRecord("refresh", newCoinId, buildJsonObject {
-                put("coinId", newCoinId); put("alias", newAlias); put("label", label); put("value", note.value.toString())
-                put("oldAlias", alias); put("oldCoinId", h.coinId); put("header", newHeader); put("bundle", full.toString()); put("at", now)
-            })
-            persisted = true
-            notes.put(Note(note.json.with("spent", true).with("refreshedTo", newCoinId).with("redeemBundle", full.toString()).with("redeemedAt", now)))
+            // ONE atomic record: the spent old note and the pending-refresh record (the old key is spent, so these are the money)
+            commitSigned(alias,
+                listOf(Note(note.json.with("spent", true).with("refreshedTo", newCoinId).with("redeemBundle", full.toString()).with("redeemedAt", now))),
+                listOf(Triple("refresh", newCoinId, buildJsonObject {
+                    put("coinId", newCoinId); put("alias", newAlias); put("label", label); put("value", note.value.toString())
+                    put("oldAlias", alias); put("oldCoinId", h.coinId); put("header", newHeader); put("bundle", full.toString()); put("at", now)
+                })))
             log("REFRESH SIGNED: ${Eth.eth(note.value)} ETH note $alias -> new coin ${newCoinId.take(16)}… (key $newAlias, expires ${newExpiry}, reclaim 0x$dep40)")
             RefreshOutcome.Signed(full, newCoinId, newExpiry, note.value, dep40, alias)
         } catch (e: Exception) {
-            // before the record is persisted the new key has signed nothing and must not linger; after it, the record owns the key
-            if (!persisted) keys.delete(newAlias)
+            // only a key that has not been committed to a signature may be deleted; after signing the pending record owns it (audit F-06)
+            if (!signed) { keys.delete(newAlias); dropIntent(alias) }
+            else log("WARNING: refresh signed but finishing failed (${e.message}); the new coin's key $newAlias is kept")
             RefreshOutcome.Refused(e.message ?: e.toString())
         }
     }

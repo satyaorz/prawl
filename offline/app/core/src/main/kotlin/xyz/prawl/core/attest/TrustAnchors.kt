@@ -21,6 +21,13 @@ class TrustAnchors(
 ) {
     val rootSpkis: List<ByteArray> = rootsDer.map { parseCert(it).publicKey.encoded }
 
+    /**
+     * Google's status list writes 64-bit serials in DECIMAL and longer ones in lowercase hex (981 of 1,769 bundled entries are decimal:
+     * audit F-04), so a certificate is revoked if EITHER rendering of its serial is listed. The same fix is in OtkVerify.java and
+     * otk_verifier.py.
+     */
+    fun isRevoked(serial: java.math.BigInteger): Boolean = revokedSerials.contains(serial.toString(16)) || revokedSerials.contains(serial.toString(10))
+
     companion object {
         /** 2026-11-05T11:37:48Z: the status.hdr Date of the list bundled with the harness (`Wallet2Activity.REVOCATION_FETCHED`). */
         const val BUNDLED_REVOCATION_FETCHED = 1793878668L

@@ -2,7 +2,7 @@
 """Simulate a website handoff payload against the real escrow exactly as the website would (eth_call).
   handoff_sim.py <payload.json | handoff.py output> [--rpc URL] [--from 0x..]
 """
-import json, subprocess, sys
+import json, os, subprocess, sys
 REDEEM = ("redeem((bytes32,uint256,uint64,uint256,uint256,address),"
           "((uint256,bytes32)[],uint256,bytes32,bytes32,bytes32,bytes32)[],"
           "((uint256,bytes32)[],uint256,address,bytes32,bytes32))(bool)")
@@ -23,5 +23,17 @@ def main():
                p["coinId"], str(p["expiry"]), p["k0x"], p["k0y"], "--rpc-url", rpc]
     res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     print("SIMULATION", "OK:" if res.returncode == 0 else "REVERT:", (res.stdout or res.stderr).strip()[:400])
+    if res.returncode == 0 and "--send" in sys.argv:
+        if p["t"] == "redeem" and res.stdout.strip() != "true":
+            sys.exit("not sending: the simulation returned %r, which would freeze rather than pay" % res.stdout.strip())
+        keys = os.path.expanduser("~/.prawl-offline-keys")
+        send = ["cast", "send", "--json", "--keystore", keys + "/deployer", "--password-file", keys + "/deployer.pw"] + cmd[2:]
+        # cast send takes the same positional args as cast call; drop --from (the keystore decides the sender)
+        i = send.index("--from") if "--from" in send else None
+        if i is not None: del send[i:i + 2]
+        r = subprocess.run(send, capture_output=True, text=True, timeout=300)
+        if r.returncode: sys.exit("send failed: " + r.stderr.strip()[:400])
+        d = json.loads(r.stdout)
+        print("SENT", d["transactionHash"], "status", int(d["status"], 16), "gas", int(d["gasUsed"], 16))
     sys.exit(res.returncode)
 if __name__ == "__main__": main()

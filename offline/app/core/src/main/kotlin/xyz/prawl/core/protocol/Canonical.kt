@@ -1,6 +1,7 @@
 package xyz.prawl.core.protocol
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import xyz.prawl.core.model.Bundle
@@ -38,6 +39,12 @@ object Canonical {
     private val TWO_256 = BigInteger.ONE.shiftLeft(256)
     private val TWO_64 = BigInteger.ONE.shiftLeft(64)
 
+    private val LABEL = Regex("^[A-Za-z0-9_-]{1,24}$")
+    /** A coin label is used in key aliases and file names: letters, digits, '_' and '-' only. */
+    fun isSafeLabel(s: String) = LABEL.matches(s)
+    /** [label] if safe, otherwise a label made from the coin id (a received header's label is attacker-chosen and not signed). */
+    fun safeLabel(label: String?, coinId: String): String = if (label != null && isSafeLabel(label)) label else coinId.lowercase().filter { it in '0'..'9' || it in 'a'..'f' }.take(6).ifEmpty { "coin" }
+
     fun isHex64(s: String) = HEX64.matches(s)
     fun isHex40(s: String) = HEX40.matches(s)
     /** Decimal, no leading zeros, no sign, no exponent, fits uint256. */
@@ -54,6 +61,21 @@ object Canonical {
         raw("coinId").let { if (it == null || !isHex64(it)) p.add("coinId '${show(it)}' is not 64 lowercase hex digits without 0x") }
         raw("expiry").let { if (it == null || !isUint64(it) || it == "0") p.add("expiry '${show(it)}' is not canonical decimal") }
         raw("value").let { if (it == null || !isPositiveUint256(it)) p.add("deposit value '${show(it)}' is not canonical positive decimal") }
+        return p
+    }
+
+    /** Length of every attestation chain (header `k0`, each spend's `next`): at most [xyz.prawl.core.certs.CertStore.MAX_CHAIN] ids, each a 32-char lowercase hex id. */
+    fun chainProblems(header: JsonObject, path: List<JsonObject>): List<String> {
+        val max = xyz.prawl.core.certs.CertStore.MAX_CHAIN
+        val p = ArrayList<String>()
+        fun check(what: String, a: JsonElement?) {
+            val arr = a as? JsonArray
+            if (arr == null || arr.isEmpty()) p.add("$what has no certificate chain")
+            else if (arr.size > max) p.add("$what has ${arr.size} certificates (more than $max)")
+            else if (arr.any { e -> val c = (e as? JsonPrimitive)?.content; c == null || !Regex("^[0-9a-f]{32}$").matches(c) }) p.add("$what has a malformed certificate id")
+        }
+        check("the genesis key", header["k0"])
+        for ((d, s) in path.withIndex()) check("spend $d", s["next"])
         return p
     }
 

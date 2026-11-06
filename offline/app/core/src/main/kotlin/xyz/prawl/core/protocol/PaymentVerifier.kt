@@ -2,6 +2,7 @@ package xyz.prawl.core.protocol
 
 import xyz.prawl.core.attest.AttestationResult
 import xyz.prawl.core.attest.ChainChecker
+import xyz.prawl.core.certs.CertStore
 import xyz.prawl.core.certs.CertResolver
 import xyz.prawl.core.deposit.DepositCommitment
 import xyz.prawl.core.deposit.DepositVerifier
@@ -30,6 +31,9 @@ class VerificationReport(val payeeName: String) {
     var capWei: BigInteger = BigInteger.ZERO
     var revocationStale = false
     var ms = 0L
+    /** The amount the payee asked for (null if none). A smaller payment is accepted but [shortfall] is set (audit F-10). */
+    var requestedWei: BigInteger? = null
+    val shortfall: Boolean get() = requestedWei?.let { receivedValue < it } ?: false
     val accepted: Boolean get() = fails.isEmpty()
 }
 
@@ -70,28 +74,40 @@ class PaymentVerifier(
         b: Bundle, myKeyHash: String?, nowS: Long, rep: VerificationReport,
         line: (String, String, Boolean, String, String?) -> Unit,
     ) {
-        val h = b.header
-        val carried = b.certs
-        val path = b.path
-        rep.coinLabel = h.label; rep.coinId = h.coinId; rep.depositValue = h.value; rep.expiry = h.expiry; rep.hops = path.size
-        log("ACCEPT? coin ${h.coinId.take(16)}… (${Eth.eth(h.value)} ETH deposit), ${path.size} spend(s), as '${rep.payeeName}'")
-
-        // [0a] audit F2: bound the work and the redeemability of every spend BEFORE touching its outputs
+        // Every limit is checked on the RAW JSON before anything is parsed into numbers or any cryptography runs (audit F-07): the
+        // hostile bundle's work is bounded by its size, not by what it claims.
         val records = Canonical.spendRecords(b)
-        if (records == null) { line("0", "Bundle structure", false, "the path is not a list of spends", "malformed bundle: bad path"); return }
+        val hdrJson = b.json["header"] as? kotlinx.serialization.json.JsonObject
+        if (records == null || hdrJson == null) { line("0", "Bundle structure", false, "the header or the path is malformed", "malformed bundle"); return }
+        // [0a] hop limit first: the path length is attacker-chosen
+        if (records.size > policy.maxHops) {
+            line("0", "Offline hops", false, "${records.size} of max ${policy.maxHops}", "too many offline hops (${records.size} > ${policy.maxHops})"); return
+        }
+        // [0b] attestation-chain lengths (real chains have 4-5 certificates)
+        val chains = Canonical.chainProblems(hdrJson, records)
+        line("0", "Certificate chains (at most ${CertStore.MAX_CHAIN} each)", chains.isEmpty(), chains.firstOrNull() ?: "within limits", chains.firstOrNull())
+        if (chains.isNotEmpty()) return
+        // [0c] audit F-02: bound the redeemability of every spend BEFORE touching its outputs
         val counts = Canonical.outputCountProblems(records)
         line("0", "Outputs per spend (at most ${Protocol.MAX_OUTPUTS})", counts.isEmpty(),
-            if (counts.isEmpty()) "${records.joinToString(", ") { ((it["outputs"] as kotlinx.serialization.json.JsonArray).size).toString() }.ifEmpty { "no spends" }}" else counts.first(),
+            if (counts.isEmpty()) records.joinToString(", ") { ((it["outputs"] as kotlinx.serialization.json.JsonArray).size).toString() }.ifEmpty { "no spends" } else counts.first(),
             counts.firstOrNull())
         counts.drop(1).forEach { rep.fails.add(it) }
         if (counts.isNotEmpty()) return
-        // [0b] audit F1: every string that goes into a signed message must be in the one form the escrow can rebuild
-        val canon = Canonical.headerProblems(b.json["header"] as kotlinx.serialization.json.JsonObject) + Canonical.pathProblems(records, includeCounts = false)
+        // [0d] audit F-01: every string that goes into a signed message is in the one form the escrow can rebuild (this also caps every
+        // number at 78 digits, so no quadratic BigInteger parse of a hostile decimal can happen below)
+        val canon = Canonical.headerProblems(hdrJson) + Canonical.pathProblems(records, includeCounts = false)
         line("0", "Canonical text", canon.isEmpty(),
             if (canon.isEmpty()) "every string in the signed messages is the form the escrow rebuilds" else canon.first(),
             canon.firstOrNull()?.let { "non-canonical text in the signed message: $it" })
         canon.drop(1).take(4).forEach { rep.fails.add("non-canonical text in the signed message: $it") }
         if (canon.isNotEmpty()) return
+
+        val h = b.header
+        val carried = b.certs
+        val path = b.path
+        rep.coinLabel = h.label; rep.coinId = h.coinId; rep.depositValue = h.value; rep.expiry = h.expiry; rep.hops = path.size
+        log("ACCEPT? coin ${h.coinId.take(16)}… (${Eth.eth(h.value)} ETH deposit), ${path.size} spend(s), as '${rep.payeeName}'")
 
         // [0] coin-level policy
         line("0", "Coin format", h.v == 3, "v=${h.v}", "not a v3 coin")

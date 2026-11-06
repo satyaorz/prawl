@@ -98,17 +98,22 @@ class AttestationVerifier(
             val chain: List<X509Certificate> = chainDer.map { TrustAnchors.parseCert(it) }
             r.chainLength = chain.size
             if (chain.isEmpty()) { r.fails.add("empty chain"); return r }
-            // 1. signatures up the chain
+            // 1. signatures up the chain, and the chain rules a signature check alone does not give (audit F-12):
+            //    issuer(i) == subject(i+1); every non-leaf is a CA, and its path length allows the certificates below it
             for (i in 0 until chain.size - 1) {
                 val ok = try { chain[i].verify(chain[i + 1].publicKey); true } catch (e: Exception) { false }
                 req(ok, "cert $i signed by cert ${i + 1}")
+                req(chain[i].issuerX500Principal == chain[i + 1].subjectX500Principal, "cert $i issuer is cert ${i + 1} subject")
+            }
+            for (i in 1 until chain.size) {
+                val bc = chain[i].basicConstraints            // -1: not a CA; Int.MAX_VALUE: no path length limit
+                req(bc >= 0 && (bc == Int.MAX_VALUE || i - 1 <= bc), "cert $i is a CA that may issue $i level(s) below it")
             }
             val root = chain.last()
             req(anchors.rootSpkis.any { it.contentEquals(root.publicKey.encoded) }, "root is a pinned Google attestation root")
             // 2. revocation + RKP detection + validity (RKP certs must be in validity)
             for (c in chain) {
-                val serial = c.serialNumber.toString(16)
-                if (anchors.revokedSerials.contains(serial)) req(false, "serial $serial not revoked")
+                if (anchors.isRevoked(c.serialNumber)) req(false, "serial ${c.serialNumber.toString(16)} not revoked")
                 if (c.getExtensionValue(OID_PROV_INFO) != null) r.rkp = true
             }
             if (r.rkp) for (i in 0 until chain.size - 1) {
@@ -121,7 +126,9 @@ class AttestationVerifier(
             val ext = leaf.getExtensionValue(OID_KEY_DESC)
             if (ext == null) { r.fails.add("no attestation extension"); return r }
             val outer = Der.parse(ext, 0)                        // OCTET STRING wrapper
-            val kd = Der.parse(outer.value, 0).children()         // KeyDescription SEQUENCE
+            val kdSeq = Der.parse(outer.value, 0)
+            if (outer.end != ext.size || kdSeq.end != outer.value.size) { r.fails.add("trailing bytes after the KeyDescription"); return r }
+            val kd = kdSeq.children()                            // KeyDescription SEQUENCE
             val attLevel = kd[1].intVal().toInt()
             val kmLevel = kd[3].intVal().toInt()
             val sw = authList(kd[6])
@@ -168,7 +175,15 @@ class AttestationVerifier(
         return r
     }
 
-    private fun authList(seq: Der): Map<Int, Der> = seq.children().associateBy { it.tag }
+    /** Auth-list entries by tag. Duplicate tags, or entries that are not CONTEXT-specific, make the whole attestation unusable (audit F-12). */
+    private fun authList(seq: Der): Map<Int, Der> {
+        val m = HashMap<Int, Der>()
+        for (d in seq.children()) {
+            if (d.cls != Der.CONTEXT) throw IllegalArgumentException("auth list entry [${d.tag}] is not context-specific")
+            if (m.put(d.tag, d) != null) throw IllegalArgumentException("duplicate tag [${d.tag}] in the authorization list")
+        }
+        return m
+    }
 
     companion object {
         const val OID_KEY_DESC = "1.3.6.1.4.1.11129.2.1.17"
