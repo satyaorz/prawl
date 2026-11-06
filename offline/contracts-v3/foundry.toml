@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "osaka"          # P256VERIFY (EIP-7951, precompile 0x100) is an Osaka/Fusaka feature
+optimizer = true
+optimizer_runs = 200
+via_ir = false                 # the vendored Sha2Ext (used by the reused AndroidAttestation) does not compile under via_ir
+gas_limit = 9223372036854775807  # test-runner cap only; the 2^24 per-tx cap (EIP-7825) is checked explicitly in tests
+fs_permissions = [{ access = "read", path = "./fixtures" }, { access = "read-write", path = "./logs" }]
+remappings = ["forge-std/=lib/forge-std/src/", "nitro/=lib/nitro-validator/src/"]
+
+[fuzz]
+runs = 256
+seed = "0x5eed"
+
+[lint]
+lint_on_build = false

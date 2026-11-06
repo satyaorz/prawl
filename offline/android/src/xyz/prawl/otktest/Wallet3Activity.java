@@ -61,7 +61,7 @@ public class Wallet3Activity extends Wallet2Activity {
             case "mint": return mint3(x.getString("coin"), x.getString("eth"),
                     Long.parseLong(x.getString("expiresIn", String.valueOf(14 * 86400))),
                     x.getString("chainId", "11155111"), x.getString("escrow", "00000000000000000000000000000000000e5c70"),
-                    "true".equals(x.getString("multiuse")), auth);
+                    "true".equals(x.getString("multiuse")), auth, x.getString("depositor", "0000000000000000000000000000000000000000"));
             case "request": {
                 JSONObject req = request(x.getString("name"), auth);
                 write(new File(outDir, "req_" + x.getString("name") + ".json"), req.toString());
@@ -131,7 +131,8 @@ public class Wallet3Activity extends Wallet2Activity {
 
     // ================================================================ mint
 
-    String mint3(String label, String ethAmt, long expiresIn, String chainId, String escrow, boolean multiuse, boolean auth) throws Exception {
+    String mint3(String label, String ethAmt, long expiresIn, String chainId, String escrow, boolean multiuse, boolean auth,
+                 String depositor) throws Exception {
         byte[] id = new byte[32]; new SecureRandom().nextBytes(id);
         String alias = "n_" + label + "_g";
         JSONArray c0 = newCoinKey(alias, multiuse, auth);
@@ -141,7 +142,7 @@ public class Wallet3Activity extends Wallet2Activity {
                 .put("escrow", escrow.toLowerCase().replace("0x", "")).put("expiry", System.currentTimeMillis() / 1000 + expiresIn)
                 .put("value", wei(ethAmt).toString()).put("k0", c0)
                 .put("k0x", w.getAffineX().toString(16)).put("k0y", w.getAffineY().toString(16))
-                .put("depositor", "0000000000000000000000000000000000000000");
+                .put("depositor", depositor.toLowerCase().replace("0x", ""));
         JSONObject note = new JSONObject().put("header", h).put("path", new JSONArray()).put("alias", alias)
                 .put("value", h.getString("value")).put("noteId", genesisNoteId(h));
         write(noteFile(alias), note.toString());
@@ -160,6 +161,11 @@ public class Wallet3Activity extends Wallet2Activity {
         for (int i = 0; i < to.length(); i++) if (reqCerts.has(to.getString(i)))
             putCert(Base64.decode(reqCerts.getString(to.getString(i)), Base64.NO_WRAP));
         String toKey = leafKeyHash(to, null);
+        // Check the payee's key is a genuine hardware one-time key BEFORE spending: paying a software key
+        // would let the payee equivocate and freeze the coin's subtree.
+        OtkVerify.Result pr = verifier().verify(chain(to, null));
+        log("  payee key check: " + pr.summary());
+        if (!pr.ok) { log("REFUSING TO PAY: payee key is not a hardware one-time key"); return null; }
         // retry: a note already signed to this exact key -> resend the same bytes
         if (forceNote == null) for (JSONObject n : notes(coin)) if (n.has("signedTo") && n.getString("signedTo").equals(toKey)) {
             log("RESEND: note " + n.getString("alias") + " was already signed to this recipient key");

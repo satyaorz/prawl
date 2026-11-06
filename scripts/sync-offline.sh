@@ -29,6 +29,11 @@ copy "$A/android_test" android '/src/***' '/assets/***' '/AndroidManifest.xml' '
 # On-chain settlement of real phone payment chains (P256VERIFY, attestation, device bonds).
 copy "$A/onchain_real" contracts '/src/***' '/test/***' '/script/***' '/tools/*.py' '/tools/*.sh' \
   '/lib/nitro-validator/***' '/lib/solarity/***' '/foundry.toml' '/run_all.sh'
+# Protocol v3: spec, deployments, escrow with splitting + Sepolia deposit/redeem tooling (no logs, fixtures, phone vectors).
+copy v3/escrow_v3 contracts-v3 '/src/***' '/test/***' '/script/***' '/tools/*.py' '/tools/*.sh' \
+  '/lib/nitro-validator/***' '/foundry.toml' '/run_all.sh'
+rsync -a "$SRC/v3/SPEC.md" "$DST/SPEC-v3.md"
+rsync -a "$SRC/v3/DEPLOYMENTS.md" "$DST/DEPLOYMENTS.md"
 # Earlier prototypes and simulations behind the four routes.
 copy "$A/contracts" prototypes/otk-escrow '/src/***' '/test/***' '/foundry.toml'
 copy "$A/android" prototypes/otk-android '/*.kt'
