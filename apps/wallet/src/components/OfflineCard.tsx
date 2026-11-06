@@ -3,9 +3,10 @@ import QRCode from "qrcode";
 import { formatEther } from "viem";
 import { anon } from "../lib/anon";
 import { useWallet } from "../lib/use-wallet";
-import { clearFinishedAction, offlineLoad, offlineRedeem } from "../lib/wallet";
+import { buildShieldTarget, clearFinishedAction, offlineLoad, offlineLoadPrivate, offlineRedeem } from "../lib/wallet";
 import { coinStatus, type CoinStatus } from "../offline/escrow";
-import { configProblems, depositorUri, payloadFromText, payoutValue, type OfflinePayload } from "../offline/payload";
+import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, type OfflinePayload } from "../offline/payload";
+import { parseEther } from "viem";
 import { QrScanner } from "./QrScanner";
 
 const short = (s: string, a = 10, b = 6) => (s.length > a + b + 1 ? `${s.slice(0, a)}…${s.slice(-b)}` : s);
@@ -16,6 +17,75 @@ function takeFromLocation(): string | undefined {
   const text = window.location.hash;
   window.history.replaceState(null, "", window.location.pathname + window.location.search);
   return text;
+}
+
+/** Website → phone: the target a phone signs a cash-out into this wallet's private balance over (HANDOFF §6). */
+function ShieldTarget() {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState("");
+  const [link, setLink] = useState<string>();
+  const [qr, setQr] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+
+  async function build() {
+    setError(undefined);
+    setLink(undefined);
+    setQr(undefined);
+    let wei: bigint;
+    try {
+      wei = parseEther(amount);
+    } catch {
+      return setError("Enter the note's value in ETH, exactly as the phone shows it");
+    }
+    setBusy(true);
+    try {
+      const req = await buildShieldTarget(wei);
+      const l = shieldTargetLink(ESCROW_V31, req);
+      setLink(l);
+      setQr(await QRCode.toDataURL(l, { margin: 1, width: 280, errorCorrectionLevel: "L", color: { dark: "#09090b", light: "#fafafa" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3">
+      <button onClick={() => setOpen((v) => !v)} className="text-xs text-zinc-400 hover:text-zinc-200">
+        {open ? "Hide" : "Cash out a phone coin into my private balance…"}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-zinc-800 p-3">
+          <p className="text-xs text-zinc-500">
+            On the phone pick the note to cash out and note its value. Enter exactly that value here and scan the QR with the phone; it signs the cash-out, and you open its answer here. Each QR is single use.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <input
+              value={amount}
+              onChange={(e) => setAmount(e.target.value.trim())}
+              placeholder="note value, e.g. 0.003"
+              inputMode="decimal"
+              className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs outline-none focus:border-zinc-500"
+            />
+            <button onClick={() => void build()} disabled={busy || !amount} className="rounded-lg border border-zinc-700 px-3 text-xs disabled:opacity-40">
+              {busy ? "Building…" : "Show QR"}
+            </button>
+          </div>
+          {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+          {qr && link && (
+            <div className="mt-3 flex flex-col items-center gap-2">
+              <img src={qr} alt="Shield target QR for the phone" width={240} height={240} className="rounded-lg" />
+              <button className="text-xs text-zinc-500 hover:text-zinc-300" onClick={() => void navigator.clipboard.writeText(link)}>
+                Copy link
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -57,14 +127,15 @@ export function OfflineCard() {
     return () => window.removeEventListener("hashchange", read);
   }, [take]);
 
-  const coinId = payload ? (payload.t === "load" ? payload.coinId : payload.header.coinId) : undefined;
+  const coinId = payload ? (payload.t === "load" ? payload.coinId : payload.t === "load-private" ? payload.params.coinId : payload.header.coinId) : undefined;
+  const escrow = payload?.escrow;
   const refreshStatus = useCallback(() => {
-    if (!coinId) return;
+    if (!coinId || !escrow) return;
     setStatus(undefined);
-    coinStatus(anon, coinId)
+    coinStatus(anon, coinId, escrow)
       .then(setStatus)
       .catch((e: unknown) => setStatus({ error: e instanceof Error ? e.message : String(e) }));
-  }, [coinId]);
+  }, [coinId, escrow]);
   useEffect(refreshStatus, [refreshStatus]);
 
   useEffect(() => {
@@ -82,6 +153,7 @@ export function OfflineCard() {
   const running = !!w.action && !w.action.done;
   const unlocked = !!w.evmAddress && w.phase !== "locked";
   const problems = payload ? configProblems(payload) : [];
+  const isLoad = payload?.t === "load" || payload?.t === "load-private";
   const mismatch = payload?.t === "load" && w.evmAddress && payload.depositor.toLowerCase() !== w.evmAddress.toLowerCase();
 
   return (
@@ -107,6 +179,8 @@ export function OfflineCard() {
           </p>
         </div>
       )}
+
+      {w.railgunAddress && <ShieldTarget />}
 
       <div className="mt-3 flex gap-2">
         <input
@@ -137,7 +211,9 @@ export function OfflineCard() {
       {payload && (
         <div className="mt-4 rounded-xl border border-zinc-800 p-4">
           <div className="flex items-baseline justify-between">
-            <h3 className="text-sm font-medium">{payload.t === "load" ? "Load a coin" : "Cash out"}</h3>
+            <h3 className="text-sm font-medium">
+              {payload.t === "load" ? "Load a coin" : payload.t === "load-private" ? "Load a coin privately" : payload.t === "redeem-shield" ? "Cash out to your private balance" : "Cash out"}
+            </h3>
             <button onClick={() => setPayload(undefined)} className="text-xs text-zinc-500 hover:text-zinc-300">
               Close
             </button>
@@ -145,7 +221,20 @@ export function OfflineCard() {
           <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
             <dt className="text-zinc-500">Coin</dt>
             <dd className="font-mono text-zinc-300">{short(coinId ?? "", 12)}</dd>
-            {payload.t === "load" ? (
+            {payload.t === "load-private" ? (
+              <>
+                <dt className="text-zinc-500">Amount</dt>
+                <dd className="font-mono text-zinc-300">
+                  {formatEther(payload.params.maxValue)} ETH{payload.params.tip > 0n ? ` + ${formatEther(payload.params.tip)} tip` : ""}
+                </dd>
+                <dt className="text-zinc-500">Expires</dt>
+                <dd className="font-mono text-zinc-300">{new Date(Number(payload.params.expiry) * 1000).toLocaleString()}</dd>
+                <dt className="text-zinc-500">Refund to</dt>
+                <dd className="font-mono text-zinc-300">{short(payload.params.depositor)}</dd>
+                <dt className="text-zinc-500">Funds from</dt>
+                <dd className="font-mono text-zinc-300">your private balance (RAILGUN unshield, 0.25% fee + gas)</dd>
+              </>
+            ) : payload.t === "load" ? (
               <>
                 <dt className="text-zinc-500">Amount</dt>
                 <dd className="font-mono text-zinc-300">{formatEther(payload.value)} ETH</dd>
@@ -161,7 +250,9 @@ export function OfflineCard() {
                 <dt className="text-zinc-500">Pays</dt>
                 <dd className="font-mono text-zinc-300">{formatEther(payoutValue(payload))} ETH</dd>
                 <dt className="text-zinc-500">To</dt>
-                <dd className="break-all font-mono text-zinc-300">{payload.redemption.payout}</dd>
+                <dd className="break-all font-mono text-zinc-300">
+                  {payload.t === "redeem-shield" ? "a RAILGUN shield (a private balance)" : payload.redemption.payout}
+                </dd>
                 <dt className="text-zinc-500">Path</dt>
                 <dd className="font-mono text-zinc-300">{payload.path.length} offline payment{payload.path.length === 1 ? "" : "s"}</dd>
               </>
@@ -180,7 +271,7 @@ export function OfflineCard() {
           {problems.map((p) => (
             <p key={p} className="mt-2 text-xs text-red-400">Refused: {p}</p>
           ))}
-          {payload.t === "load" && unlocked && !mismatch && (
+          {isLoad && unlocked && !mismatch && (
             <label className="mt-3 flex items-start gap-2 text-xs text-amber-300">
               <input type="checkbox" className="mt-0.5" checked={ownCoin} onChange={(e) => setOwnCoin(e.target.checked)} />
               <span>
@@ -189,18 +280,36 @@ export function OfflineCard() {
             </label>
           )}
           {!unlocked ? (
-            <p className="mt-3 text-xs text-amber-400">Unlock your wallet to {payload.t === "load" ? "load this coin" : "send this cash-out"}.</p>
+            <p className="mt-3 text-xs text-amber-400">Unlock your wallet to {isLoad ? "load this coin" : "send this cash-out"}.</p>
           ) : (
             <button
-              disabled={running || problems.length > 0 || !!mismatch || (payload.t === "load" && !ownCoin)}
-              onClick={() => void (payload.t === "load" ? offlineLoad(payload) : offlineRedeem(payload))}
+              disabled={running || problems.length > 0 || !!mismatch || (isLoad && !ownCoin)}
+              onClick={() => void (payload.t === "load" ? offlineLoad(payload) : payload.t === "load-private" ? offlineLoadPrivate(payload) : offlineRedeem(payload))}
               className="mt-3 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-zinc-950 disabled:opacity-50"
             >
-              {running ? "Working…" : payload.t === "load" ? `Load ${formatEther(payload.value)} ETH` : "Cash out"}
+              {running
+                ? "Working…"
+                : payload.t === "load"
+                  ? `Load ${formatEther(payload.value)} ETH`
+                  : payload.t === "load-private"
+                    ? `Load ${formatEther(payload.params.maxValue)} ETH privately`
+                    : payload.t === "redeem-shield"
+                      ? "Cash out to private balance"
+                      : "Cash out"}
             </button>
           )}
           {payload.t === "redeem" && (
             <p className="mt-2 text-xs text-zinc-500">The payout is fixed by the phone's signature; this wallet only pays the gas (about 360k–540k).</p>
+          )}
+          {payload.t === "redeem-shield" && (
+            <p className="mt-2 text-xs text-zinc-500">
+              The phone signed this exact RAILGUN shield; this wallet only pays gas (about 1.4–1.6M, from your public account). RAILGUN keeps its 0.25% shield fee.
+            </p>
+          )}
+          {payload.t === "load-private" && (
+            <p className="mt-2 text-xs text-zinc-500">
+              Three steps: reserve the coin (public, small gas), fund it by a private withdrawal to its deposit address, then activate. The withdrawal's amount and time are public, like any withdrawal. You can reopen the same link to continue if a step fails.
+            </p>
           )}
         </div>
       )}

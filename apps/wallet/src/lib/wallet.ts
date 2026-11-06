@@ -14,8 +14,9 @@ import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
 import { railgun } from "../railgun/controller";
 import { publicBalance, sendCalls, sendUserOp, UnconfirmedError, type SentTx } from "./tx";
-import { depositCall, loadProblems, redeemCall, redeemOutcome, revertReason, simulateRedeem } from "../offline/escrow";
-import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type RedeemPayload } from "../offline/payload";
+import { activateCall, commitCall, depositCall, erc20Balance, loadProblems, privateLoadProblems, redeemCall, redeemOutcome, redeemToShieldCall, revertReason, simulateRedeem } from "../offline/escrow";
+import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type ShieldRequest } from "../offline/payload";
+import { shieldRequestFromCall } from "../offline/shield";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
 export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
@@ -34,6 +35,8 @@ export interface WalletState {
   deploymentBlock?: bigint;
   balances?: Balance[];
   wrappedBaseToken?: string;
+  /** RAILGUN smart wallet of this chain (target of shield calls). */
+  smartWallet?: string;
   restored?: boolean;
   /** True when this open scans RAILGUN history from the start (no checkpoint, no usable snapshot). */
   fullScan?: boolean;
@@ -179,6 +182,7 @@ async function openRailgun(opts: StartOptions): Promise<void> {
     deploymentBlock: BigInt(deployment.deploymentBlock),
     wrappedBaseToken: deployment.wrappedBaseToken.toLowerCase(),
     unshieldFeeBps: deployment.unshieldFeeBps,
+    smartWallet: deployment.smartWallet,
     restored: opened.restored,
     fullScan: opened.fullScan,
     snapshotBlock: opened.snapshotBlock ? BigInt(opened.snapshotBlock) : undefined,
@@ -446,11 +450,17 @@ async function privateOp(
   amountWei: bigint,
   to: string,
   run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>,
-): Promise<void> {
+  /**
+   * `inner`: this is one step of a larger action (a private load). Progress and failures
+   * are reported under `inner.kind`, and success does not finish that action.
+   */
+  inner?: { kind: string },
+): Promise<boolean> {
   if (!keys) throw new Error("wallet is locked");
   const opLog = activityLog;
   const myEpoch = epoch;
-  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
+  const actionKind = inner?.kind ?? kind;
+  const status = (s: string) => updateAction(myEpoch, { kind: actionKind, status: s });
   try {
     const before = wethTotal();
     status("Proving in your browser… (this takes a while)");
@@ -461,19 +471,21 @@ async function privateOp(
     status("Sending to the bundler over Tor…");
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
     await remember(opLog, myEpoch, kind, amountWei, to, [tx]);
-    updateAction(myEpoch, { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] });
+    if (!inner || tx.status !== "success") updateAction(myEpoch, { kind: actionKind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] });
     await sync();
     // What the paymaster took: everything that left the balance beyond the amount and fee.
     const gas = before - wethTotal() - amountWei - privateFeeWei(kind, amountWei);
-    if (tx.status === "success" && gas >= GAS_MEASURE_MIN && gas <= GAS_MEASURE_MAX) update({ privateGasWei: gas });
+    if (tx.status === "success" && gas >= GAS_MEASURE_MIN && gas <= GAS_MEASURE_MAX && myEpoch === epoch) update({ privateGasWei: gas });
+    return tx.status === "success";
   } catch (e) {
-    updateAction(myEpoch, { ...failedAction(kind === "send" ? "Send failed" : "Unshield failed", e, explain(kind, e)), kind });
+    updateAction(myEpoch, { ...failedAction(kind === "send" ? "Send failed" : "Unshield failed", e, explain(kind, e)), kind: actionKind });
     if (e instanceof UnconfirmedError) void sync();
+    return false;
   }
 }
 
 /** Send private ETH (WETH notes) to another 0zk address. */
-export function privateSendEth(recipient: string, amountWei: bigint): Promise<void> {
+export function privateSendEth(recipient: string, amountWei: bigint): Promise<boolean> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
   return privateOp("send", amountWei, recipient, (accountPrivateKey) =>
@@ -487,7 +499,7 @@ export function privateSendEth(recipient: string, amountWei: bigint): Promise<vo
  * there, and the ETH forwarded to the recipient in the same UserOperation.
  * With `asWeth`, the recipient gets WETH directly (cheaper).
  */
-export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: boolean } = {}): Promise<void> {
+export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: boolean; inner?: { kind: string } } = {}): Promise<boolean> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
   return privateOp("unshield", amountWei, recipient, (accountPrivateKey) =>
@@ -505,6 +517,7 @@ export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: 
             bundlerUrl: BUNDLER_URL,
           },
     ),
+    opts.inner,
   );
 }
 
@@ -547,8 +560,9 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
  * gas. Simulated first: a redemption that would freeze the coin (false) or
  * revert is never sent.
  */
-export async function offlineRedeem(p: RedeemPayload): Promise<void> {
+export async function offlineRedeem(p: RedeemPayload | RedeemShieldPayload): Promise<void> {
   const kind = "offline-redeem";
+  const toShield = p.t === "redeem-shield";
   const opLog = activityLog;
   const myEpoch = epoch;
   const status = (s: string) => updateAction(myEpoch, { kind, status: s });
@@ -564,25 +578,133 @@ export async function offlineRedeem(p: RedeemPayload): Promise<void> {
       updateAction(myEpoch, { kind, status: "Not sent", done: true, error: "the escrow would not pay this: it records a double spend and freezes the coin instead" });
       return;
     }
-    const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [redeemCall(p)], status);
+    const call = p.t === "redeem-shield" ? redeemToShieldCall(p) : redeemCall(p);
+    const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [call], status);
     const amount = payoutValue(p);
     const mined = txs.at(-1);
     // The receipt status is not enough: a mined redeem may have frozen the coin or only deferred the payment.
     const outcome = mined?.status === "success" ? redeemOutcome(mined.logs ?? [], p) : undefined;
-    await remember(opLog, myEpoch, "offline-redeem", amount, p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
+    const to = toShield ? "your private balance" : p.redemption.payout;
+    await remember(opLog, myEpoch, "offline-redeem", amount, toShield ? state.railgunAddress : p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
     const text =
       !outcome
         ? { status: "The cash-out reverted" }
         : outcome.kind === "paid"
-          ? { status: `Paid ${fmtEth(outcome.amount)} ETH to ${p.redemption.payout}.` }
+          ? {
+              status: toShield
+                ? `Cashed out ${fmtEth(outcome.amount)} ETH into your private balance (RAILGUN keeps its 0.25% shield fee). It shows as pending until the PPOI check clears.`
+                : `Paid ${fmtEth(outcome.amount)} ETH to ${to}.`,
+            }
           : outcome.kind === "deferred"
             ? { status: "Not paid out yet", error: `The payout address did not accept ETH; ${fmtEth(outcome.amount)} ETH is owed to it in the escrow and it can withdraw it (withdrawOwed).` }
             : outcome.kind === "blocked"
               ? { status: "Not paid", error: `The escrow found a double spend on this coin's path and ${outcome.frozen ? "froze the coin" : "blocked this cash-out"}. Nothing was paid.` }
               : { status: "Mined, but no payout was seen", error: "Check the coin's status before trying again." };
     updateAction(myEpoch, { kind, ...text, done: true, txs });
-    if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
+    await refreshPublicBalance(myEpoch);
+    if (toShield && outcome?.kind === "paid") void sync(); // pick up the new shielded note
   } catch (e) {
     updateAction(myEpoch, { ...failedAction("Cash-out failed", e, revertReason(e)), kind });
   }
+}
+
+async function refreshPublicBalance(forEpoch: number): Promise<void> {
+  if (!state.evmAddress) return;
+  const wei = await publicBalance(anon, state.chainId, state.evmAddress).catch(() => undefined);
+  if (wei !== undefined && forEpoch === epoch) update({ publicWei: wei });
+}
+
+/** Spendable private ETH: WETH notes whose PPOI status is Valid. */
+function spendableWei(): bigint {
+  return (state.balances ?? [])
+    .filter((b) => b.token !== undefined && b.token === state.wrappedBaseToken && b.poiStatus === "Valid")
+    .reduce((sum, b) => sum + BigInt(b.amount), 0n);
+}
+
+/**
+ * Offline cash, private load: fund a coin from the private balance without the
+ * public account ever holding the money.
+ *   1. commitDeposit (reserves the coin id for exactly these parameters),
+ *   2. a RAILGUN unshield of WETH to the coin's deposit address (a paymaster
+ *      UserOperation from a one-time account, like any private withdrawal),
+ *   3. activate (anyone may call it; the coin is created from what arrived).
+ * Resumable: a commitment that is already ours is not repeated, and a deposit
+ * address that already holds the amount is not funded twice.
+ */
+export async function offlineLoadPrivate(p: LoadPrivatePayload): Promise<void> {
+  const kind = "offline-load";
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
+  try {
+    if (!keys || !state.evmAddress || !state.wrappedBaseToken) throw new Error("unlock the wallet first");
+    const weth = state.wrappedBaseToken as Hex;
+    status("Checking the coin over Tor…");
+    const { problems, fundWei, committed } = await privateLoadProblems(anon, p);
+    if (problems.length) {
+      updateAction(myEpoch, { kind, status: "Not loaded", done: true, error: problems.join(" ") });
+      return;
+    }
+    const funded = (await erc20Balance(anon, weth, p.depositAddress)) >= fundWei;
+    if (!funded) {
+      const max = maxPrivateAmountWei("unshield", spendableWei());
+      if (max < fundWei) {
+        updateAction(myEpoch, {
+          kind,
+          status: "Not enough private ETH",
+          done: true,
+          error: `The coin needs ${fmtEth(fundWei)} ETH delivered, plus RAILGUN's 0.25% fee and about ${fmtEth(privateGasEstimateWei())} ETH of gas, all from your spendable private balance (at most ${fmtEth(max)} ETH can be sent now).`,
+        });
+        return;
+      }
+    }
+    if (!committed) {
+      status("Reserving the coin (commitDeposit)…");
+      const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [commitCall(p)], status);
+      if (txs.some((t) => t.status !== "success")) {
+        updateAction(myEpoch, { kind, status: "The commitment reverted", done: true, txs });
+        return;
+      }
+    }
+    if (!funded) {
+      status("Funding the coin from your private balance…");
+      const ok = await unshieldEth(p.depositAddress, fundWei, { asWeth: true, inner: { kind } });
+      if (!ok) return; // privateOp already reported why
+    }
+    if (myEpoch !== epoch) return;
+    status("Activating the coin…");
+    // If the funds have not arrived yet the gas estimate reverts with Underfunded and nothing is sent.
+    const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [activateCall(p)], status);
+    await remember(opLog, myEpoch, "offline-load", fundWei, p.params.coinId, txs);
+    const ok = txs.every((t) => t.status === "success");
+    updateAction(myEpoch, {
+      kind,
+      status: ok ? "Loaded privately. Tap \"Deposited\" on the phone." : "Activation reverted",
+      done: true,
+      ...(ok ? {} : { error: `The funds are at ${p.depositAddress}. Open the same link again to retry activation; the depositor ${p.params.depositor} can also refund.` }),
+      txs,
+    });
+    await refreshPublicBalance(myEpoch);
+  } catch (e) {
+    const note = `The funds, if already sent, are at ${p.depositAddress}; open the same link again to continue.`;
+    const failed = failedAction("Load failed", e, `${revertReason(e)} ${note}`);
+    updateAction(myEpoch, { ...failed, kind, ...(e instanceof UnconfirmedError ? { error: `${failed.error} ${note}` } : {}) });
+  }
+}
+
+/**
+ * The target a phone must sign a cash-out into your private balance over
+ * (HANDOFF §6): a RAILGUN ShieldRequest for exactly `valueWei` of WETH to this
+ * wallet's own 0zk address, built by kohaku and decoded from its shield call.
+ * The request is single-use: make a fresh one for each cash-out.
+ */
+export async function buildShieldTarget(valueWei: bigint): Promise<ShieldRequest> {
+  if (!keys || !state.railgunAddress || !state.wrappedBaseToken || !state.smartWallet) throw new Error("unlock the wallet first");
+  if (valueWei <= 0n) throw new Error("enter an amount above zero");
+  const calls = await railgun().call("buildShield", {
+    recipient: state.railgunAddress,
+    items: [{ token: state.wrappedBaseToken as Hex, amount: valueWei.toString() }],
+  });
+  if (calls.length !== 1) throw new Error(`expected one shield call, got ${calls.length}`);
+  return shieldRequestFromCall(calls[0]!, state.smartWallet as Hex);
 }

@@ -9,6 +9,10 @@ import { getAddress, isAddress, type Hex } from "viem";
 
 export const OFFLINE_CHAIN_ID = 11_155_111;
 export const ESCROW_V3 = "0x70b3B7EdCD18087C999ec80e3C3B0227c7e0D6E5" as const;
+/** v3.1 adds private load (commit, fund by RAILGUN unshield, activate) and cash-out into a shield. Plain load/redeem work on both. */
+export const ESCROW_V31 = "0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779" as const;
+export const KNOWN_ESCROWS: readonly Hex[] = [ESCROW_V3, ESCROW_V31];
+const sameAddr = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export interface Output {
   value: bigint;
@@ -57,7 +61,41 @@ export interface RedeemPayload {
   path: Spend[];
   redemption: Redemption;
 }
-export type OfflinePayload = LoadPayload | RedeemPayload;
+/** Parameters of a commit-then-fund deposit: fix the coin and where its funds must arrive. */
+export interface DepositParams {
+  coinId: Hex;
+  expiry: bigint;
+  k0x: bigint;
+  k0y: bigint;
+  /** Reclaim/refund address only (not the funder): use a fresh public address. */
+  depositor: Hex;
+  minValue: bigint;
+  maxValue: bigint;
+  tip: bigint;
+}
+export interface LoadPrivatePayload {
+  t: "load-private";
+  chainId: number;
+  escrow: Hex;
+  params: DepositParams;
+  depositAddress: Hex;
+}
+
+/** A RAILGUN ShieldRequest, as the phone signs over it (HANDOFF §8). */
+export interface ShieldRequest {
+  npk: Hex;
+  tokenType: number;
+  tokenAddress: Hex;
+  tokenSubID: bigint;
+  value: bigint;
+  encryptedBundle: [Hex, Hex, Hex];
+  shieldKey: Hex;
+}
+export interface RedeemShieldPayload extends Omit<RedeemPayload, "t"> {
+  t: "redeem-shield";
+  shield: ShieldRequest;
+}
+export type OfflinePayload = LoadPayload | RedeemPayload | LoadPrivatePayload | RedeemShieldPayload;
 
 export class PayloadError extends Error {
   override name = "PayloadError";
@@ -95,6 +133,34 @@ const output = (v: unknown, w: string): Output => {
   return { value: wei(o.value, `${w}.value`), keyHash: b32(o.keyHash, `${w}.keyHash`) };
 };
 
+function shieldRequest(v: unknown, w: string): ShieldRequest {
+  const o = obj(v, w);
+  const bundle = o.encryptedBundle;
+  if (!Array.isArray(bundle) || bundle.length !== 3) throw new PayloadError(`${w}.encryptedBundle: not three words`);
+  return {
+    npk: b32(o.npk, `${w}.npk`),
+    tokenType: Number(uint(o.tokenType, `${w}.tokenType`)),
+    tokenAddress: addr(o.tokenAddress, `${w}.tokenAddress`),
+    tokenSubID: uint(o.tokenSubID, `${w}.tokenSubID`),
+    value: wei(o.value, `${w}.value`),
+    encryptedBundle: [b32(bundle[0], `${w}.encryptedBundle[0]`), b32(bundle[1], `${w}.encryptedBundle[1]`), b32(bundle[2], `${w}.encryptedBundle[2]`)],
+    shieldKey: b32(o.shieldKey, `${w}.shieldKey`),
+  };
+}
+
+/** The wire form of a ShieldRequest: hex words, decimal strings for tokenType, tokenSubID and value. */
+export function shieldRequestWire(r: ShieldRequest): Record<string, unknown> {
+  return {
+    npk: r.npk,
+    tokenType: r.tokenType,
+    tokenAddress: r.tokenAddress,
+    tokenSubID: r.tokenSubID.toString(),
+    value: r.value.toString(),
+    encryptedBundle: [...r.encryptedBundle],
+    shieldKey: r.shieldKey,
+  };
+}
+
 /** base64url (no padding) → UTF-8 JSON. */
 export function decodeD(d: string): unknown {
   if (!/^[A-Za-z0-9_-]+$/.test(d) || d.length > 8000) throw new PayloadError("not a base64url payload");
@@ -121,6 +187,25 @@ export function parsePayload(raw: unknown): OfflinePayload {
   if (p.v !== 1) throw new PayloadError(`unsupported payload version ${String(p.v)}`);
   const chainId = Number(p.chainId);
   const escrow = addr(p.escrow, "escrow");
+  if (p.t === "load-private") {
+    const q = obj(p.params, "params");
+    return {
+      t: "load-private",
+      chainId,
+      escrow,
+      params: {
+        coinId: b32(q.coinId, "params.coinId"),
+        expiry: uint(q.expiry, "params.expiry"),
+        k0x: word(q.k0x, "params.k0x"),
+        k0y: word(q.k0y, "params.k0y"),
+        depositor: addr(q.depositor, "params.depositor"),
+        minValue: wei(q.minValue, "params.minValue"),
+        maxValue: wei(q.maxValue, "params.maxValue"),
+        tip: wei(q.tip, "params.tip"),
+      },
+      depositAddress: addr(p.depositAddress, "depositAddress"),
+    };
+  }
   if (p.t === "load") {
     return {
       t: "load",
@@ -134,10 +219,10 @@ export function parsePayload(raw: unknown): OfflinePayload {
       depositor: addr(p.depositor, "depositor"),
     };
   }
-  if (p.t === "redeem") {
+  if (p.t === "redeem" || p.t === "redeem-shield") {
     const h = obj(p.header, "header");
     const r = obj(p.redemption, "redemption");
-    return checkIndexes({
+    const base = checkIndexes({
       t: "redeem",
       chainId,
       escrow,
@@ -174,6 +259,8 @@ export function parsePayload(raw: unknown): OfflinePayload {
         s: b32(r.s, "redemption.s"),
       },
     });
+    if (p.t === "redeem") return base;
+    return { ...base, t: "redeem-shield", shield: shieldRequest(p.shield, "shield") };
   }
   throw new PayloadError(`unknown payload type ${String(p.t)}`);
 }
@@ -194,10 +281,11 @@ function checkIndexes(p: RedeemPayload): RedeemPayload {
  */
 export function payloadFromText(text: string): OfflinePayload {
   const t = text.trim();
-  const m = /(?:#\/|prawl:\/\/)offline\/(load|redeem)\?(?:.*&)?d=([A-Za-z0-9_-]+)/.exec(t);
+  const m = /(?:#\/|prawl:\/\/)offline\/(load-private|load|redeem-shield|redeem|shield-target)\?(?:.*&)?d=([A-Za-z0-9_-]+)/.exec(t);
   const kind = m?.[1];
   const d = m?.[2] ?? (/^[A-Za-z0-9_-]{40,}$/.test(t) ? t : undefined);
   if (!d) throw new PayloadError("no offline-cash payload in this text");
+  if (kind === "shield-target") throw new PayloadError("that is a request for the phone (a shield target), not something to open here");
   const p = parsePayload(decodeD(d));
   if (kind && kind !== p.t) throw new PayloadError(`link says ${kind} but the payload is a ${p.t}`);
   return p;
@@ -207,12 +295,15 @@ export function payloadFromText(text: string): OfflinePayload {
 export function configProblems(p: OfflinePayload): string[] {
   const out: string[] = [];
   if (p.chainId !== OFFLINE_CHAIN_ID) out.push(`it is for chain ${p.chainId}, this wallet uses Sepolia (${OFFLINE_CHAIN_ID})`);
-  if (p.escrow.toLowerCase() !== ESCROW_V3.toLowerCase()) out.push(`it names escrow ${p.escrow}, not Prawl's ${ESCROW_V3}`);
+  if (!KNOWN_ESCROWS.some((e) => sameAddr(e, p.escrow))) out.push(`it names escrow ${p.escrow}, which is not one of Prawl's (${KNOWN_ESCROWS.join(", ")})`);
+  else if ((p.t === "load-private" || p.t === "redeem-shield") && !sameAddr(p.escrow, ESCROW_V31)) {
+    out.push(`${p.t} needs escrow v3.1 (${ESCROW_V31}); this names ${p.escrow}`);
+  }
   return out;
 }
 
 /** The amount a redemption pays out: the redeemed output's value. */
-export function payoutValue(p: RedeemPayload): bigint {
+export function payoutValue(p: RedeemPayload | RedeemShieldPayload): bigint {
   const o = p.redemption.outputs[Number(p.redemption.index)];
   if (!o) throw new PayloadError("redemption index points past its outputs");
   return o.value;
@@ -221,4 +312,13 @@ export function payoutValue(p: RedeemPayload): bigint {
 /** EIP-681 link the phone scans to learn the depositor account. */
 export function depositorUri(address: string, chainId = OFFLINE_CHAIN_ID): string {
   return `ethereum:${getAddress(address)}@${chainId}`;
+}
+
+
+/**
+ * Website → phone: the target a cash-out into a private balance must name
+ * (HANDOFF §6). The phone signs over sha256(abi.encode(request)).
+ */
+export function shieldTargetLink(escrow: Hex, request: ShieldRequest, chainId = OFFLINE_CHAIN_ID): string {
+  return `prawl://offline/shield-target?d=${encodeD({ v: 1, t: "shield-target", chainId, escrow, request: shieldRequestWire(request) })}`;
 }
