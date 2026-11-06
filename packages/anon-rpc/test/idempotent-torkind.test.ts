@@ -37,7 +37,7 @@ describe("anonOptions.idempotent: reads only, never writes", () => {
     expect(s.log[0]!.anonOptions!.idempotent).toBeUndefined();
   });
 
-  it("never marks HTTP writes: proof submission (kind write) and bundler calls through the RAILGUN shim", async () => {
+  it("never marks HTTP writes: proof submission and eth_sendUserOperation through the RAILGUN shim; bundler reads are reads", async () => {
     const POI = "ppoi.fdi.network";
     const BUNDLER = "public.pimlico.io";
     const s = setup(() => ({ json: { jsonrpc: "2.0", id: 1, result: true } }), { client: { httpHosts: [POI, BUNDLER] } });
@@ -47,7 +47,7 @@ describe("anonOptions.idempotent: reads only, never writes", () => {
     await f(`https://${BUNDLER}/`, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "eth_supportedEntryPoints", params: [] }) });
     // A POI read is a read.
     await f(`https://${POI}/`, { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "ppoi_validated_txid", params: {} }) });
-    expect(s.log.map((c) => c.anonOptions!.idempotent ?? false)).toEqual([false, false, false, true]);
+    expect(s.log.map((c) => c.anonOptions!.idempotent ?? false)).toEqual([false, false, true, true]);
   });
 
   it("a body naming a sending or submitting method is never marked, whatever the request kind", () => {

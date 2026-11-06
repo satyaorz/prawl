@@ -79,11 +79,13 @@ export function createRailgunTransport(opts: TransportOptions): RailgunTransport
   };
   if (opts.accountAddress) addAccount(opts.accountAddress);
 
-  const identityFor = (call: JsonRpcCall): Identity => {
-    const text = JSON.stringify(call.params ?? []).toLowerCase();
-    for (const [hex, id] of accounts) if (text.includes(hex)) return id;
-    return publicId;
+  /** The registered account a request names, if any (it must then travel on that account's identity). */
+  const accountIn = (text: string): Identity | undefined => {
+    const lower = text.toLowerCase();
+    for (const [hex, id] of accounts) if (lower.includes(hex)) return id;
+    return undefined;
   };
+  const identityFor = (call: JsonRpcCall): Identity => accountIn(JSON.stringify(call.params ?? [])) ?? publicId;
 
   const answer = async (call: JsonRpcCall): Promise<unknown> => {
     const id = call.id ?? null;
@@ -126,6 +128,8 @@ export function createRailgunTransport(opts: TransportOptions): RailgunTransport
     poiHosts: [hostOf(opts.poiEndpoint)],
     artifactHosts: opts.artifactHosts ?? ARTIFACT_HOSTS,
     bundlerHosts: opts.bundlerHosts ?? [],
+    // A UserOperation names its one-time sender: estimate, send and receipt go on its circuit.
+    accountFor: accountIn,
   });
 
   const transportFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

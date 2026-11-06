@@ -11,11 +11,16 @@
  *    restored in the answer so the caller's id matching still works;
  *  - asks Subsquid for gzip (measured 11 MB → 4.07 MB, 38 s → 14 s over Tor)
  *    and decompresses here, since tor-js passes the compressed body through;
- *  - proof submission and bundler calls get a fresh one-time identity each
- *    and are never retried; public sync reads share one scope per host.
+ *  - proof submission and bundler calls get a fresh one-time identity each,
+ *    unless the body names an account the caller registered (a one-time
+ *    UserOperation sender): then the call goes on that account's own
+ *    identity, as the cross-identity guard requires. Only actual submissions
+ *    (eth_sendUserOperation, PPOI submits) are never retried; bundler reads
+ *    such as gas estimates are. Public sync reads share one scope per host.
  */
 import type { AnonRpcClient } from "./client";
 import { AnonRpcError } from "./errors";
+import type { Identity } from "./identity";
 import type { Deadlines } from "./types";
 
 export interface RailgunFetchOptions {
@@ -26,8 +31,13 @@ export interface RailgunFetchOptions {
   poiHosts: readonly string[];
   /** Artifact hosts (raw GitHub). */
   artifactHosts: readonly string[];
-  /** ERC-4337 bundler hosts; every call gets a fresh identity. */
+  /** ERC-4337 bundler hosts; every call gets a fresh identity (see accountFor). */
   bundlerHosts?: readonly string[];
+  /**
+   * For bundler calls: the identity of an account the request body names,
+   * if any. Such a call must travel on that account's identity.
+   */
+  accountFor?: (body: string) => Identity | undefined;
   /** POI JSON-RPC methods that submit something; fresh identity, no retry. */
   submitMethods?: readonly string[];
   /** Deadlines for large Subsquid pages (default 20 s headers, 90 s total). */
@@ -41,6 +51,9 @@ export const DEFAULT_SUBMIT_METHODS = [
   "ppoi_submit_legacy_transact_proofs",
   "ppoi_submit_single_commitment_proofs",
 ];
+
+/** Bundler methods that submit something: one attempt only. */
+const BUNDLER_SUBMIT_METHODS: ReadonlySet<string> = new Set(["eth_sendUserOperation"]);
 
 const PASS_HEADERS = new Set(["content-type", "accept"]);
 
@@ -94,10 +107,15 @@ export function createRailgunFetch(options: RailgunFetchOptions): typeof fetch {
       }
     }
 
-    const isSubmit = bundlers.has(host) || (poi.has(host) && rpcMethods.some((m) => submitMethods.has(m)));
-    const identity = isSubmit
-      ? client.identities.ephemeral("railgun-submit")
-      : client.identities.publicScope(`railgun:${host.replace(/[^a-z0-9.-]/g, "-")}`);
+    const isBundler = bundlers.has(host);
+    const isSubmit =
+      (isBundler && (rpcMethods.length === 0 || rpcMethods.some((m) => BUNDLER_SUBMIT_METHODS.has(m)))) ||
+      (poi.has(host) && rpcMethods.some((m) => submitMethods.has(m)));
+    const identity = isBundler
+      ? ((body !== undefined ? options.accountFor?.(body) : undefined) ?? client.identities.ephemeral("railgun-submit"))
+      : isSubmit
+        ? client.identities.ephemeral("railgun-submit")
+        : client.identities.publicScope(`railgun:${host.replace(/[^a-z0-9.-]/g, "-")}`);
 
     let result;
     try {

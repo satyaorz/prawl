@@ -96,4 +96,39 @@ describe("RAILGUN transport", () => {
     await expect(t.fetch(t.rpcUrl.replace("11155111", "1"), post({ id: 1, method: "eth_chainId" }))).rejects.toBeInstanceOf(TypeError);
     expect(http).not.toHaveBeenCalled();
   });
+
+  it("sends bundler calls that name the one-time sender on the sender's identity, and retries only reads", async () => {
+    // Reproduces the live failure: the call went out on an ephemeral identity while naming a
+    // registered account, and the client's cross-identity guard refused it.
+    const identities = new IdentityRegistry();
+    const calls: Array<{ label: string; kind: string; body: string }> = [];
+    const http = vi.fn(async (id: { label: string }, req: { url: string; body?: string; kind?: string }) => {
+      identities.assertOnlySubject(id as never, `${req.url} ${req.body ?? ""}`); // what the real client does
+      calls.push({ label: id.label, kind: req.kind ?? "read", body: req.body ?? "" });
+      return { status: 200, statusText: "OK", headers: { "content-type": "application/json" }, body: new TextEncoder().encode('{"jsonrpc":"2.0","id":1,"result":"0x1"}'), url: req.url };
+    });
+    const client = { identities, read: vi.fn(), http } as unknown as AnonRpcClient;
+    const SENDER = "0x00000000000000000000000000000000000000b2";
+    const t = createRailgunTransport({
+      client,
+      chainId: 11155111,
+      subsquidEndpoint: "https://squid.example/graphql",
+      poiEndpoint: "https://ppoi.example/",
+      bundlerHosts: ["bundler.example"],
+      accountAddress: ACCOUNT,
+    });
+    t.addAccount(SENDER);
+    const op = { sender: SENDER, nonce: "0x0", callData: "0x" };
+    const bundler = "https://bundler.example/rpc";
+    await t.fetch(bundler, post({ jsonrpc: "2.0", id: 9, method: "eth_estimateUserOperationGas", params: [op, "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108"] }));
+    await t.fetch(bundler, post({ jsonrpc: "2.0", id: 10, method: "eth_sendUserOperation", params: [op, "0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108"] }));
+    await t.fetch(bundler, post({ jsonrpc: "2.0", id: 11, method: "pimlico_getUserOperationGasPrice", params: [] }));
+    expect(calls.map((c) => [c.label.split(":")[0], c.kind])).toEqual([
+      ["acct", "read"],
+      ["acct", "write"],
+      ["eph", "read"],
+    ]);
+    expect(calls[0]!.label).toBe(calls[1]!.label);
+    expect(calls[0]!.label.toLowerCase()).toContain("b2");
+  });
 });
