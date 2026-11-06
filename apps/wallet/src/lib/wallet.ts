@@ -12,6 +12,7 @@ import { keccak256, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
 import { railgun } from "../railgun/controller";
+import { publicBalance, sendCalls, type SentTx } from "./tx";
 
 export type WalletPhase = "locked" | "unlocking" | "opening" | "syncing" | "ready" | "error";
 
@@ -31,6 +32,10 @@ export interface WalletState {
   /** Block of the public pool snapshot a new wallet started from. */
   snapshotBlock?: bigint;
   lastSyncMs?: number;
+  /** Public ETH on the EVM account (the way in and out). */
+  publicWei?: bigint;
+  /** Progress or result of the current shield/unshield/send. */
+  action?: { kind: string; status: string; done?: boolean; error?: string; txs?: SentTx[] };
   error?: string;
 }
 
@@ -95,8 +100,11 @@ export async function sync(): Promise<void> {
     const head = await anon.head(state.chainId);
     update({ head });
     await rg.call("sync", { head: head.toString() });
-    const balances = await rg.call("balances", undefined as never);
-    update({ phase: "ready", balances, lastSyncMs: performance.now() - t0 });
+    const [balances, publicWei] = await Promise.all([
+      rg.call("balances", undefined as never),
+      state.evmAddress ? publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) : undefined,
+    ]);
+    update({ phase: "ready", balances, lastSyncMs: performance.now() - t0, ...(publicWei !== undefined ? { publicWei } : {}) });
   } catch (e) {
     update({ phase: "error", error: e instanceof Error ? e.message : String(e) });
   }
@@ -136,4 +144,24 @@ export async function lockWallet(): Promise<void> {
   keys = undefined;
   await railgun().call("close", undefined as never);
   update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined });
+}
+
+/** Move public ETH from the wallet's EVM account into the private balance. */
+export async function shieldEth(amountWei: bigint): Promise<void> {
+  if (!keys || !state.railgunAddress) throw new Error("wallet is locked");
+  const kind = "shield";
+  const status = (s: string) => update({ action: { kind, status: s } });
+  try {
+    status("Building shield…");
+    const calls = await railgun().call("buildShield", {
+      recipient: state.railgunAddress,
+      items: [{ token: "native", amount: amountWei.toString() }],
+    });
+    const txs = await sendCalls(anon, state.chainId, keys.evmAccount, calls, status);
+    const ok = txs.every((t) => t.status === "success");
+    update({ action: { kind, status: ok ? "Shielded. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs } });
+    await sync();
+  } catch (e) {
+    update({ action: { kind, status: "Shield failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+  }
 }
