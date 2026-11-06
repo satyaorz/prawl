@@ -7,7 +7,7 @@
  * ones tor-js sets on its errors: CONNECTION, TLS, HTTP_REQUEST, IO_ERROR.
  *
  * Our tor-js fork also puts Arti's error kind into `name` as
- * `TorError.<kind>` (experiments/torjs-keepalive). When it is there, the kind
+ * `TorError.<kind>` (vendor/torjs-worker). When it is there, the kind
  * refines the retry rule: see `retryAction`. The stock worker leaves `name`
  * as "Error", and the code-based rule applies unchanged.
  */
