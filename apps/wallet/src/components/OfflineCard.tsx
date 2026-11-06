@@ -72,7 +72,7 @@ function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
 
   return (
     <div className="mt-3">
-      <button onClick={() => setOpen((v) => !v)} className="text-xs text-zinc-400 hover:text-zinc-200">
+      <button onClick={() => setOpen((v) => !v)} className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:text-zinc-100">
         {open ? "Hide" : "Cash out a phone coin into my private balance…"}
       </button>
       {open && (
@@ -215,15 +215,16 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
     <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5">
       <div className="flex items-baseline justify-between">
         <h2 className="text-sm font-medium">Offline cash</h2>
-        {w.evmAddress && (
-          <button onClick={() => setShowDepositor((v) => !v)} className="text-xs text-zinc-400 hover:text-zinc-200">
-            {showDepositor ? "Hide" : "Show"} depositor QR
-          </button>
-        )}
       </div>
       <p className="mt-1 text-xs text-zinc-500">
-        Coins live on your Android phone and pay phone to phone with no network. Here you load them from your public account and cash them out.
+        Coins live on your Android phone and pay phone to phone with no network. Here you load them (from your public account, or privately from your private balance), cash them out, and refresh them before they expire.
+        Open a link or scan a QR code from the Prawl phone app.
       </p>
+      {w.evmAddress && (
+        <button onClick={() => setShowDepositor((v) => !v)} className="mt-3 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:text-zinc-100">
+          {showDepositor ? "Hide the depositor QR" : "Before minting: show my depositor QR"}
+        </button>
+      )}
 
       {showDepositor && w.evmAddress && (
         <div className="mt-3 flex items-center gap-3">
@@ -241,7 +242,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Paste a load or cash-out link from the phone"
+          placeholder="Paste a link from the phone"
           spellCheck={false}
           className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs outline-none focus:border-zinc-500"
         />
