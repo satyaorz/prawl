@@ -119,8 +119,10 @@ export function SwapDashboard() {
     try {
       const session = await openSwapSession(accountIndex);
       const next = await session.balances();
-      setService(session); setBalances(next); setOrder(await session.orderStatus().catch(() => undefined)); setStatus("");
+      const nextOrder = await session.orderStatus().catch(() => undefined);
+      // Default to selling WETH, set together with the dashboard appearing (not a moment later).
       if (session.config.tokenB.toLowerCase() === wallet.wrappedBaseToken?.toLowerCase()) setDirection(2);
+      setService(session); setBalances(next); setOrder(nextOrder); setStatus("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setStatus(""); }
     finally { setOpening(false); }
   }
