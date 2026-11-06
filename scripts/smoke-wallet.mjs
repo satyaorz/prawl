@@ -4,7 +4,8 @@
 // timings, the RAILGUN sync progress and a per-host request summary.
 // With RESTORE=1 it then wipes the page's storage (as on a new device), signs in
 // with the same passkey and times the restore.
-// Usage: CHROME=/path/to/chromium [RESTORE=1] node scripts/smoke-wallet.mjs [url] [maxMinutes]
+// With RESCAN=1 it finally presses Full rescan and times a scan of all history.
+// Usage: CHROME=/path/to/chromium [RESTORE=1] [RESCAN=1] node scripts/smoke-wallet.mjs [url] [maxMinutes]
 import { chromium } from "playwright";
 
 const url = process.argv[2] ?? "http://localhost:5173/";
@@ -27,9 +28,11 @@ try {
   await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 120_000 });
   console.log(`[${s()}] tor ready`);
   const card = () => page.locator("section").first();
+  page.on("dialog", (d) => void d.accept());
   async function openAndSync(button, what) {
     const t = Date.now();
     await page.getByRole("button", { name: button }).click();
+    if (button === "Full rescan") await page.getByText("Scanning").first().waitFor({ timeout: 60_000 });
     await page.getByText("Private balance").or(card().locator("p.text-red-400")).first().waitFor({ timeout: 120_000 });
     const openErr = card().locator("p.text-red-400");
     if (await openErr.count()) throw new Error(`wallet failed to open: ${await openErr.first().innerText()}`);
@@ -65,6 +68,7 @@ try {
     const again = (await card().innerText()).match(/0zk1\S+/)?.[0];
     console.log(`[${s()}] same address after restore: ${!!address && address === again}`);
   }
+  if (process.env.RESCAN) await openAndSync("Full rescan", "full rescan");
   console.log(`[${s()}] final:`, (await page.locator("section").first().innerText()).replace(/\n/g, " | "));
   const rows = await page.locator("section", { hasText: "Network log" }).locator("li").allInnerTexts();
   const by = {};
