@@ -2,8 +2,13 @@
 
 **A private Ethereum wallet you open with your fingerprint, which also works as digital cash when there is no internet.**
 
-Try it on Sepolia testnet: <https://prawl-wallet.centralindia.cloudapp.azure.com> (website), or build the Android app from
-[`offline/app`](offline/app/README.md).
+Try it on Sepolia testnet:
+
+- **Wallet** (opens in any browser): <https://prawl-wallet.centralindia.cloudapp.azure.com>
+- **Website and handbook**: <https://satyaorz.github.io/prawl/> (source: [`apps/site`](apps/site/README.md))
+- **Android app** (Android 12+, test networks only): [latest release](https://github.com/satyaorz/prawl/releases/latest/download/prowl.apk), or build it from
+  [`offline/app`](offline/app/README.md)
+- **Private swap** (WETH for a test token on Uniswap v4, encrypted batches): see [`private-swap`](private-swap/README.md), with the live Sepolia contracts and transactions
 
 ## Why
 
