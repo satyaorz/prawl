@@ -1,0 +1,145 @@
+@import "tailwindcss";
+
+/* The wallet's own palette, kept in one place so the site and the app never drift:
+   zinc-950/900 for surfaces, black beneath, emerald for the primary action,
+   and the logo's yellow for the brand mark only. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --color-ink: #08090b;
+  --color-panel: #0d0e11;
+  --color-prowl: #fff21a;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background-color: var(--color-ink);
+  /* One page, no scrolling: the layout is built to fit the viewport. */
+  overflow: hidden;
+}
+
+::selection {
+  background-color: rgb(16 185 129 / 0.35);
+  color: #fff;
+}
+
+/* Keyboard focus is always visible, and never on a mouse click. */
+:focus-visible {
+  outline: 2px solid rgb(52 211 153 / 0.9);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* Faint grid + glow used behind the hero: pure CSS, no images, no network. */
+.prowl-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 40%, #000 30%, transparent 100%);
+}
+
+.prowl-glow {
+  background:
+    radial-gradient(48rem 30rem at 78% 12%, rgb(16 185 129 / 0.16), transparent 70%),
+    radial-gradient(36rem 26rem at 8% 88%, rgb(255 242 26 / 0.06), transparent 70%);
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────────
+   Everything animates in on load and on route change. All of it is opt-out
+   under prefers-reduced-motion, at the bottom of this file. */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes shine {
+  from {
+    background-position: 200% center;
+  }
+  to {
+    background-position: -200% center;
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(16 185 129 / 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgb(16 185 129 / 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(16 185 129 / 0);
+  }
+}
+
+.rise {
+  animation: rise 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.fade {
+  animation: fade 0.9s ease both;
+}
+.float {
+  animation: float 9s ease-in-out infinite;
+}
+.pulse-ring {
+  animation: pulse-ring 2.6s ease-out infinite;
+}
+
+/* A slow sheen across the headline's accent word. */
+.shine {
+  background: linear-gradient(100deg, #34d399 0%, #a7f3d0 40%, #fff21a 55%, #34d399 80%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shine 7s linear infinite;
+}
+
+/* Route changes: a short cross-fade so pages do not snap. */
+.view-enter {
+  animation: fade 0.35s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
