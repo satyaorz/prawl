@@ -67,9 +67,9 @@ and for the phone tests two Android 12+ phones (one with StrongBox helps) on USB
 
 ```
 # The Android app
-cd app && cat keystore/README.md           # create the local debug key once
-./gradlew test                              # JVM tests
-./gradlew assembleDebug                     # APKs under app/build/outputs/apk/{compat,prawl}/debug
+cd app                                      # see app/README.md; the debug key is created by the first build
+./gradlew :core:test                        # JVM tests
+./gradlew :app:assemblePrawlDebug -Pprawl.site=https://<your-wallet-site>   # app/build/outputs/apk/prawl/debug
 
 # Phone regression (compat APK installed over the old test app, package xyz.prawl.otktest)
 cd android && export A=<phone A adb serial> B=<phone B adb serial>
@@ -82,8 +82,8 @@ cd contracts-v3 && forge test               # evm_version = osaka
 
 The contract and app tests also use fixtures built from real phone runs (`tools/*_to_foundry.py`).
 Those hold the phones' attestation chains, which identify the devices, so they are not in the
-repo. Run the phone scripts first to make your own. `scripts/sync-offline.sh` copies this code in
-from the local research tree.
+repo. Run the phone scripts first to make your own. This directory is the source of truth for the
+app (the local research tree only links here).
 
 ## Demo script (about 5 minutes)
 

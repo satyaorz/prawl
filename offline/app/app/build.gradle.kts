@@ -9,10 +9,25 @@ val site: String = (findProperty("prawl.site") as String?) ?: "https://<site>"
 // Escrow for NEW coins: v3.1 (adds private load, shield cash-out, refresh). v3 coins stay spendable (see core Escrows.PRODUCT).
 val escrow = "0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779"
 val chainId = "11155111"
-// SHA-256 of keystore/prawl-debug.keystore's certificate: the same key that signed the Java harness, so the
-// attestation policy (package + signing cert) recognises keys made by either DEBUG app. That keystore is in the repo with the
-// well-known password "android": its digest must NEVER be trusted by a release build (audit F-11).
-val debugCertSha256 = "e6e0daae1031f70e5a267a383878ac564a935106f75600310feda6bf1ea92eaf"
+// DEBUG signing key: keystore/prawl-debug.keystore, created on the first build if it is missing (well-known password "android": it is a
+// debug key, never a secret). Its certificate's SHA-256 is computed from whatever key is there, so a fresh clone builds and its debug
+// builds trust each other (the attestation policy pins "package + signing certificate"). That digest must NEVER be trusted by a release
+// build (audit F-11): the release build type below uses only the production certificate.
+// Passkeys inside the app: the website's /.well-known/assetlinks.json must list this certificate (see README, "Passkeys").
+val debugKeystore: File = rootProject.file("keystore/prawl-debug.keystore")
+if (!debugKeystore.exists()) {
+    debugKeystore.parentFile.mkdirs()
+    val keytool = File(System.getProperty("java.home"), "bin/keytool").takeIf { it.canExecute() } ?: File("keytool")
+    val rc = ProcessBuilder(
+        keytool.path, "-genkeypair", "-keystore", debugKeystore.path, "-storepass", "android", "-keypass", "android",
+        "-alias", "debug", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Prawl OTK test",
+    ).inheritIO().start().waitFor()
+    check(rc == 0 && debugKeystore.exists()) { "could not create ${debugKeystore.path} (keytool exit code $rc): create it by hand, see keystore/README.md" }
+}
+val debugCertSha256: String = java.security.KeyStore.getInstance(debugKeystore, "android".toCharArray())
+    .getCertificate("debug").encoded
+    .let { java.security.MessageDigest.getInstance("SHA-256").digest(it) }
+    .joinToString("") { "%02x".format(it) }
 // The production signing certificate's SHA-256 (64 lowercase hex): -Pprawl.release.certSha256=... The default is a PLACEHOLDER that matches
 // no real certificate, so an unconfigured release build trusts no key at all (fail safe) instead of the debug certificate.
 val releaseCertSha256: String = ((findProperty("prawl.release.certSha256") as String?) ?: "0".repeat(64)).lowercase()

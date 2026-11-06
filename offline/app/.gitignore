@@ -1,0 +1,9 @@
+build/
+.gradle/
+.kotlin/
+local.properties
+*.apk
+*.aab
+# Debug signing key: created by the build on first use (password "android"); never commit a release key.
+keystore/*.keystore
+keystore/*.jks
