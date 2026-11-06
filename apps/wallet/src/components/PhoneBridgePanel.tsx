@@ -41,6 +41,10 @@ export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string) => v
   useEffect(() => {
     if (bridge) void load(bridge);
   }, [bridge, load]);
+  // Let the phone's own Load form offer this wallet's address (older app builds simply lack the method).
+  useEffect(() => {
+    if (bridge && w.evmAddress && typeof bridge.setAccount === "function") void bridge.setAccount({ address: w.evmAddress }).catch(() => undefined);
+  }, [bridge, w.evmAddress]);
   if (!bridge) return null;
 
   /** One phone call at a time, with a waiting message; a refusal on the phone is not an error. */
