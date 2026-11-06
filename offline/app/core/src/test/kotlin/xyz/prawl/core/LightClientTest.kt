@@ -43,9 +43,10 @@ import java.nio.file.Files
  */
 class LightClientTest {
     companion object {
-        val dp = File(Vectors.raw, "v3/deposit_proofs/data")
-        val vec = File(dp, "vectors")
-        @JvmStatic @BeforeClass fun native() { DepositProof.loadNative(System.getProperty("prawl.native")) }
+        // Lazy: without the phone vectors the tests are skipped (Vectors.raw throws an assumption), not broken at class initialisation.
+        val dp: File by lazy { File(Vectors.raw, "v3/deposit_proofs/data") }
+        val vec: File by lazy { File(dp, "vectors") }
+        @JvmStatic @BeforeClass fun native() { Vectors.raw; DepositProof.loadNative(System.getProperty("prawl.native")) }
     }
 
     private fun tmpStore(cache: String = "cache_now.json"): LightClientStore {
