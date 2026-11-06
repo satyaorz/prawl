@@ -133,3 +133,16 @@ export function Sheet({ open, title, onClose, children }: { open: boolean; title
 }
 
 export const short = (s: string, head = 6, tail = 4): string => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
+
+/**
+ * An ETH amount for a big headline or a row: at most `decimals` decimals, trailing zeros dropped, and "<0.000001" for a dust amount, so it
+ * always fits a phone screen. The exact value stays available in the smaller text under it.
+ */
+export function fmtEthShort(wei: bigint, decimals = 6): string {
+  const scale = 10n ** BigInt(18 - decimals);
+  const q = wei / scale;                                  // truncated, never rounded up: it must not promise more than there is
+  if (wei > 0n && q === 0n) return `<0.${"0".repeat(decimals - 1)}1`;
+  const whole = q / 10n ** BigInt(decimals);
+  const frac = (q % 10n ** BigInt(decimals)).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}

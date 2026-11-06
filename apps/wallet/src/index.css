@@ -2,6 +2,9 @@
 
 /* The page fills its container with percentages, not vh/dvh: viewport-height units resolve to 0 in the Android app's WebView. */
 html, body, #root { height: 100%; }
+/* Nothing may make the page wider than the screen: it would slide sideways (and the Android WebView shrinks to fit it).
+   `clip`, not `hidden`: hidden makes a scroll box, and in that WebView percentage heights are 0, so the whole page was clipped away. */
+#root { overflow-x: clip; }
 
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;

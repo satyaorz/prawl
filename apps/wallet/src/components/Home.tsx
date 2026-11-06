@@ -6,7 +6,7 @@ import { ActivityList } from "./ActivityCard";
 import { PrivateActions } from "./PrivateActions";
 import { ReceiveCard } from "./ReceiveCard";
 import { ShieldForm } from "./ShieldForm";
-import { ActionButton, EthIcon, Icon, Sheet, short } from "./ui";
+import { ActionButton, EthIcon, Icon, Sheet, short, fmtEthShort } from "./ui";
 
 type SheetName = "receive" | "shield" | "send" | "withdraw";
 const TITLE: Record<SheetName, string> = { receive: "Receive", shield: "Add funds (shield)", send: "Send privately", withdraw: "Withdraw to public" };
@@ -88,10 +88,10 @@ export function Home() {
         )}
 
         <p className="text-xs text-zinc-500">Private balance · Sepolia</p>
-        <p className="mt-1 font-mono text-4xl font-semibold tracking-tight">
-          {w.balances ? formatEther(total) : "…"} <span className="text-lg font-normal text-zinc-500">ETH</span>
+        <p className="mt-1 break-all font-mono text-4xl font-semibold tracking-tight" title={w.balances ? `${formatEther(total)} ETH` : undefined}>
+          {w.balances ? fmtEthShort(total) : "…"} <span className="text-lg font-normal text-zinc-500">ETH</span>
         </p>
-        <p className="mt-1 text-xs text-zinc-500">
+        <p className="mt-1 break-all text-xs text-zinc-500">
           {w.balances
             ? total === 0n
               ? "No private funds yet."
@@ -159,7 +159,7 @@ export function Home() {
                 <p className="text-xs text-zinc-500">Private · shielded</p>
               </div>
               <div className="text-right">
-                <p className="font-mono text-sm">{w.balances ? formatEther(total) : "…"} ETH</p>
+                <p className="font-mono text-sm" title={w.balances ? `${formatEther(total)} ETH` : undefined}>{w.balances ? fmtEthShort(total) : "…"} ETH</p>
                 <p className="text-xs text-zinc-500">{total > valid ? "pending PPOI" : "spendable"}</p>
               </div>
             </div>
@@ -170,7 +170,7 @@ export function Home() {
                 <p className="text-xs text-zinc-500">Public account · the way in and out</p>
               </div>
               <div className="text-right">
-                <p className="font-mono text-sm">{w.publicWei !== undefined ? formatEther(w.publicWei) : "…"} ETH</p>
+                <p className="font-mono text-sm" title={w.publicWei !== undefined ? `${formatEther(w.publicWei)} ETH` : undefined}>{w.publicWei !== undefined ? fmtEthShort(w.publicWei) : "…"} ETH</p>
                 <button onClick={() => open("shield")} className="text-xs text-emerald-400 hover:text-emerald-300">
                   Shield
                 </button>
