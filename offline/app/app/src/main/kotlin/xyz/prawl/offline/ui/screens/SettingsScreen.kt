@@ -58,6 +58,7 @@ fun SettingsScreen(nav: Nav) {
     var cap by remember { mutableStateOf(Eth.eth(s.capWei)) }
     var hours by remember { mutableStateOf((s.minRemainingS / 3600).toString()) }
     var owner by remember { mutableStateOf(s.ownerApproval) }
+    var autoRev by remember { mutableStateOf(s.autoRevocation) }
     var transport by remember { mutableStateOf(s.transport) }
     var msg by remember { mutableStateOf<Pair<Status, String>?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -142,6 +143,12 @@ fun SettingsScreen(nav: Nav) {
             KeyValue("Entries", anchors.revokedSerials.size.toString(), mono = true)
             StatusLine(if (stale) Status.PENDING else Status.OK, if (stale) "Older than 48 h: receiving limited to 0.05 ETH" else "Fresh")
             SecondaryButton("Update now (online)", { confirmRevocation = true }, enabled = !busy)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Keep it fresh automatically", style = Tw.body, modifier = Modifier.weight(1f))
+                Switch(autoRev, { autoRev = it; s.autoRevocation = it },
+                    colors = SwitchDefaults.colors(checkedTrackColor = Tw.emerald400, checkedThumbColor = Tw.zinc950))
+            }
+            Secondary("When this phone is online and the list is over 12 hours old, it is fetched from Google in the background. Google sees this phone's IP address when that happens; nothing else is sent. Turn it off to update by hand.")
         }
 
         PCard(title = "Synced deposit snapshots", subtitle = "Fallback for coins without a light-client proof. Trusted input: import only what your own wallet produced.") {

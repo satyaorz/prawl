@@ -64,6 +64,14 @@ class Settings(context: Context) {
         get() = p.getString("transport", "l2cap") ?: "l2cap"
         set(v) { p.edit().putString("transport", v).apply() }
 
+    /**
+     * Refresh Google's attestation revocation list in the background when it is over 12 h old and the phone is online. Default on: a list
+     * older than 48 h silently drops the receiving limit to 0.05 ETH. Privacy cost: Google sees this phone's IP address.
+     */
+    var autoRevocation: Boolean
+        get() = p.getBoolean("autoRevocation", true)
+        set(v) { p.edit().putBoolean("autoRevocation", v).apply() }
+
     /** Last depositor address used for loading (convenience). */
     var lastDepositor: String?
         get() = p.getString("lastDepositor", null)
