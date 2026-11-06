@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeUserHandle, encodeUserHandle } from "../src";
+import { bornAtFrom, decodeUserHandle, encodeUserHandle } from "../src";
 
 const T = 1_794_000_000; // 2026-11
 
@@ -26,5 +26,13 @@ describe("passkey user handle", () => {
     expect(decodeUserHandle(v2)).toBeUndefined();
     expect(decodeUserHandle(encodeUserHandle(1_000))).toBeUndefined();
     expect(decodeUserHandle(encodeUserHandle(Math.floor(Date.now() / 1000) + 10 * 86_400))).toBeUndefined();
+  });
+});
+
+describe("bornAtFrom", () => {
+  it("backs a fast clock off by its measured skew and never moves a slow clock forward", () => {
+    expect(bornAtFrom(1_794_000_000.9, 0)).toBe(1_794_000_000);
+    expect(bornAtFrom(1_794_000_000, 3 * 86_400)).toBe(1_794_000_000 - 3 * 86_400);
+    expect(bornAtFrom(1_794_000_000, -500)).toBe(1_794_000_000);
   });
 });

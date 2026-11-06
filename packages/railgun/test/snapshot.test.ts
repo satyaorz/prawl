@@ -73,8 +73,10 @@ describe("restoreStartBlock", () => {
     expect(restoreStartBlock({ ...base, bornAt: base.snapshotTime - 3600 })).toBe(12_074_320n - 300n - 1n);
   });
 
-  it("subtracts the clock slack", () => {
+  it("subtracts the clock slack, a day by default", () => {
     expect(restoreStartBlock({ ...base, slackS: 7200, bornAt: base.snapshotTime - 3600 })).toBe(12_074_320n - 900n - 1n);
+    const { slackS: _unused, ...noSlack } = base;
+    expect(restoreStartBlock({ ...noSlack, bornAt: base.snapshotTime - 3600 })).toBe(12_074_320n - (3600n + 86_400n) / 12n - 1n);
   });
 
   it("caps a wallet born after the snapshot at the snapshot block's neighbourhood", () => {

@@ -4,7 +4,7 @@
  * circuit); waiting for the receipt uses the transaction's own identity.
  * Signing happens here, in memory; the key never leaves this tab.
  */
-import type { AnonRpcClient } from "@prawl/anon-rpc";
+import { AnonRpcError, type AnonRpcClient } from "@prawl/anon-rpc";
 import type { Call, Hex } from "@prawl/railgun";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -24,6 +24,25 @@ export interface SentTx {
 }
 
 const hexBig = (v: unknown): bigint => BigInt(v as string);
+
+/**
+ * A submission whose outcome we cannot tell: the answer never came back, the
+ * transaction was not seen mined in time, or the bundler returned another hash.
+ * It may still land, so callers must say "status unknown" rather than "failed",
+ * and must not offer a blind retry (a retry could pay twice).
+ */
+export class UnconfirmedError extends Error {
+  override name = "UnconfirmedError";
+  constructor(
+    message: string,
+    readonly hash?: Hex,
+  ) {
+    super(message);
+  }
+}
+
+/** A JSON-RPC error answer means the node or bundler refused it: safe to say it was not sent. */
+const refused = (e: unknown): boolean => e instanceof AnonRpcError && e.code === "RPC_ERROR";
 
 /** ETH with up to 6 decimals, rounded down. */
 function eth(wei: bigint): string {
@@ -94,7 +113,13 @@ export async function sendCalls(
       maxFeePerGas,
     });
     onStatus?.(`Sending transaction${label} over Tor…`);
-    const hash = (await client.write(id, chainId, "eth_sendRawTransaction", [raw])) as Hex;
+    let hash: Hex;
+    try {
+      hash = (await client.write(id, chainId, "eth_sendRawTransaction", [raw])) as Hex;
+    } catch (e) {
+      if (refused(e)) throw e;
+      throw new UnconfirmedError(`no answer when sending the transaction (${e instanceof Error ? e.message : String(e)}); it may still be mined`);
+    }
     onStatus?.(`Waiting for transaction${label} to be mined…`);
     out.push(await waitForReceipt(client, chainId, hash));
     if (out.at(-1)!.status !== "success") break;
@@ -120,7 +145,7 @@ export async function waitForReceipt(client: AnonRpcClient, chainId: number, has
     }
     await new Promise((res) => setTimeout(res, 4000));
   }
-  throw new Error(`no receipt for ${hash} after ${timeoutMs / 1000} s`);
+  throw new UnconfirmedError(`transaction ${hash} was not seen mined after ${timeoutMs / 1000} s; it may still land`, hash);
 }
 
 /** Public ETH balance of an address, on that address's own circuit. */
@@ -145,8 +170,16 @@ export async function sendUserOp(
   const op = signed as { userOp: unknown; entryPoint: string };
   if (!op?.userOp || !op.entryPoint) throw new Error("malformed signed UserOperation");
   const id = client.identities.account(sender);
-  const hash = (await client.write(id, chainId, "eth_sendUserOperation", [op.userOp, op.entryPoint])) as Hex;
-  if (hash.toLowerCase() !== expectedHash.toLowerCase()) throw new Error(`bundler returned ${hash}, expected ${expectedHash}`);
+  let hash: Hex;
+  try {
+    hash = (await client.write(id, chainId, "eth_sendUserOperation", [op.userOp, op.entryPoint])) as Hex;
+  } catch (e) {
+    if (refused(e)) throw e;
+    throw new UnconfirmedError(`no answer from the bundler (${e instanceof Error ? e.message : String(e)}); the operation may still be accepted`, expectedHash);
+  }
+  if (hash.toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new UnconfirmedError(`the bundler returned ${hash}, expected ${expectedHash}; the operation may have been accepted`, hash);
+  }
   onStatus?.("Waiting for the bundler to include it…");
   const wait = client.identities.tx(hash);
   const deadline = Date.now() + timeoutMs;
@@ -159,5 +192,5 @@ export async function sendUserOp(
     }
     await new Promise((res) => setTimeout(res, 4000));
   }
-  throw new Error(`UserOperation ${hash} not included after ${timeoutMs / 1000} s`);
+  throw new UnconfirmedError(`UserOperation ${hash} was not seen included after ${timeoutMs / 1000} s; it may still land`, hash);
 }

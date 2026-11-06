@@ -13,7 +13,7 @@ import { anon } from "./anon";
 import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
 import { railgun } from "../railgun/controller";
-import { publicBalance, sendCalls, sendUserOp, type SentTx } from "./tx";
+import { publicBalance, sendCalls, sendUserOp, UnconfirmedError, type SentTx } from "./tx";
 import { depositCall, loadProblems, redeemCall, redeemOutcome, revertReason, simulateRedeem } from "../offline/escrow";
 import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type RedeemPayload } from "../offline/payload";
 
@@ -63,13 +63,38 @@ const CREDENTIAL_KEY = "passkey:credential-id";
 
 let keys: WalletKeys | undefined;
 let activityLog: ActivityLog | undefined;
+/**
+ * Bumped whenever the unlocked wallet changes (unlock, lock, rescan). Work that
+ * started under an earlier epoch (a sync, a private send, a history write)
+ * must not touch the screen or another wallet's history after the change.
+ */
+let epoch = 0;
+
+/** Set the action result only if the wallet it belongs to is still the open one. */
+function updateAction(forEpoch: number, action: NonNullable<WalletState["action"]>): void {
+  if (forEpoch === epoch) update({ action });
+}
+
+/** The action result for a thrown error: "status unknown" when the submission may still land, else "failed". */
+function failedAction(failure: string, e: unknown, message: string = e instanceof Error ? e.message : String(e)): NonNullable<WalletState["action"]> {
+  if (e instanceof UnconfirmedError) {
+    return {
+      kind: "",
+      status: "Status unknown",
+      done: true,
+      error: `${e.message}. Do not repeat it yet: after the next refresh check your balance and Activity, since a retry could pay twice.`,
+    };
+  }
+  return { kind: "", status: failure, done: true, error: message };
+}
 
 /** Record finished transactions in the sealed history. Never fails the action. */
-async function remember(kind: ActivityKind, amountWei: bigint, to: string | undefined, txs: readonly SentTx[]): Promise<void> {
+async function remember(log: ActivityLog | undefined, forEpoch: number, kind: ActivityKind, amountWei: bigint, to: string | undefined, txs: readonly SentTx[]): Promise<void> {
   try {
     for (const t of txs) {
-      const list = await activityLog?.add({ at: Date.now(), kind, amount: amountWei.toString(), ...(to ? { to } : {}), txHash: t.hash, ok: t.status === "success" });
-      if (list) update({ activity: list });
+      // `log` is the history of the wallet that started the action, never whichever is open now.
+      const list = await log?.add({ at: Date.now(), kind, amount: amountWei.toString(), ...(to ? { to } : {}), txHash: t.hash, ok: t.status === "success" });
+      if (list && forEpoch === epoch) update({ activity: list });
     }
   } catch {
     // history is a convenience; the transaction already happened
@@ -93,6 +118,25 @@ export const walletState = {
 
 void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id }));
 
+/**
+ * How far this device's clock runs ahead of the chain, measured once from the
+ * latest block (best effort; 0 until known or when the clock is not ahead). The
+ * passkey stores the wallet's creation time, and a fast clock would store a
+ * time later than the real one.
+ */
+let clockSkewS = 0;
+async function measureClockSkew(): Promise<void> {
+  try {
+    const block = (await anon.read(anon.identities.publicScope(`clock:${SEPOLIA}`), SEPOLIA, "eth_getBlockByNumber", ["latest", false])) as { timestamp: string };
+    const skew = Math.floor(Date.now() / 1000) - Number(BigInt(block.timestamp));
+    // A block is up to a slot and a bit of network delay old: only a clear lead counts.
+    if (skew > 120) clockSkewS = skew;
+  } catch {
+    // unknown: the restore's 24 h slack still covers an ordinary error
+  }
+}
+void measureClockSkew();
+
 railgun().onProgress((p) => update({ syncedBlock: BigInt(p.synced), head: BigInt(p.head) }));
 
 interface StartOptions {
@@ -101,6 +145,7 @@ interface StartOptions {
   discardCheckpoint?: boolean;
 }
 async function start(root: Uint8Array, opts: StartOptions): Promise<void> {
+  epoch += 1;
   keys = await deriveWalletKeys(root);
   root.fill(0);
   await openRailgun(opts);
@@ -153,6 +198,7 @@ export function sync(): Promise<void> {
 async function doSync(): Promise<void> {
   if (!keys) return;
   const rg = railgun();
+  const myEpoch = epoch;
   update({ phase: "syncing", error: undefined });
   try {
     const t0 = performance.now();
@@ -163,12 +209,13 @@ async function doSync(): Promise<void> {
       rg.call("balances", undefined as never),
       state.evmAddress ? publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) : undefined,
     ]);
+    if (myEpoch !== epoch) return; // locked or switched while we waited: show nothing of this wallet
     update({ phase: "ready", balances, lastSyncMs: performance.now() - t0, ...(publicWei !== undefined ? { publicWei } : {}) });
   } catch (e) {
-    update({ phase: "error", error: e instanceof Error ? e.message : String(e) });
+    if (myEpoch === epoch) update({ phase: "error", error: e instanceof Error ? e.message : String(e) });
     return;
   }
-  await submitPendingPoi();
+  await submitPendingPoi(myEpoch);
 }
 
 /**
@@ -178,20 +225,23 @@ async function doSync(): Promise<void> {
  * indexed, input not valid yet) stays queued for the next sync. Failures here
  * never fail the sync.
  */
-async function submitPendingPoi(): Promise<void> {
+async function submitPendingPoi(myEpoch: number): Promise<void> {
   const rg = railgun();
   try {
     const queued = await rg.call("poiPendingCount", undefined as never);
+    if (myEpoch !== epoch) return;
     update({ poiQueue: queued });
     if (queued === 0) return;
     const report = await rg.call("processPendingPoi", undefined as never);
+    if (myEpoch !== epoch) return;
     update({ poiQueue: report.pendingAfter, poiError: report.failed[0]?.error });
     if (report.submitted.length > 0) {
       await rg.call("refreshPoi", undefined as never);
-      update({ balances: await rg.call("balances", undefined as never) });
+      const balances = await rg.call("balances", undefined as never);
+      if (myEpoch === epoch) update({ balances });
     }
   } catch (e) {
-    update({ poiError: e instanceof Error ? e.message : String(e) });
+    if (myEpoch === epoch) update({ poiError: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -225,7 +275,7 @@ async function guarded(fn: () => Promise<void>): Promise<void> {
 
 export function createWallet(): Promise<void> {
   return guarded(async () => {
-    const { root, credentialId, bornAt } = await createPasskey();
+    const { root, credentialId, bornAt } = await createPasskey(undefined, { clockSkewS });
     await store.set(CREDENTIAL_KEY, credentialId);
     update({ hasPasskey: true });
     await start(root, { fresh: true, ...(bornAt !== undefined ? { bornAt } : {}) });
@@ -249,6 +299,7 @@ export function unlockWallet(): Promise<void> {
  * looks wrong.
  */
 export async function rescanWallet(): Promise<void> {
+  epoch += 1;
   stopAutoSync();
   update({ phase: "opening", balances: undefined, poiQueue: undefined, poiError: undefined, error: undefined });
   try {
@@ -260,11 +311,12 @@ export async function rescanWallet(): Promise<void> {
 }
 
 export async function lockWallet(): Promise<void> {
+  epoch += 1;
   stopAutoSync();
   keys = undefined;
   activityLog = undefined;
   await railgun().call("close", undefined as never);
-  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined, activity: undefined });
+  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined, activity: undefined, action: undefined, publicWei: undefined, privateGasWei: undefined });
 }
 
 /**
@@ -273,16 +325,19 @@ export async function lockWallet(): Promise<void> {
  */
 export async function sendPublicEth(to: Hex, amountWei: bigint): Promise<void> {
   const kind = "public-send";
-  const status = (s: string) => update({ action: { kind, status: s } });
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
   try {
     if (!keys) throw new Error("wallet is locked");
     const txs = await sendCalls(anon, state.chainId, keys.evmAccount, [{ to, data: "0x", value: amountWei }], status);
-    await remember("public-send", amountWei, to, txs);
+    await remember(opLog, myEpoch, "public-send", amountWei, to, txs);
     const ok = txs.every((t) => t.status === "success");
-    update({ action: { kind, status: ok ? `Sent ${fmtEth(amountWei)} ETH.` : "The transfer reverted", done: true, txs } });
+    updateAction(myEpoch, { kind, status: ok ? `Sent ${fmtEth(amountWei)} ETH.` : "The transfer reverted", done: true, txs });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
-    update({ action: { kind, status: "Send failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+    updateAction(myEpoch, { ...failedAction("Send failed", e), kind });
+    if (e instanceof UnconfirmedError) void sync();
   }
 }
 
@@ -290,7 +345,9 @@ export async function sendPublicEth(to: Hex, amountWei: bigint): Promise<void> {
 export async function shieldEth(amountWei: bigint): Promise<void> {
   if (!keys || !state.railgunAddress) throw new Error("wallet is locked");
   const kind = "shield";
-  const status = (s: string) => update({ action: { kind, status: s } });
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
   try {
     status("Building shield…");
     const calls = await railgun().call("buildShield", {
@@ -298,12 +355,13 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
       items: [{ token: "native", amount: amountWei.toString() }],
     });
     const txs = await sendCalls(anon, state.chainId, keys.evmAccount, calls, status);
-    await remember("shield", amountWei, undefined, txs);
+    await remember(opLog, myEpoch, "shield", amountWei, undefined, txs);
     const ok = txs.every((t) => t.status === "success");
-    update({ action: { kind, status: ok ? "Shielded. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs } });
+    updateAction(myEpoch, { kind, status: ok ? "Shielded. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs });
     await sync();
   } catch (e) {
-    update({ action: { kind, status: "Shield failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+    updateAction(myEpoch, { ...failedAction("Shield failed", e), kind });
+    if (e instanceof UnconfirmedError) void sync();
   }
 }
 
@@ -390,7 +448,9 @@ async function privateOp(
   run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>,
 ): Promise<void> {
   if (!keys) throw new Error("wallet is locked");
-  const status = (s: string) => update({ action: { kind, status: s } });
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
   try {
     const before = wethTotal();
     status("Proving in your browser… (this takes a while)");
@@ -400,14 +460,15 @@ async function privateOp(
     const prepared = await run(oneTimeKey);
     status("Sending to the bundler over Tor…");
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
-    await remember(kind, amountWei, to, [tx]);
-    update({ action: { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] } });
+    await remember(opLog, myEpoch, kind, amountWei, to, [tx]);
+    updateAction(myEpoch, { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] });
     await sync();
     // What the paymaster took: everything that left the balance beyond the amount and fee.
     const gas = before - wethTotal() - amountWei - privateFeeWei(kind, amountWei);
     if (tx.status === "success" && gas >= GAS_MEASURE_MIN && gas <= GAS_MEASURE_MAX) update({ privateGasWei: gas });
   } catch (e) {
-    update({ action: { kind, status: kind === "send" ? "Send failed" : "Unshield failed", done: true, error: explain(kind, e) } });
+    updateAction(myEpoch, { ...failedAction(kind === "send" ? "Send failed" : "Unshield failed", e, explain(kind, e)), kind });
+    if (e instanceof UnconfirmedError) void sync();
   }
 }
 
@@ -459,22 +520,24 @@ export function clearFinishedAction(): void {
  */
 export async function offlineLoad(p: LoadPayload): Promise<void> {
   const kind = "offline-load";
-  const status = (s: string) => update({ action: { kind, status: s } });
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
   try {
     if (!keys || !state.evmAddress) throw new Error("unlock the wallet first");
     status("Checking the coin over Tor…");
     const problems = await loadProblems(anon, p, state.evmAddress as Hex);
     if (problems.length) {
-      update({ action: { kind, status: "Not loaded", done: true, error: problems.join(" ") } });
+      updateAction(myEpoch, { kind, status: "Not loaded", done: true, error: problems.join(" ") });
       return;
     }
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [depositCall(p)], status);
-    await remember("offline-load", p.value, p.coinId, txs);
+    await remember(opLog, myEpoch, "offline-load", p.value, p.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
-    update({ action: { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs } });
+    updateAction(myEpoch, { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
-    update({ action: { kind, status: "Load failed", done: true, error: revertReason(e) } });
+    updateAction(myEpoch, { ...failedAction("Load failed", e, revertReason(e)), kind });
   }
 }
 
@@ -486,17 +549,19 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
  */
 export async function offlineRedeem(p: RedeemPayload): Promise<void> {
   const kind = "offline-redeem";
-  const status = (s: string) => update({ action: { kind, status: s } });
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
   try {
     if (!keys || !state.evmAddress) throw new Error("unlock the wallet first");
     status("Simulating the cash-out over Tor…");
     const sim = await simulateRedeem(anon, p, state.evmAddress as Hex);
     if ("error" in sim) {
-      update({ action: { kind, status: "Not sent", done: true, error: sim.error } });
+      updateAction(myEpoch, { kind, status: "Not sent", done: true, error: sim.error });
       return;
     }
     if (!sim.paid) {
-      update({ action: { kind, status: "Not sent", done: true, error: "the escrow would not pay this: it records a double spend and freezes the coin instead" } });
+      updateAction(myEpoch, { kind, status: "Not sent", done: true, error: "the escrow would not pay this: it records a double spend and freezes the coin instead" });
       return;
     }
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [redeemCall(p)], status);
@@ -504,7 +569,7 @@ export async function offlineRedeem(p: RedeemPayload): Promise<void> {
     const mined = txs.at(-1);
     // The receipt status is not enough: a mined redeem may have frozen the coin or only deferred the payment.
     const outcome = mined?.status === "success" ? redeemOutcome(mined.logs ?? [], p) : undefined;
-    await remember("offline-redeem", amount, p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
+    await remember(opLog, myEpoch, "offline-redeem", amount, p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
     const text =
       !outcome
         ? { status: "The cash-out reverted" }
@@ -515,9 +580,9 @@ export async function offlineRedeem(p: RedeemPayload): Promise<void> {
             : outcome.kind === "blocked"
               ? { status: "Not paid", error: `The escrow found a double spend on this coin's path and ${outcome.frozen ? "froze the coin" : "blocked this cash-out"}. Nothing was paid.` }
               : { status: "Mined, but no payout was seen", error: "Check the coin's status before trying again." };
-    update({ action: { kind, ...text, done: true, txs } });
+    updateAction(myEpoch, { kind, ...text, done: true, txs });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
-    update({ action: { kind, status: "Cash-out failed", done: true, error: revertReason(e) } });
+    updateAction(myEpoch, { ...failedAction("Cash-out failed", e, revertReason(e)), kind });
   }
 }

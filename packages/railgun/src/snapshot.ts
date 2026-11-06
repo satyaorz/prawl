@@ -98,7 +98,7 @@ const TWELVE_SECOND_SLOTS: ReadonlySet<number> = new Set([1, 11_155_111]);
  * the wallet's birth, from the snapshot's block and timestamp alone. On
  * these chains at most one block is made per 12 s slot, so at most
  * floor((snapshotTime - bornAt) / 12) + 1 blocks lie after the birth up to the
- * snapshot; `slackS` covers a wrong clock on the creating device. Returns
+ * snapshot; `slackS` (default 24 h) covers a wrong clock on the creating device. Returns
  * undefined where that bound does not hold (unknown chain) or the result
  * would be before the RAILGUN deployment (scan everything instead).
  */
@@ -111,7 +111,7 @@ export function restoreStartBlock(opts: {
   slackS?: number;
 }): bigint | undefined {
   if (!TWELVE_SECOND_SLOTS.has(opts.chainId)) return undefined;
-  const slack = opts.slackS ?? 2 * 3600;
+  const slack = opts.slackS ?? 24 * 3600;
   const before = Math.max(0, opts.snapshotTime - (opts.bornAt - slack));
   const start = opts.snapshotBlock - BigInt(Math.floor(before / 12)) - 1n;
   if (start <= opts.deploymentBlock) return undefined;

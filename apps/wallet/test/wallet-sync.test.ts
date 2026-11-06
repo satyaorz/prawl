@@ -21,7 +21,8 @@ vi.mock("../src/railgun/controller", () => ({ railgun: () => rg }));
 vi.mock("../src/lib/anon", () => ({ anon: { head: vi.fn(async () => 100n) } }));
 const kv = new Map<string, unknown>();
 vi.mock("../src/lib/store", () => ({ store: { get: vi.fn(async (k: string) => kv.get(k)), set: vi.fn(async (k: string, v: unknown) => kv.set(k, v)) } }));
-vi.mock("../src/lib/tx", () => ({
+vi.mock("../src/lib/tx", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/tx")>()),
   publicBalance: vi.fn(async () => 0n),
   sendCalls: vi.fn(async () => [{ hash: `0x${"cd".repeat(32)}`, status: "success", blockNumber: 1n, gasUsed: 21000n }]),
   sendUserOp: vi.fn(),
@@ -151,5 +152,39 @@ describe("activity history", () => {
     expect(JSON.stringify(sealed![1])).not.toContain("00e5");
     await wallet.lockWallet();
     expect(wallet.walletState.get().activity).toBeUndefined();
+  });
+});
+
+describe("in-flight work and unclear submissions", () => {
+  it("does not bring a locked wallet's balance back when a sync finishes after Lock", async () => {
+    await wallet.lockWallet();
+    reset(0);
+    await wallet.createWallet();
+    answers.balances = [{ asset: "erc20:0xfff9976782d46cc05630d1f6ebab18b2324d6b14", token: "0xfff9976782d46cc05630d1f6ebab18b2324d6b14", amount: "1", poiStatus: "Valid" }];
+    const syncing = wallet.sync();
+    await wallet.lockWallet();
+    await syncing;
+    const s = wallet.walletState.get();
+    expect(s.phase).toBe("locked");
+    expect(s.balances).toBeUndefined();
+    expect(s.publicWei).toBeUndefined();
+  });
+
+  it("reports an unclear submission as status unknown, not failed, and never records it", async () => {
+    const tx = await import("../src/lib/tx");
+    await wallet.lockWallet();
+    kv.clear(); // the fake store is shared: an earlier test's history belongs to the same (mocked) wallet key
+    reset(0);
+    await wallet.createWallet();
+    vi.mocked(tx.sendCalls).mockRejectedValueOnce(new tx.UnconfirmedError("transaction 0xab was not seen mined after 300 s; it may still land", "0xab"));
+    await wallet.sendPublicEth("0x00000000000000000000000000000000000000e5", 1000n);
+    const a = wallet.walletState.get().action;
+    expect(a).toMatchObject({ kind: "public-send", status: "Status unknown", done: true });
+    expect(a?.error).toMatch(/may still land.*Do not repeat it yet/);
+    expect(wallet.walletState.get().activity).toEqual([]);
+    // A refusal by the node is a plain failure.
+    vi.mocked(tx.sendCalls).mockRejectedValueOnce(new Error("Not enough ETH"));
+    await wallet.sendPublicEth("0x00000000000000000000000000000000000000e5", 1000n);
+    expect(wallet.walletState.get().action).toMatchObject({ status: "Send failed", error: "Not enough ETH" });
   });
 });

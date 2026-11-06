@@ -53,6 +53,15 @@ export function encodeUserHandle(bornAt: number, random: Uint8Array = crypto.get
   return h;
 }
 
+/**
+ * The creation time to store: this device's clock minus how far ahead of the
+ * chain it measured to be. A clock that runs fast would store a time later than
+ * the real one, and a restore would then skip notes from the wallet's first hours.
+ */
+export function bornAtFrom(nowS: number, clockSkewS: number): number {
+  return Math.floor(nowS - Math.max(0, clockSkewS));
+}
+
 /** Creation time from a v1 user handle, or undefined (older or foreign handle). */
 export function decodeUserHandle(handle: ArrayBuffer | Uint8Array | null | undefined): number | undefined {
   if (!handle) return undefined;
@@ -131,10 +140,10 @@ export async function unlockWithPasskey(credentialId?: string): Promise<PasskeyR
  * Some authenticators return the PRF result at creation; others only on get(),
  * so this falls back to an immediate unlock.
  */
-export async function createPasskey(label = "Prawl wallet"): Promise<PasskeyRoot> {
+export async function createPasskey(label = "Prawl wallet", opts: { clockSkewS?: number } = {}): Promise<PasskeyRoot> {
   if (!passkeysAvailable()) throw new PasskeyError("Passkeys are not available in this browser", "UNSUPPORTED");
   const salt = await prfSalt();
-  const bornAt = Math.floor(Date.now() / 1000);
+  const bornAt = bornAtFrom(Date.now() / 1000, opts.clockSkewS ?? 0);
   let cred: PublicKeyCredential | null;
   try {
     cred = (await navigator.credentials.create({
