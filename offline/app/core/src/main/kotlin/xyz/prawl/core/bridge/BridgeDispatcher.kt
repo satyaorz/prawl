@@ -71,7 +71,7 @@ class BridgeDispatcher(
     private val rnd = SecureRandom()
 
     companion object {
-        val METHODS = setOf("mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed", "setAccount")
+        val METHODS = setOf("mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed", "setAccount", "loadLink", "discard")
         const val MAX_ARGS_CHARS = 65_536
         private val DEC = Regex("^(0|[1-9][0-9]{0,77})$")
         private val HEX64 = Regex("^[0-9a-f]{64}$")
@@ -94,6 +94,8 @@ class BridgeDispatcher(
                 "refresh" -> refresh(args)
                 "markDeposited" -> markDeposited(args)
                 "setAccount" -> setAccount(args)
+                "loadLink" -> loadLink(args)
+                "discard" -> discard(args)
                 else -> markRefreshed(args)
             }.toString()
         } catch (e: BridgeException) { throw e }
@@ -161,6 +163,36 @@ class BridgeDispatcher(
             pendingDeposit = true, privateLoad = priv)
         host.changed()
         return if (priv) Handoff.loadPrivate(CoinHeader(m.header)) else Handoff.load(m.header)
+    }
+
+    /** The phone's undeposited coin with this id (any of its notes), or a refusal. */
+    private fun awaiting(a: JsonObject): Note {
+        val coin = coinKey(a.str("coinId"))
+        return host.notes().firstOrNull { it.header.coinId == coin && it.pendingDeposit && !it.spent }
+            ?: throw BridgeException("no_such_coin", "no coin awaiting a deposit with that id")
+    }
+
+    /**
+     * `loadLink({coinId})`: the load code of a coin that is still awaiting its deposit, so the page can fund a coin minted earlier instead of
+     * minting another one. The same public payload [mint] returned (header and deposit address); signs nothing.
+     */
+    private fun loadLink(a: JsonObject): JsonObject {
+        val n = awaiting(a)
+        return if (n.privateLoad) Handoff.loadPrivate(n.header, n.tipWei) else Handoff.load(n.header.json)
+    }
+
+    /**
+     * `discard({coinId})`: deletes an undeposited coin's one-time key after the NATIVE confirmation. A page could otherwise destroy a coin
+     * whose deposit is in flight (its money would then only come back to the depositor after expiry), so the phone always asks.
+     */
+    private fun discard(a: JsonObject): JsonObject {
+        val n = awaiting(a)
+        requireApproval(BridgeConfirm("Discard this coin?",
+            "${Eth.eth(n.value)} ETH coin, never deposited. Only discard it if no deposit was sent: its one-time key is deleted, and a deposit " +
+                "made later could only be reclaimed by ${Eth.checksum(n.header.depositor)} after the coin expires.", "0x" + n.header.coinId))
+        host.notes().filter { it.header.coinId == n.header.coinId && it.pendingDeposit && !it.spent }.forEach { host.wallet().discardUndeposited(it.alias) }
+        host.changed()
+        return buildJsonObject { put("ok", true) }
     }
 
     /** `setAccount({address})`: the wallet's public address, only to pre-fill the native Load form. Signs and spends nothing. */

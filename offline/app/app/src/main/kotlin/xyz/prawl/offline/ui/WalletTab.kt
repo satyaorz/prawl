@@ -194,7 +194,7 @@ class WalletWebView(
     });
   }
   var api = {};
-  ['mint', 'coins', 'cashOut', 'refresh', 'shieldAsk', 'acceptShieldTarget', 'markDeposited', 'markRefreshed', 'setAccount'].forEach(function (n) {
+  ['mint', 'coins', 'cashOut', 'refresh', 'shieldAsk', 'acceptShieldTarget', 'markDeposited', 'markRefreshed', 'setAccount', 'loadLink', 'discard'].forEach(function (n) {
     api[n] = function (a) { return call(n, a); };
   });
   Object.freeze(api);

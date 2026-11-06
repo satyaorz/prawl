@@ -6,7 +6,9 @@ import {
   BridgeDeclined,
   cashOutToAddress,
   cashOutToShield,
+  ask,
   getBridge,
+  loadLinkOnPhone,
   mintOnPhone,
   refreshOnPhone,
   type BridgeCoin,
@@ -156,6 +158,11 @@ export function PhoneBridgePanel({ onPayload, request }: { onPayload: (link: str
           <input type="checkbox" checked={priv} onChange={(e) => setPriv(e.target.checked)} />
           Fund it privately (from my private balance)
         </label>
+        {(coins ?? []).some((c) => c.state === "awaiting_deposit") && (
+          <p className="mt-2 text-xs text-amber-300">
+            The phone already has a coin waiting for its deposit (below). Fund that one with "Fund it now", or discard it, instead of making another.
+          </p>
+        )}
       </div>
 
       <div className="mt-3">
@@ -185,7 +192,39 @@ export function PhoneBridgePanel({ onPayload, request }: { onPayload: (link: str
                   {notes.map((n) => {
                     const key = `${c.coinId}:${n.noteId ?? "whole"}`;
                     const live = c.state === "spendable" || c.state === "confirming";
-                    if (!live) return <p key={key} className="mt-2 text-zinc-500">{c.state === "awaiting_deposit" ? "Not loaded yet: fund it above or discard it on the phone." : "Expired: its depositor can reclaim it."}</p>;
+                    if (c.state === "awaiting_deposit")
+                      return (
+                        <div key={key} className="mt-2">
+                          <p className="text-zinc-500">Not funded yet. Fund this coin (no new coin is made), or discard it if you will not.</p>
+                          {typeof b.loadLink === "function" ? (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                disabled={!!busy || !unlocked}
+                                onClick={() => void run("fund", async () => {
+                                  const r = await loadLinkOnPhone(b, c.coinId);
+                                  if (!r) throw new Error("This app version cannot hand over an existing coin. Update the Prowl app.");
+                                  return r;
+                                }, { own: true })}
+                                className="rounded-full bg-emerald-500 px-3 py-1 font-semibold text-zinc-950 disabled:opacity-40"
+                              >
+                                Fund it now
+                              </button>
+                              {typeof b.discard === "function" && (
+                                <button
+                                  disabled={!!busy}
+                                  onClick={() => void run("discard", async () => { await ask(() => b.discard!({ coinId: c.coinId })); return undefined; })}
+                                  className="rounded-full border border-red-900 px-3 py-1 text-red-300 hover:bg-red-950/40 disabled:opacity-40"
+                                >
+                                  Discard
+                                </button>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="mt-1 text-zinc-500">Fund or discard it from the phone's Offline cash tab (Load).</p>
+                          )}
+                        </div>
+                      );
+                    if (!live) return <p key={key} className="mt-2 text-zinc-500">Expired: its depositor can reclaim it.</p>;
                     return (
                       <div key={key} className="mt-2">
                         <div className="flex flex-wrap items-center gap-2">

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Hex } from "viem";
 import loadFixture from "./fixtures/offline/load-deposited.json";
 import redeemFixture from "./fixtures/offline/redeem-already-paid.json";
-import { BridgeDeclined, BridgeError, ask, cashOutToAddress, cashOutToShield, getBridge, mintOnPhone, payloadLink, refreshOnPhone, tellPhone, type PrawlOfflineBridge } from "../src/offline/bridge";
+import { BridgeDeclined, BridgeError, ask, cashOutToAddress, cashOutToShield, getBridge, loadLinkOnPhone, mintOnPhone, payloadLink, refreshOnPhone, tellPhone, type PrawlOfflineBridge } from "../src/offline/bridge";
 import { ESCROW_V31, parsePayload, payloadFromText, shieldRequestWire, type ShieldRequest } from "../src/offline/payload";
 
 const NONCE = "0123456789abcdef0123456789abcdef";
@@ -52,6 +52,15 @@ describe("phone bridge adapter", () => {
     expect(payloadFromText(r.link).t).toBe("load");
     await expect(mintOnPhone(b, { depositor: "0x03a62B04aBe69f382bd7582f492be735B1dDb47B", valueWei: 1n, mode: "private" })).rejects.toThrow(/expected load-private/);
     await expect(mintOnPhone(fake({ mint: async () => ({ v: 1, t: "load", chainId: 11155111 }) }), { depositor: "0x03a62B04aBe69f382bd7582f492be735B1dDb47B", valueWei: 1n, mode: "public" })).rejects.toThrow();
+  });
+
+  it("gets an awaiting coin's own load code back, and says so when the app is too old", async () => {
+    const b = fake({ loadLink: vi.fn(async () => loadFixture.payload) });
+    const r = await loadLinkOnPhone(b, "0xabc");
+    expect(r?.payload.t).toBe("load");
+    expect(b.loadLink).toHaveBeenCalledWith({ coinId: "0xabc" });
+    expect(await loadLinkOnPhone(fake(), "0xabc")).toBeUndefined();
+    await expect(loadLinkOnPhone(fake({ loadLink: async () => ({ v: 1, t: "redeem" }) }), "0xabc")).rejects.toThrow();
   });
 
   it("cashes out to an address and asks the phone, which confirms on its own screen", async () => {
