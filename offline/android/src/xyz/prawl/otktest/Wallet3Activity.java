@@ -78,7 +78,7 @@ public class Wallet3Activity extends Wallet2Activity {
             case "accept":
                 return accept3(new JSONObject(read(new File(in, x.getString("pay")))), x.getString("name"),
                         new JSONObject(read(new File(in, x.getString("snapshot")))));
-            case "redeem": return redeem3(x.getString("coin"), x.getString("payout"));
+            case "redeem": return redeem3(x.getString("coin"), x.getString("payout"), x.getString("shield"));
             case "bt3_receive": return bt3Receive(x.getString("name"), x.getString("snapshot"), auth);
             case "bt3_pay": return bt3Pay(x.getString("coin"), wei(x.getString("amount")), x.getString("addr"));
             default: return show3();
@@ -334,7 +334,30 @@ public class Wallet3Activity extends Wallet2Activity {
 
     // ================================================================ redeem
 
-    String redeem3(String coin, String payout) throws Exception {
+    static byte[] word(java.math.BigInteger v) {
+        byte[] b = v.toByteArray(), w = new byte[32];
+        int n = Math.min(b.length, 32);
+        System.arraycopy(b, b.length - n, w, 32 - n, n);
+        return w;
+    }
+    static java.math.BigInteger hexInt(String h) { return new java.math.BigInteger(h.replace("0x", ""), 16); }
+
+    /** sha256(abi.encode(ShieldRequest)): 9 static words (escrow v3.1 / HANDOFF v1.1 section 6). */
+    static String shieldHash(JSONObject r) throws Exception {
+        java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream();
+        o.write(word(hexInt(r.getString("npk"))));
+        o.write(word(BigInteger.valueOf(r.getInt("tokenType"))));
+        o.write(word(hexInt(r.getString("tokenAddress"))));
+        o.write(word(new BigInteger(r.getString("tokenSubID"))));
+        o.write(word(new BigInteger(r.getString("value"))));
+        JSONArray eb = r.getJSONArray("encryptedBundle");
+        for (int i = 0; i < 3; i++) o.write(word(hexInt(eb.getString(i))));
+        o.write(word(hexInt(r.getString("shieldKey"))));
+        return OtkVerify.sha256Hex(o.toByteArray());
+    }
+
+    String redeem3(String coin, String payout, String shieldFile) throws Exception {
+        if (shieldFile != null) return redeemShield(coin, shieldFile);
         JSONObject note = null;
         for (JSONObject n : notes(coin)) if (!n.has("spent")) { note = n; break; }
         if (note == null) { log("no unspent note of " + coin); return "NONE"; }
@@ -351,6 +374,36 @@ public class Wallet3Activity extends Wallet2Activity {
         write(noteFile(note.getString("alias")), note.toString());
         write(new File(outDir, "redeem3_" + coin + "_" + note.getString("alias") + ".json"), carry(red, new JSONObject()).toString());
         log("REDEEM SIGNED: " + eth(new BigInteger(note.getString("value"))) + " ETH note " + note.getString("alias") + " -> " + payout);
+        return "OK";
+    }
+
+    /** Cash out a note into a RAILGUN shield: sign over the exact ShieldRequest the website built. */
+    String redeemShield(String coin, String shieldFile) throws Exception {
+        JSONObject t = new JSONObject(read(new File(in, shieldFile)));
+        JSONObject req = t.has("request") ? t.getJSONObject("request") : t;
+        JSONObject note = null;
+        for (JSONObject n : notes(coin)) if (!n.has("spent") && n.getString("value").equals(req.getString("value"))) { note = n; break; }
+        if (note == null) { log("REFUSED: no unspent note of " + coin + " worth exactly " + req.getString("value") + " wei (shield value must equal the note)"); return "REFUSED"; }
+        JSONObject h = note.getJSONObject("header");
+        if (req.getInt("tokenType") != 0 || !req.getString("tokenAddress").toLowerCase().equals("0xfff9976782d46cc05630d1f6ebab18b2324d6b14")
+                || new BigInteger(req.getString("tokenSubID")).signum() != 0) { log("REFUSED: shield request is not plain ERC20 WETH"); return "REFUSED"; }
+        if (t.has("escrow") && !t.getString("escrow").toLowerCase().replace("0x", "").equals(h.getString("escrow"))) { log("REFUSED: shield target is for another escrow"); return "REFUSED"; }
+        String sh = shieldHash(req);
+        String key = sha("PRAWL-REDEEM-SHIELD|" + h.getString("chainId") + "|" + h.getString("escrow") + "|" + sh);
+        JSONArray outs = new JSONArray().put(new JSONObject().put("value", note.getString("value")).put("key", key));
+        int depth = note.getJSONArray("path").length();
+        byte[] sig;
+        try { sig = sign(note.getString("alias"), spendMessage(h, depth, note.getString("noteId"), outs), false); }
+        catch (Throwable e) { log("REFUSED BY SECURE HARDWARE: " + String.valueOf(e.getMessage()).split("\n")[0]); return "REFUSED"; }
+        JSONObject red = new JSONObject().put("header", h).put("path", note.getJSONArray("path"))
+                .put("redeem", new JSONObject().put("outputs", outs).put("index", 0).put("payout", "0x0000000000000000000000000000000000000000")
+                        .put("kind", "shield").put("shield", req).put("shieldHash", "0x" + sh)
+                        .put("sig", Base64.encodeToString(sig, Base64.NO_WRAP)));
+        note.put("spent", true).put("redeemedTo", "RAILGUN shield npk " + req.getString("npk"));
+        write(noteFile(note.getString("alias")), note.toString());
+        write(new File(outDir, "redeem3_" + coin + "_" + note.getString("alias") + ".json"), carry(red, new JSONObject()).toString());
+        log("REDEEM-TO-SHIELD SIGNED: " + eth(new BigInteger(note.getString("value"))) + " ETH note " + note.getString("alias")
+                + " -> RAILGUN npk " + req.getString("npk").substring(0, 18) + "… (shieldHash " + sh.substring(0, 16) + "…)");
         return "OK";
     }
 

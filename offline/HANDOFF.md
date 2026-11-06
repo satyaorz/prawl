@@ -50,3 +50,50 @@ The phone builds the exact arguments of `redeem(Header, Spend[], Redemption)`, s
 
 ## Test vectors
 `raw/v3/handoff_vectors/` holds payloads made from real phone bundles: a load, and a redeem for a coin that is not yet redeemed.
+
+---
+# v1.1 additions for escrow v3.1 (RAILGUN), 2026-11-06
+Escrow v3.1: `0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779` on Sepolia. Its full interface is `escrow_v31/RESULTS.md` §6. Plain `load` and `redeem` (above) work unchanged against v3.1 too.
+
+## 5. Phone → website: private load (`kind = load-private`)
+```json
+{"v":1,"t":"load-private","chainId":11155111,"escrow":"0x236b…d779",
+ "params":{"coinId":"0x…","expiry":1794812810,"k0x":"0x…","k0y":"0x…",
+           "depositor":"0x…reclaim address","minValue":"…","maxValue":"…","tip":"0"},
+ "depositAddress":"0x…"}
+```
+**Website:**
+1. `commitDeposit(params)`.
+2. Check that `depositAddress(params)` equals the payload's `depositAddress`.
+3. RAILGUN unshield of WETH, amount = `maxValue + tip`, recipient `depositAddress`. Kohaku grosses up the 0.25 % fee.
+4. `activate(params)`.
+
+For the default exact mode, `minValue == maxValue` = the coin value printed on the phone. `depositor` is only the reclaim/refund address. Use a fresh public address to keep the private link, and expect the usual exit-link caveat that an unshield amount and time are public.
+
+## 6. Website → phone: shield target (`kind = shield-target`)
+The phone must sign over the exact RAILGUN ShieldRequest:
+1. The user picks a note on the phone. The phone shows its value V, and a QR saying "cash out V to a private balance".
+2. The website builds a ShieldRequest (kohaku `Shield.addErc20(0zk, WETH, V)`) and shows:
+```json
+{"v":1,"t":"shield-target","chainId":11155111,"escrow":"0x236b…d779",
+ "request":{"npk":"0x…","tokenType":0,"tokenAddress":"0xfff9…6b14","tokenSubID":"0","value":"V",
+            "encryptedBundle":["0x…","0x…","0x…"],"shieldKey":"0x…"}}
+```
+3. The phone checks that `value == V`, the token is WETH and the type is ERC20. It computes `shieldHash = sha256(abi.encode(request))` (288 B, 9 static words), signs a REDEEM output with key `sha256hex("PRAWL-REDEEM-SHIELD|chainId|escrow40|" + shieldHash_hex)`, and returns:
+
+## 7. Phone → website: cash out to a private balance (`kind = redeem-shield`)
+The same object as `redeem`, plus `"shield": <the request above>`, with `redemption.payout` = `0x0000…0000`. The website simulates, then calls `redeemToShield(header, path, redemption, request)`. RAILGUN keeps its 25 bps shield fee.
+
+## 8. Exact encoding of `shieldHash` (agreed with the wallet session)
+`shield-target.request` is `{npk, tokenType, tokenAddress, tokenSubID, value, encryptedBundle[3], shieldKey}`:
+- bytes32 and address fields as `0x` hex, and `tokenType`, `tokenSubID` and `value` as decimal strings.
+- The tuple is Solidity `ShieldRequest = ((bytes32 npk, (uint8 tokenType, address tokenAddress, uint256 tokenSubID), uint120 value), (bytes32[3] encryptedBundle, bytes32 shieldKey))`.
+- Every member is static, so `abi.encode(request)` is exactly **9 big-endian 32-byte words** in this order, with no offsets:
+  `npk, tokenType, tokenAddress, tokenSubID, value, encryptedBundle[0], encryptedBundle[1], encryptedBundle[2], shieldKey`.
+- `shieldHash = sha256(those 288 bytes)`, hex lowercase without `0x`.
+- Output key: `sha256hex("PRAWL-REDEEM-SHIELD|" + chainId + "|" + escrow40 + "|" + shieldHash)`, where escrow40 is the lowercase 40-hex escrow address without `0x`.
+
+The phone REFUSES unless: `tokenType == 0`, `tokenAddress` is WETH, `tokenSubID == 0`, `value` equals a held note's value exactly, and `escrow` matches the coin's escrow. The website should therefore ask the phone for the note value V first, then build the request for exactly V.
+
+## 9. Deciding "paid" (agreed with the wallet session)
+A mined `redeem` can return false or defer the payment while the receipt says success. Decide "paid" from the escrow's events (`Redeemed` for this coin), never from the receipt status. Our tools read `coins(coinId).paid` and the payout balance at the receipt block.
