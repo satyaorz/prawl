@@ -26,8 +26,10 @@ def main():
     if res.returncode == 0 and "--send" in sys.argv:
         if p["t"] == "redeem" and res.stdout.strip() != "true":
             sys.exit("not sending: the simulation returned %r, which would freeze rather than pay" % res.stdout.strip())
-        keys = os.path.expanduser("~/.prawl-offline-keys")
-        send = ["cast", "send", "--json", "--keystore", keys + "/deployer", "--password-file", keys + "/deployer.pw"] + cmd[2:]
+        ks, pw = os.environ.get("KEYSTORE"), os.environ.get("PASSWORD_FILE")
+        if not ks or not pw:
+            sys.exit("--send needs KEYSTORE=<encrypted keystore file> and PASSWORD_FILE=<its password file> in the environment")
+        send = ["cast", "send", "--json", "--keystore", ks, "--password-file", pw] + cmd[2:]
         # cast send takes the same positional args as cast call; drop --from (the keystore decides the sender)
         i = send.index("--from") if "--from" in send else None
         if i is not None: del send[i:i + 2]
