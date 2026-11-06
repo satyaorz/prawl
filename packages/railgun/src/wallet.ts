@@ -16,6 +16,19 @@ export interface Balance {
   poiStatus: string | null;
 }
 
+/** Outcome of one pass over the queued PPOI proofs (kohaku PoiProcessReport). */
+export interface PoiReport {
+  pendingBefore: number;
+  /** Txids whose proofs the PPOI node took. Not yet list inclusion. */
+  submitted: string[];
+  /** The PPOI node has not indexed the transaction yet: retry later. */
+  waitingForTxid: string[];
+  /** An input note is not PPOI-valid yet: retry later. */
+  waitingForInputPoi: string[];
+  failed: Array<{ txid: string; error: string }>;
+  pendingAfter: number;
+}
+
 export interface Note extends Balance {
   treeNumber: number;
   leafIndex: number;
@@ -179,8 +192,8 @@ export class RailgunWallet {
   }
 
   /** Generate and submit queued PPOI proofs. Submission is not acceptance; refresh before showing Valid. */
-  async processPendingPoi(): Promise<unknown> {
-    return JSON.parse(await this.#run((s) => s.processPendingPoiJson()));
+  async processPendingPoi(): Promise<PoiReport> {
+    return JSON.parse(await this.#run((s) => s.processPendingPoiJson())) as PoiReport;
   }
 
   /** Unsigned shield transactions into `recipient` (a 0zk address). The caller signs and sends them. */

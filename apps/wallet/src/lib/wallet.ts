@@ -35,6 +35,10 @@ export interface WalletState {
   /** Block of the public pool snapshot a new wallet started from. */
   snapshotBlock?: bigint;
   lastSyncMs?: number;
+  /** Our operations whose PPOI proofs are still queued (submitted on each sync). */
+  poiQueue?: number;
+  /** Last PPOI submission problem, if any. The proofs stay queued. */
+  poiError?: string;
   /** Public ETH on the EVM account (the way in and out). */
   publicWei?: bigint;
   /** Progress or result of the current shield/unshield/send. */
@@ -92,9 +96,17 @@ async function start(root: Uint8Array, fresh: boolean): Promise<void> {
     ...(opened.snapshotBlock ? { snapshotBlock: BigInt(opened.snapshotBlock) } : {}),
   });
   await sync();
+  startAutoSync();
 }
 
-export async function sync(): Promise<void> {
+/** One sync at a time: a second caller (button, timer, after an action) waits for the running one. */
+let running: Promise<void> | undefined;
+export function sync(): Promise<void> {
+  running ??= doSync().finally(() => (running = undefined));
+  return running;
+}
+
+async function doSync(): Promise<void> {
   if (!keys) return;
   const rg = railgun();
   update({ phase: "syncing", error: undefined });
@@ -110,7 +122,51 @@ export async function sync(): Promise<void> {
     update({ phase: "ready", balances, lastSyncMs: performance.now() - t0, ...(publicWei !== undefined ? { publicWei } : {}) });
   } catch (e) {
     update({ phase: "error", error: e instanceof Error ? e.message : String(e) });
+    return;
   }
+  await submitPendingPoi();
+}
+
+/**
+ * After our private send or unshield lands, its PPOI proofs must reach the
+ * PPOI node, or the recipient's notes never become spendable. The queue lives
+ * in the checkpoint; a proof the node cannot take yet (transaction not
+ * indexed, input not valid yet) stays queued for the next sync. Failures here
+ * never fail the sync.
+ */
+async function submitPendingPoi(): Promise<void> {
+  const rg = railgun();
+  try {
+    const queued = await rg.call("poiPendingCount", undefined as never);
+    update({ poiQueue: queued });
+    if (queued === 0) return;
+    const report = await rg.call("processPendingPoi", undefined as never);
+    update({ poiQueue: report.pendingAfter, poiError: report.failed[0]?.error });
+    if (report.submitted.length > 0) {
+      await rg.call("refreshPoi", undefined as never);
+      update({ balances: await rg.call("balances", undefined as never) });
+    }
+  } catch (e) {
+    update({ poiError: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** Background refresh while unlocked: new notes, PPOI status, queued proofs. Paused while hidden or busy. */
+const AUTO_SYNC_MS = 60_000;
+let timer: ReturnType<typeof setInterval> | undefined;
+function startAutoSync(): void {
+  stopAutoSync();
+  timer = setInterval(() => {
+    if (typeof document !== "undefined" && document.hidden) return;
+    // Also retries after a failed sync (a Tor hiccup), once the wallet is open.
+    const idle = state.phase === "ready" || (state.phase === "error" && !!state.railgunAddress);
+    if (!idle || (state.action && !state.action.done)) return;
+    void sync();
+  }, AUTO_SYNC_MS);
+}
+function stopAutoSync(): void {
+  if (timer !== undefined) clearInterval(timer);
+  timer = undefined;
 }
 
 async function guarded(fn: () => Promise<void>): Promise<void> {
@@ -144,9 +200,10 @@ export function unlockWallet(): Promise<void> {
 }
 
 export async function lockWallet(): Promise<void> {
+  stopAutoSync();
   keys = undefined;
   await railgun().call("close", undefined as never);
-  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined });
+  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined });
 }
 
 /** Move public ETH from the wallet's EVM account into the private balance. */

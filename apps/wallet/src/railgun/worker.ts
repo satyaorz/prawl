@@ -167,6 +167,15 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
     await saveCheckpoint(await need().checkpoint());
   },
 
+  poiPendingCount: async () => (await need().poiPending()).length,
+
+  async processPendingPoi() {
+    const w = need();
+    const report = await w.processPendingPoi();
+    await saveCheckpoint(await w.checkpoint()); // the queue shrank, or retry state changed
+    return report;
+  },
+
   balances: async () => need().balances(),
   notes: async () => need().notes(),
 

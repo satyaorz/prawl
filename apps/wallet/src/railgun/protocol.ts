@@ -1,5 +1,5 @@
 /** Messages between the wallet page and the RAILGUN worker. */
-import type { Balance, Call, Hex, Note, PreparedUserOp, SyncProgress } from "@prawl/railgun";
+import type { Balance, Call, Hex, Note, PoiReport, PreparedUserOp, SyncProgress } from "@prawl/railgun";
 
 export interface Deployment {
   chainId: number;
@@ -33,6 +33,10 @@ export interface Ops {
   open(args: OpenArgs): { address: string; syncedBlock: string; restored: boolean; snapshotBlock?: string };
   sync(args: { head: string; windowBlocks?: string }): { syncedBlock: string };
   refreshPoi(): void;
+  /** Number of our own operations whose PPOI proofs are not submitted yet. */
+  poiPendingCount(): number;
+  /** Prove and submit queued PPOI proofs (after a private send or unshield lands). */
+  processPendingPoi(): PoiReport;
   balances(): Balance[];
   notes(): Note[];
   buildShield(args: { recipient: string; items: Array<{ token: "native" | Hex; amount: string }> }): Call[];
@@ -55,4 +59,4 @@ export type FromWorker =
   | { t: "fetch"; id: number; url: string; method: string; headers: [string, string][]; body: ArrayBuffer | null };
 
 export type ProgressMessage = Extract<FromWorker, { t: "progress" }>["progress"];
-export type { SyncProgress };
+export type { PoiReport, SyncProgress };

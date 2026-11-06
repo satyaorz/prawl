@@ -24,6 +24,15 @@ function Copy({ text }: { text: string }) {
   );
 }
 
+/** What each PPOI status means for the user. */
+const POI_LABEL: Record<string, { text: string; tone: string }> = {
+  Valid: { text: "spendable", tone: "text-emerald-400" },
+  Missing: { text: "PPOI check pending", tone: "text-amber-400" },
+  ProofSubmitted: { text: "PPOI proof sent", tone: "text-amber-400" },
+  ShieldBlocked: { text: "blocked by PPOI", tone: "text-red-400" },
+  Unavailable: { text: "PPOI node unreachable", tone: "text-zinc-500" },
+};
+
 export function WalletCard() {
   const w = useWallet();
   const busy = w.phase === "unlocking" || w.phase === "opening";
@@ -88,11 +97,26 @@ export function WalletCard() {
             <li key={`${b.asset}-${b.poiStatus}`} className="flex justify-between font-mono text-sm">
               <span className="text-zinc-400">{b.asset.toLowerCase() === w.wrappedBaseToken ? "ETH" : short(b.asset, 6, 4)}</span>
               <span>
-                {formatEther(BigInt(b.amount))} <span className="text-xs text-zinc-500">{b.poiStatus ?? ""}</span>
+                {formatEther(BigInt(b.amount))}{" "}
+                {b.poiStatus && (
+                  <span className={`text-xs ${POI_LABEL[b.poiStatus]?.tone ?? "text-zinc-500"}`}>{POI_LABEL[b.poiStatus]?.text ?? b.poiStatus}</span>
+                )}
               </span>
             </li>
           ))}
         </ul>
+      )}
+
+      {w.balances?.some((b) => b.poiStatus === "Missing") && (
+        <p className="mt-2 text-xs text-zinc-500">
+          New shields wait for the PPOI check (about an hour) before they can be sent or withdrawn. The wallet refreshes on its own.
+        </p>
+      )}
+      {!!w.poiQueue && (
+        <p className="mt-2 text-xs text-zinc-500">
+          {w.poiQueue} PPOI proof{w.poiQueue > 1 ? "s" : ""} queued for your last private transaction; retried on every refresh.
+          {w.poiError && <span className="block text-amber-400/80">Last attempt: {w.poiError}</span>}
+        </p>
       )}
 
       <dl className="mt-4 grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1.5 text-xs">
