@@ -56,7 +56,8 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
     val g = ctx.graph
     val scope = rememberCoroutineScope()
     val version by g.version.collectAsState()
-    var depositor by remember { mutableStateOf(route.depositor ?: g.settings.lastDepositor?.let { Eth.checksum(it) } ?: "") }
+    // Default: the link's address, else the Wallet tab's own address (told to us by the page, memory only), else the last one used.
+    var depositor by remember { mutableStateOf(route.depositor ?: g.walletHint40?.let { Eth.checksum(it) } ?: g.settings.lastDepositor?.let { Eth.checksum(it) } ?: "") }
     var amount by remember { mutableStateOf("") }
     var days by remember { mutableStateOf("14") }
     var scanning by remember { mutableStateOf(false) }
@@ -128,6 +129,14 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
             Field(depositor, { depositor = it }, if (priv) "Reclaim address (a fresh public address, 0x…)" else "Wallet address that will deposit (0x…)", mono = true,
                 error = if (depositor.isNotBlank() && !addr.ok) addr.note else null)
             if (priv) Secondary("The reclaim address is only used to refund or reclaim; it does not fund the coin. A fresh address keeps the private link.")
+            // The Wallet tab's own address, one tap away (never filled in silently for a private coin: it would link the refund to you).
+            val hint = g.walletHint40?.let { Eth.checksum(it) }
+            if (hint != null) {
+                if (depositor.equals(hint, ignoreCase = true)) {
+                    Secondary("This is your wallet's address, from the Wallet tab.")
+                    if (priv) Secondary("Using your main wallet address as the reclaim address links this coin's refund to you. A fresh address is better.", color = Tw.amber400)
+                } else SecondaryButton("Use my wallet address ${Fmt.addr(hint)}", { depositor = hint })
+            }
             if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prawl website (ethereum:0x…@11155111).") {
                 QrScanner(onResult = { text ->
                     scanning = false
@@ -139,7 +148,7 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
                     }
                 })
             } else SecondaryButton("Scan wallet address", { scanning = true })
-            Secondary(if (priv) "The reclaim address is part of the on-chain commitment." else "The depositor is part of the on-chain commitment: the deposit must come from exactly this account.")
+            Secondary(if (priv) "The reclaim address is part of the on-chain commitment." else "The depositor is part of the on-chain commitment: the deposit must come from exactly this account. It is also where unspent money goes back after the coin expires.")
             Field(amount, { amount = it }, "Amount (ETH)", mono = true, number = true,
                 error = if (amount.isNotBlank() && wei == null) "Enter an amount in ETH" else null)
             if (wei != null && wei > xyz.prawl.core.protocol.RecipientPolicy.CAP_WEI)
