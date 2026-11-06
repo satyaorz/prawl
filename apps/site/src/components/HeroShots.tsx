@@ -2,17 +2,17 @@ import { useEffect, useState } from "react";
 import { url } from "../lib/router";
 
 /**
- * Three real wallet screens, overlapping like cards fanned on a table.
+ * Three real screens from the Android app, overlapping like cards fanned on a table.
  *
- * The front card cycles through the four screenshots on a timer (and on hover
- * it pauses), so the hero shows the product working without a video: balance,
- * activity, offline cash, shielding. Purely CSS transforms, no libraries.
+ * The screenshots are captured from a real phone running the app (the address text is blurred; the
+ * balances are test-network ETH). The front card cycles through three of them on a timer (and on hover
+ * it pauses), so the hero shows the product working without a video: balance, sending, offline cash.
+ * Purely CSS transforms, no libraries.
  */
 const SHOTS = [
   { src: url("/shots/wallet.png"), label: "Your private balance" },
-  { src: url("/shots/activity.png"), label: "Activity, kept on device" },
+  { src: url("/shots/send.png"), label: "Send privately or publicly" },
   { src: url("/shots/offline.png"), label: "Offline cash, phone to phone" },
-  { src: url("/shots/shield.png"), label: "Shield ETH into the pool" },
 ] as const;
 
 export function HeroShots() {
@@ -48,15 +48,15 @@ export function HeroShots() {
           delay="120ms"
         />
 
-        {/* Middle card: activity. */}
+        {/* Middle card: the private swap. */}
         <Phone
-          src={url("/shots/activity.png")}
-          alt="The Prowl activity list"
+          src={url("/shots/swap.png")}
+          alt="The Prowl private swap screen"
           className="absolute left-[24%] top-[9%] h-[84%] w-auto rotate-[3deg] opacity-90"
           delay="220ms"
         />
 
-        {/* Front card: cycles through the four screens. */}
+        {/* Front card: cycles through the screens. */}
         <div className="rise absolute right-[2%] top-0 z-20 h-full" style={{ animationDelay: "320ms" }}>
           <div className="relative h-full">
             {SHOTS.map((shot, i) => (

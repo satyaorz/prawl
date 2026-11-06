@@ -40,12 +40,13 @@ export function Home() {
               className="rise mt-3 max-w-[46ch] text-[clamp(0.85rem,1.15vw,1.02rem)] leading-relaxed text-zinc-400 sm:mt-5"
               style={{ animationDelay: "220ms" }}
             >
-              Prowl is a privacy-first Ethereum wallet. Your balance lives in a{" "}
+              Prowl is an Ethereum wallet that keeps{" "}
+              <span className="text-zinc-200">your money, and who you pay,</span> private. Your balance sits in a{" "}
               <span className="text-zinc-200">shielded pool</span>, every request goes over{" "}
-              <span className="text-zinc-200">Tor on its own circuit</span>, and there is{" "}
-              <span className="text-zinc-200">no seed phrase and no server</span> — your keys come from a
-              passkey. You can swap on Uniswap in <span className="text-zinc-200">encrypted batches</span> (testnet). When there is no signal at all, two phones still pay each other with{" "}
-              <span className="text-zinc-200">offline cash</span>.
+              <span className="text-zinc-200">Tor</span>, and your keys come from a passkey:{" "}
+              <span className="text-zinc-200">no seed phrase, no server</span>. Swap on Uniswap in{" "}
+              <span className="text-zinc-200">encrypted batches</span>, and pay another phone with{" "}
+              <span className="text-zinc-200">no signal at all</span>. A testnet preview.
             </p>
 
             <ul
@@ -56,6 +57,7 @@ export function Home() {
                 ["shield", "RAILGUN shielded"],
                 ["tor", "Tor per identity"],
                 ["key", "Passkey, no seed"],
+                ["swap", "Private swaps"],
                 ["cash", "Offline payments"],
               ].map(([icon, label]) => (
                 <li key={label} className="flex items-center gap-1.5">
@@ -101,8 +103,8 @@ export function Home() {
           {/* On a very short viewport there is no room for the footnote: the
               buttons say what they do on their own. */}
           <p className="mt-2 hidden text-center text-[11px] leading-snug text-zinc-600 min-[400px]:block sm:text-left [@media(max-height:700px)]:hidden sm:[@media(min-height:701px)]:block">
-            The browser wallet opens on its own origin (passkeys are bound to it). The APK is the
-            Android app, for offline cash.
+            The browser wallet opens at its own address, because passkeys are tied to it. The Android app
+            adds offline cash and keeps its keys in the phone&rsquo;s secure hardware.
           </p>
         </section>
       </div>

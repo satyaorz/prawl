@@ -37,15 +37,17 @@ pnpm --filter @prawl/site build      # apps/site/dist
 pnpm --filter @prawl/site typecheck
 ```
 
-## Refresh the screenshots
+## The screenshots
 
-The screenshots are the real UI, driven into a funded-looking state by the
-wallet's dev-only `devSetState` hook. With the wallet dev server running:
+`public/shots/` are real screenshots taken on a phone running the Android app (the Wallet tab and the native Offline cash tab),
+not drawn and not generated from a fake state. They were captured over `adb` with the WebView driven through Chrome DevTools
+(open the sheet, tap the tab, `adb exec-out screencap`), then cropped to remove the status bar and **the wallet and address
+text was blurred** (the account chip and the Private and Public address rows) before they were committed. The balances shown are
+test-network ETH. To refresh them, repeat that on a device and redact the same places; never commit an unredacted capture of
+a wallet you care about.
 
-```sh
-pnpm --filter @prawl/wallet dev &     # http://localhost:5173
-node apps/site/scripts/capture-shots.mjs
-```
+(`scripts/capture-shots.mjs` is the older script that photographed a desktop dev server in a made-up state. It is not used for
+the current images.)
 
 ## The APK
 
