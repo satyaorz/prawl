@@ -124,6 +124,12 @@ class LightClient(
         return Status(periods.minOrNull(), periods.maxOrNull(), cache?.validUntilUnix(), store.lastSync)
     }
 
+    /**
+     * True when this phone cannot check deposits offline with what it has: no committees at all (nothing a payer can attach helps then,
+     * the phone has no committee to trust an update with), or none for the current period. Sync while online.
+     */
+    fun needsSync(): Boolean = cache() == null || currentPeriod() > (status().maxPeriod ?: -1)
+
     /** Periods this phone can verify, advertised in receive requests so payers can attach missing updates. */
     fun advertisement(): JsonObject? {
         val s = status()
