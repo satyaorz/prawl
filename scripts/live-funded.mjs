@@ -10,6 +10,7 @@
 //   <workdir>/address-a.txt   written: A's public account (fund it)
 //   <workdir>/return.txt      read when needed: 0x address for the final withdrawal
 //   <workdir>/control.txt     optional command, consumed when read:
+//       status    log every wallet's balances, PPOI states and queued proofs
 //       reload    reload every wallet page (picks up a new build) and unlock it again
 //       withdraw  withdraw everything spendable to the return address
 //       exit      close the browser (the in-memory passkeys are then gone)
@@ -34,6 +35,7 @@ async function control() {
   const cmd = readFileSync(controlFile, "utf8").trim();
   rmSync(controlFile, { force: true });
   log(`control: ${cmd}`);
+  if (cmd === "status") for (const w of wallets) log(`${w.name}: ${await balanceLines(w)}`);
   if (cmd === "reload") for (const w of wallets) await reload(w);
   if (cmd === "withdraw") await withdrawAll(await returnAddress());
   return cmd;
