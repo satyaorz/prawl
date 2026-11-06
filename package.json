@@ -8,7 +8,9 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "dev": "pnpm --filter @prawl/wallet dev",
-    "build": "pnpm -r build"
+    "dev:site": "pnpm --filter @prawl/site dev",
+    "build": "pnpm -r build",
+    "build:site": "pnpm --filter @prawl/site build"
   },
   "engines": {
     "node": ">=22"

@@ -60,6 +60,85 @@ describe("wallet sync", () => {
     await wallet.lockWallet();
   });
 
+  it("does not stay on 'Syncing…' forever when one request never answers; a later Refresh starts a new attempt", async () => {
+    reset(0);
+    await wallet.createWallet();
+    vi.useFakeTimers();
+    try {
+      calls.length = 0;
+      // The worker's sync call hangs (as when a Tor guard cannot be reached): it never resolves.
+      rg.call.mockImplementationOnce(async (op: string) => {
+        calls.push(op);
+        if (op === "sync") await new Promise<never>(() => undefined);
+        return undefined;
+      });
+      const stuck = wallet.sync();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(wallet.walletState.get().phase).toBe("syncing");
+      await vi.advanceTimersByTimeAsync(180_000);
+      await stuck; // the watchdog releases the single-flight
+      const stalled = wallet.walletState.get();
+      expect(stalled.phase).toBe("error");
+      expect(stalled.error).toMatch(/taking longer than usual/);
+      // Refresh now starts a fresh attempt that can finish normally.
+      const again = wallet.sync();
+      await vi.advanceTimersByTimeAsync(100);
+      await again;
+      expect(wallet.walletState.get().phase).toBe("ready");
+      expect(calls.filter((c) => c === "sync")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("private operations", () => {
+    const recipient = `0x${"22".repeat(20)}` as `0x${string}`;
+    const okTx = { hash: `0x${"ab".repeat(32)}`, status: "success", blockNumber: 1n, gasUsed: 1n };
+
+    it("repeats the prepare step after a transient bundler error, but submits only once", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        if (prepares === 1) throw new Error("Bundler error: Other: HTTP error: error sending request");
+        return { signed: {}, userOpHash: `0x${"11".repeat(32)}` };
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockResolvedValue(okTx);
+      try {
+        // Real timers: the retry waits 4 s, and the rest of the flow awaits real WebCrypto.
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(true);
+        expect(prepares).toBe(2);
+        expect(tx.sendUserOp).toHaveBeenCalledTimes(1);
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear(); // the unshield wrote a history entry; later tests count their own
+      }
+    }, 20_000);
+
+    it("does not repeat a refusal that is not a network error", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        throw new Error("Bundler error: AA21 didn't pay prefund");
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      try {
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(false);
+        expect(prepares).toBe(1);
+        expect(tx.sendUserOp).not.toHaveBeenCalled();
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear();
+      }
+    });
+  });
+
   it("runs one sync at a time and skips PPOI submission when nothing is queued", async () => {
     reset(0);
     await wallet.createWallet();

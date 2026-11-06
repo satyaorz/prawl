@@ -25,6 +25,9 @@ export interface SentTx {
 
 const hexBig = (v: unknown): bigint => BigInt(v as string);
 
+/** The protocol's cap on gas for a single transaction (EIP-7825). */
+const MAX_TX_GAS = 16_777_216n;
+
 /**
  * A submission whose outcome we cannot tell: the answer never came back, the
  * transaction was not seen mined in time, or the bundler returned another hash.
@@ -66,6 +69,16 @@ export class InsufficientFundsError extends Error {
   }
 }
 
+/**
+ * True when gas estimation refused with "insufficient funds" although the balance read in the same batch covers the
+ * value: the estimating node is behind the one that answered the balance, not the account actually short of funds.
+ */
+function lagging(gasR: { result: unknown } | { error: Error } | undefined, balR: { result: unknown } | { error: Error } | undefined, value: bigint): boolean {
+  if (!gasR || !("error" in gasR) || !/insufficient funds/i.test(gasR.error.message)) return false;
+  if (!balR || "error" in balR || typeof balR.result !== "string") return false;
+  try { return BigInt(balR.result) > value; } catch { return false; }
+}
+
 function unwrap(item: { result: unknown } | { error: Error } | undefined, what: string): unknown {
   if (!item) throw new Error(`${what}: no answer`);
   if ("error" in item) throw new Error(`${what}: ${item.error.message}`);
@@ -79,28 +92,43 @@ export async function sendCalls(
   privateKey: Hex,
   calls: readonly Call[],
   onStatus?: (s: string) => void,
+  checkAuthorized?: () => void,
 ): Promise<SentTx[]> {
   const account = privateKeyToAccount(privateKey);
   const id = client.identities.account(account.address);
   const out: SentTx[] = [];
   for (const [i, call] of calls.entries()) {
+    checkAuthorized?.();
     const label = calls.length > 1 ? ` ${i + 1}/${calls.length}` : "";
     onStatus?.(`Preparing transaction${label}…`);
     const txReq = { from: account.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
-    const [nonceR, feeR, tipR, gasR, balR] = await client.batch(id, chainId, [
-      { method: "eth_getTransactionCount", params: [account.address, "pending"] },
-      { method: "eth_getBlockByNumber", params: ["latest", false] },
-      { method: "eth_maxPriorityFeePerGas", params: [] },
-      { method: "eth_estimateGas", params: [txReq, "latest"] },
-      { method: "eth_getBalance", params: [account.address, "latest"] },
-    ]);
+    let nonceR, feeR, tipR, gasR, balR;
+    for (let attempt = 0; ; attempt++) {
+      [nonceR, feeR, tipR, gasR, balR] = await client.batch(id, chainId, [
+        { method: "eth_getTransactionCount", params: [account.address, "pending"] },
+        { method: "eth_getBlockByNumber", params: ["latest", false] },
+        { method: "eth_maxPriorityFeePerGas", params: [] },
+        { method: "eth_estimateGas", params: [txReq, "latest"] },
+        { method: "eth_getBalance", params: [account.address, "latest"] },
+      ]);
+      if (attempt >= 6 || !lagging(gasR, balR, call.value)) break;
+      // The requests of one batch can be answered by different public nodes, one of them a block behind:
+      // right after an account was funded it estimates gas against a zero balance. Wait and ask again.
+      onStatus?.("Waiting for the network to catch up with your balance…");
+      await new Promise((r) => setTimeout(r, 5000));
+      checkAuthorized?.();
+    }
     const nonce = Number(hexBig(unwrap(nonceR, "nonce")));
     const baseFee = hexBig((unwrap(feeR, "latest block") as { baseFeePerGas: string }).baseFeePerGas);
     const tip = hexBig(unwrap(tipR, "priority fee"));
-    const gas = (hexBig(unwrap(gasR, "gas estimate")) * 12n) / 10n;
+    // 20% headroom, but never above the per-transaction gas cap (EIP-7825, 2^24):
+    // a node rejects a larger limit outright, and FHE transactions are heavy.
+    const estimated = hexBig(unwrap(gasR, "gas estimate"));
+    const gas = estimated >= MAX_TX_GAS ? estimated : (estimated * 12n) / 10n > MAX_TX_GAS ? MAX_TX_GAS : (estimated * 12n) / 10n;
     const maxFeePerGas = baseFee * 2n + tip;
     const balance = hexBig(unwrap(balR, "balance"));
     if (call.value + gas * maxFeePerGas > balance) throw new InsufficientFundsError(balance, call.value, gas * maxFeePerGas);
+    checkAuthorized?.();
     const raw = await account.signTransaction({
       type: "eip1559",
       chainId,
@@ -113,6 +141,7 @@ export async function sendCalls(
       maxFeePerGas,
     });
     onStatus?.(`Sending transaction${label} over Tor…`);
+    checkAuthorized?.();
     let hash: Hex;
     try {
       hash = (await client.write(id, chainId, "eth_sendRawTransaction", [raw])) as Hex;

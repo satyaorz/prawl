@@ -96,6 +96,19 @@ class ReceiveViewModel(app: Application) : AndroidViewModel(app) {
                         "\n(failed checks: ${own.joinToString("; ")})", null)
                     return@launch
                 }
+                // Without sync-committee data this phone cannot check any coin's deposit, so every payment would be refused as "not
+                // backed". A payer cannot fix that (there is no committee here to trust its updates with): fetch it now if online.
+                if (g.lightClient.cache() == null) {
+                    phase.value = ReceivePhase.Preparing("Downloading deposit-check data (once, needs internet)…")
+                    val synced = runCatching { g.lightClient.syncCommittees() }.isSuccess && g.lightClient.cache() != null
+                    g.changed()
+                    if (!synced) {
+                        phase.value = ReceivePhase.Failed("This phone cannot check yet that a coin is backed by a real deposit, so it would refuse " +
+                            "every payment. Connect to the internet once and tap Try again (or Settings → Deposit proofs → Sync committees). " +
+                            "After that, receiving works offline.", name)
+                        return@launch
+                    }
+                }
                 val kh = w.pendingKeyHash(name) ?: error("receive key missing")
                 val secret = ByteArray(16).also { SecureRandom().nextBytes(it) }
                 val uuid = UUID.randomUUID()

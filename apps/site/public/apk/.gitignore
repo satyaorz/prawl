@@ -1,0 +1,4 @@
+# The download is built, not committed (a 40 MB binary per release would stay in git history forever).
+# Build the correctly signed one with: pnpm --filter @prawl/site apk   (see apps/site/README.md)
+*.apk
+!.gitignore

@@ -111,8 +111,13 @@ class OfflineCashActivity : ComponentActivity() {
     /** Every 5 minutes while the app runs (first after 20 s): prove deposits, revert wrong marks, clean up. Offline or failing: tries later. */
     private fun startDepositWatcher(g: AppGraph) {
         Thread {
-            try { Thread.sleep(20_000) } catch (e: InterruptedException) { return@Thread }
+            try { Thread.sleep(5_000) } catch (e: InterruptedException) { return@Thread }
             while (watching) {
+                // The sync-committee data a RECEIVING phone needs to check deposits offline. Public data (no coin ids are sent); without it
+                // every incoming payment is refused as "not backed", even on a phone that never made a coin of its own.
+                try {
+                    if (g.lightClient.needsSync()) { Log.i("PRAWL_DEP", "light client: ${g.lightClient.syncCommittees()}"); g.changed() }
+                } catch (e: Exception) { Log.i("PRAWL_DEP", "light client sync skipped: ${e.javaClass.simpleName}: ${e.message}") }
                 try {
                     val r = g.depositWatcher.run()
                     if (r.changed) { Log.i("PRAWL_DEP", "deposit watcher: $r"); g.changed() }

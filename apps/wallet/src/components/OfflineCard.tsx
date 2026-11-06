@@ -265,7 +265,7 @@ export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; inc
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Paste a link from the phone"
+          placeholder="Paste a link"
           spellCheck={false}
           className="min-w-0 flex-1 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-xs outline-none focus:border-zinc-500"
         />

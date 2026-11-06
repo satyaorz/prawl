@@ -6,6 +6,7 @@ const ICONS = {
   send: "M7 17 17 7m0 0H8m9 0v9",
   shield: "M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4",
   withdraw: "M12 20V8m0 0-4 4m4-4 4 4M5 4h14",
+  swap: "M4 8h15m0 0-3-3m3 3-3 3M20 16H5m0 0 3-3m-3 3 3 3",
   refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
   lock: "M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z",
   copy: "M9 9h10v11H9zM5 15V4h10",
@@ -69,7 +70,7 @@ export function Identicon({ seed, className = "h-8 w-8" }: { seed: string; class
 /** A round action button with a label under it (Receive, Shield, Send, Withdraw). */
 export function ActionButton({ icon, label, onClick, disabled }: { icon: IconName; label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button onClick={onClick} disabled={disabled} className="group flex w-16 flex-col items-center gap-1.5 text-xs text-zinc-300 disabled:opacity-40">
+    <button onClick={onClick} disabled={disabled} className="group flex w-14 flex-col items-center gap-1.5 text-xs text-zinc-300 disabled:opacity-40">
       <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500 text-zinc-950 transition group-hover:bg-emerald-400 group-active:scale-95">
         <Icon name={icon} className="h-5 w-5" />
       </span>

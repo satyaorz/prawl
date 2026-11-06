@@ -7,8 +7,8 @@
 import { SEPOLIA } from "@prawl/anon-rpc";
 import { createPasskey, deriveReclaimKey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
 import type { Balance, Hex } from "@prawl/railgun";
-import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
-import { keccak256, toHex } from "viem";
+import { generatePrivateKey, privateKeyToAccount, privateKeyToAddress } from "viem/accounts";
+import { encodeFunctionData, getAddress, keccak256, parseAbi, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
@@ -18,6 +18,9 @@ import { activateCall, coinStatus, commitCall, depositCall, erc20Balance, loadPr
 import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type RefreshPayload, type ShieldRequest } from "../offline/payload";
 import { shieldRequestFromCall } from "../offline/shield";
 import { tellPhone } from "../offline/bridge";
+import { parseSwapDeployment } from "../swap/deployment";
+import { SwapService } from "../swap/service";
+import { validateDecryptAuthorization } from "../swap/fhe-authorization";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
 export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
@@ -73,6 +76,78 @@ let activityLog: ActivityLog | undefined;
  * must not touch the screen or another wallet's history after the change.
  */
 let epoch = 0;
+/** The swap session of the main account is keyed by this; swap accounts are keyed by their derivation index. */
+const MAIN_SWAP_ACCOUNT = -1;
+const swapServices = new Map<number, SwapService>();
+const swapOpenings = new Map<number, Promise<SwapService>>();
+
+/** Close every FHE worker and forget their decryption sessions on wallet changes. */
+function closeSwapSession(): void {
+  for (const service of swapServices.values()) service.close();
+  swapServices.clear();
+  const openings = [...swapOpenings.values()];
+  swapOpenings.clear();
+  for (const opening of openings) void opening.then((service) => service.close(), () => undefined);
+}
+
+/** A deployment is supplied at build time; the old mock-token pool is incompatible. */
+export function swapConfigured(): boolean {
+  return !!import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT;
+}
+
+/** The key of a swap participant: the main account, or a fresh account derived from the passkey (never the main one). */
+async function swapKey(accountIndex: number): Promise<Hex> {
+  if (!keys) throw new Error("Wallet was locked or changed");
+  return accountIndex === MAIN_SWAP_ACCOUNT ? keys.evmAccount : deriveReclaimKey(keys.reclaimSeed, accountIndex);
+}
+
+/**
+ * Open the confidential swap as the main account (default) or as one of this wallet's swap accounts.
+ * A swap account is a fresh address derived from the passkey: funded from the private balance, it has
+ * no on-chain link to the main account, and it talks to Tor and to the Zama gateway on a circuit of its own.
+ */
+export async function openSwapSession(accountIndex: number = MAIN_SWAP_ACCOUNT): Promise<SwapService> {
+  if (!keys || !state.evmAddress || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const existing = swapServices.get(accountIndex);
+  if (existing) return existing;
+  const pending = swapOpenings.get(accountIndex);
+  if (pending) return pending;
+  const raw = import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT as string | undefined;
+  if (!raw) throw new Error("No WETH/custom-token swap deployment is configured");
+  let manifest: unknown;
+  try { manifest = JSON.parse(raw); } catch { throw new Error("Invalid swap deployment configuration"); }
+  const config = parseSwapDeployment(manifest, state.wrappedBaseToken);
+  if (config.chainId !== state.chainId) throw new Error("Swap deployment is on a different network");
+  const myEpoch = epoch;
+  const ensureOpen = () => {
+    if (!keys || myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+    return keys;
+  };
+  const account = getAddress(privateKeyToAddress(await swapKey(accountIndex)));
+  const opening = SwapService.open(anon, account, config, {
+    async signDecrypt(request, contracts) {
+      ensureOpen();
+      const key = await swapKey(accountIndex);
+      const typedData = validateDecryptAuthorization(request, contracts);
+      const signature = await privateKeyToAccount(key).signTypedData(typedData);
+      ensureOpen();
+      return signature;
+    },
+    async send(calls, onStatus) {
+      ensureOpen();
+      const key = await swapKey(accountIndex);
+      const receipts = await sendCalls(anon, config.chainId, key, calls, onStatus, ensureOpen);
+      ensureOpen();
+      return receipts;
+    },
+  }).then((service) => {
+    if (myEpoch !== epoch || !keys) { service.close(); throw new Error("Wallet was locked or changed"); }
+    swapServices.set(accountIndex, service);
+    return service;
+  });
+  swapOpenings.set(accountIndex, opening);
+  try { return await opening; } finally { if (swapOpenings.get(accountIndex) === opening) swapOpenings.delete(accountIndex); }
+}
 
 /** Set the action result only if the wallet it belongs to is still the open one. */
 function updateAction(forEpoch: number, action: NonNullable<WalletState["action"]>): void {
@@ -120,6 +195,21 @@ export const walletState = {
   },
 };
 
+/**
+ * Dev only (removed from production builds by the `import.meta.env.DEV` guard):
+ * force a wallet state so the marketing site can photograph the real screens
+ * without a live Tor circuit and a funded wallet. It never touches keys.
+ *   await devSetState({ phase: "ready", balances: [...] })
+ */
+export function devSetState(patch: Partial<WalletState>): void {
+  if (!import.meta.env.DEV) return;
+  update(patch);
+}
+
+// Dev only: reachable from the page (and from the site's screenshot script),
+// because a dynamic import() of this module is a second instance with its own state.
+if (import.meta.env.DEV && typeof window !== "undefined") (window as unknown as { __prowlDevSetState?: typeof devSetState }).__prowlDevSetState = devSetState;
+
 void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id }));
 
 /**
@@ -150,6 +240,7 @@ interface StartOptions {
 }
 async function start(root: Uint8Array, opts: StartOptions): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   keys = await deriveWalletKeys(root);
   root.fill(0);
   await openRailgun(opts);
@@ -195,9 +286,31 @@ async function openRailgun(opts: StartOptions): Promise<void> {
 
 /** One sync at a time: a second caller (button, timer, after an action) waits for the running one. */
 let running: Promise<void> | undefined;
+/**
+ * A sync waits on the Tor worker and the network. If one request never answers (a Tor guard that cannot be reached,
+ * a stalled node), the single-flight below would stay pending forever: the screen says "Syncing…" for good and the
+ * actions that need a ready wallet stay disabled. After this long, say so and let Refresh start a new attempt; the old
+ * attempt is not cancelled and still updates the screen if it eventually finishes.
+ */
+const SYNC_WATCHDOG_MS = 180_000;
+
 export function sync(): Promise<void> {
-  running ??= doSync().finally(() => (running = undefined));
-  return running;
+  if (running) return running;
+  const attempt: Promise<void> = Promise.race([
+    doSync(),
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        if (running === attempt && (state.phase === "syncing" || state.phase === "opening")) {
+          update({ phase: "error", error: "Syncing is taking longer than usual: the network may be slow. Press Refresh to try again." });
+        }
+        resolve();
+      }, SYNC_WATCHDOG_MS),
+    ),
+  ]).finally(() => {
+    if (running === attempt) running = undefined;
+  });
+  running = attempt;
+  return attempt;
 }
 
 async function doSync(): Promise<void> {
@@ -305,6 +418,7 @@ export function unlockWallet(): Promise<void> {
  */
 export async function rescanWallet(): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   stopAutoSync();
   update({ phase: "opening", balances: undefined, poiQueue: undefined, poiError: undefined, error: undefined });
   try {
@@ -317,6 +431,7 @@ export async function rescanWallet(): Promise<void> {
 
 export async function lockWallet(): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   stopAutoSync();
   keys = undefined;
   activityLog = undefined;
@@ -450,6 +565,105 @@ export async function shieldFromReclaim(index: number): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Swap accounts: a fresh account per private swap, so the swap is not tied to the main public address. It is one of the passkey-derived
+// accounts used for offline-cash reclaim (same counter, so an index is never reused). A restored wallet does not know which indices it
+// used; reclaimAccounts() scans a window and shows their balances.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+export interface SwapAccount {
+  index: number;
+  address: Hex;
+}
+
+const swapAccountsKey = (): string => `swap:accounts:${state.evmAddress ?? "none"}`;
+
+/** The swap accounts this wallet has created, oldest first. */
+export async function swapAccounts(): Promise<SwapAccount[]> {
+  return (await store.get<SwapAccount[]>(swapAccountsKey())) ?? [];
+}
+
+/** Reserve a fresh swap account. Nothing is sent: it has no balance and no on-chain trace yet. */
+export async function newSwapAccount(): Promise<SwapAccount> {
+  const account = await nextReclaimAddress();
+  await store.set(swapAccountsKey(), [...(await swapAccounts()), account]);
+  return account;
+}
+
+/** Gas the swap account keeps for its own transactions (wrap, fund, order, advance, exit): FHE calls cost up to ~3M gas each. */
+export const SWAP_ACCOUNT_GAS_WEI = 3_000_000_000_000_000n;
+
+const wethAbi = parseAbi(["function deposit() payable", "function withdraw(uint256)"]);
+
+/** A token balance read over the account's own Tor circuit (not the shared public one), like the rest of a swap account's traffic. */
+async function accountTokenBalance(token: Hex, owner: Hex): Promise<bigint> {
+  const data = `0x70a08231${owner.slice(2).toLowerCase().padStart(64, "0")}`;
+  const out = await anon.read(anon.identities.account(owner), state.chainId, "eth_call", [{ to: token, data }, "latest"]);
+  if (typeof out !== "string" || !/^0x[0-9a-fA-F]*$/.test(out)) throw new Error("Invalid token balance response");
+  return out === "0x" ? 0n : BigInt(out);
+}
+
+/**
+ * Fund a swap account from the PRIVATE balance: the amount (plus gas) is unshielded straight to it, so no
+ * transaction connects it to the main account, then it turns the ETH into WETH by itself. The user pays the
+ * usual unshield fee out of the private balance. Returns whether everything completed.
+ */
+export async function fundSwapAccount(index: number, wethWei: bigint, onStatus?: (status: string) => void): Promise<boolean> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const myEpoch = epoch;
+  const weth = state.wrappedBaseToken as Hex;
+  const key = await swapKey(index);
+  const address = privateKeyToAddress(key);
+  const total = wethWei + SWAP_ACCOUNT_GAS_WEI;
+  onStatus?.("Moving the amount from your private balance to a fresh swap account…");
+  if (!(await unshieldEth(address, total))) return false;
+  // Public nodes can lag a block behind: wait until the account really shows the ETH.
+  let balance = 0n;
+  for (let i = 0; i < 30 && balance < total; i++) {
+    balance = await publicBalance(anon, state.chainId, address).catch(() => 0n);
+    if (balance < total) await new Promise((r) => setTimeout(r, 4000));
+    if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+  }
+  if (balance < total) throw new Error("The swap account has not received the funds yet. Try again in a minute.");
+  onStatus?.("The swap account is turning the ETH into WETH…");
+  const txs = await sendCalls(anon, state.chainId, key, [{ to: weth, value: wethWei, data: encodeFunctionData({ abi: wethAbi, functionName: "deposit" }) }], onStatus, () => {
+    if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+  });
+  return txs.every((t) => t.status === "success");
+}
+
+/** WETH and ETH a swap account holds, for display. */
+export async function swapAccountBalances(index: number): Promise<{ address: Hex; ethWei: bigint; wethWei: bigint }> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const address = privateKeyToAddress(await swapKey(index));
+  const [ethWei, wethWei] = await Promise.all([
+    publicBalance(anon, state.chainId, address),
+    accountTokenBalance(state.wrappedBaseToken as Hex, address),
+  ]);
+  return { address, ethWei, wethWei };
+}
+
+/**
+ * Return a swap account's WETH to the private balance: unwrap it to ETH there, then shield the ETH (minus the gas
+ * the shield transaction needs), signed by that account. Anything above dust is shielded; the rest stays for gas.
+ */
+export async function shieldBackFromSwapAccount(index: number, onStatus?: (status: string) => void): Promise<void> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const myEpoch = epoch;
+  const key = await swapKey(index);
+  const address = privateKeyToAddress(key);
+  const weth = await accountTokenBalance(state.wrappedBaseToken as Hex, address);
+  if (weth > 0n) {
+    onStatus?.("Unwrapping WETH in the swap account…");
+    const txs = await sendCalls(anon, state.chainId, key, [{ to: state.wrappedBaseToken as Hex, value: 0n, data: encodeFunctionData({ abi: wethAbi, functionName: "withdraw", args: [weth] }) }], onStatus, () => {
+      if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+    });
+    if (!txs.every((t) => t.status === "success")) throw new Error("Unwrapping reverted");
+  }
+  onStatus?.("Shielding it back into your private balance…");
+  await shieldFromReclaim(index);
+}
+
 /**
  * Gas for a private operation is paid by the RAILGUN paymaster out of the
  * private balance (WETH), on top of the amount. Measured live on Sepolia:
@@ -526,6 +740,9 @@ function explain(kind: "send" | "unshield", e: unknown): string {
  * wallet's public account: gas comes out of the private balance, so the
  * sender needs no ETH and has no history to link to.
  */
+/** Network-level failures while preparing a private operation (not a refusal by the bundler or the contract). */
+const TRANSIENT_PREPARE_ERROR = /error sending request|HTTP error|timed out|timeout|network|fetch failed|connection (reset|closed|refused)|ECONN/i;
+
 async function privateOp(
   kind: "send" | "unshield",
   amountWei: bigint,
@@ -548,7 +765,21 @@ async function privateOp(
     const oneTimeKey = generatePrivateKey();
     const sender = privateKeyToAddress(oneTimeKey);
     railgun().useAccount(sender);
-    const prepared = await run(oneTimeKey);
+    // Preparing the operation reads from the public bundler over Tor (gas estimate, state overrides) and only builds
+    // and signs; nothing is submitted. A network error there is transient and safe to repeat; the SUBMISSION below
+    // is never retried (a retry could pay twice).
+    let prepared: Awaited<ReturnType<typeof run>> | undefined;
+    for (let attempt = 0; prepared === undefined; attempt++) {
+      try {
+        prepared = await run(oneTimeKey);
+      } catch (e) {
+        const text = e instanceof Error ? e.message : String(e);
+        if (attempt >= 2 || !TRANSIENT_PREPARE_ERROR.test(text)) throw e;
+        status("The bundler did not answer; trying again…");
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (myEpoch !== epoch) throw new Error("wallet was locked or changed");
+      }
+    }
     status("Sending to the bundler over Tor…");
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
     await remember(opLog, myEpoch, kind, amountWei, to, [tx]);

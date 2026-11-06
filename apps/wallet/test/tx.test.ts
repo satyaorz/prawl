@@ -64,4 +64,33 @@ describe("sendCalls", () => {
     expect(err.message).toBe("Not enough ETH for gas: this needs up to 0.000052 ETH of gas on top. Try at most 0.000047 ETH.");
     expect(sent).toHaveLength(0);
   });
+
+  it("asks again when a lagging node says 'insufficient funds' although the balance covers it", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, sent } = stub();
+      const ok = [{ result: "0x7" }, { result: { baseFeePerGas: "0x3b9aca00" } }, { result: "0x5f5e100" }, { result: "0x5208" }, { result: "0xde0b6b3a7640000" }];
+      // First answer: gas estimated by a node that has not seen the funding yet (balance 0), while the balance read says 1 ETH.
+      const stale = [...ok.slice(0, 3), { error: new Error("insufficient funds for gas * price + value: have 0 want 5") }, ok[4]!];
+      (client.batch as ReturnType<typeof vi.fn>).mockResolvedValueOnce(stale);
+      const pending = sendCalls(client, 11155111, KEY, [{ to: "0x000000000000000000000000000000000000dEaD", data: "0x", value: 5n }]);
+      await vi.advanceTimersByTimeAsync(6000);
+      const out = await pending;
+      expect(out.map((t) => t.status)).toEqual(["success"]);
+      expect(client.batch).toHaveBeenCalledTimes(2);
+      expect(sent).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry an account that really is short of funds", async () => {
+    const { client, sent } = stub("0x1", "0x0");
+    const real = [{ result: "0x7" }, { result: { baseFeePerGas: "0x3b9aca00" } }, { result: "0x5f5e100" }, { error: new Error("insufficient funds for gas * price + value: have 0 want 5") }, { result: "0x0" }];
+    (client.batch as ReturnType<typeof vi.fn>).mockResolvedValue(real);
+    const err = await sendCalls(client, 11155111, KEY, [{ to: "0x000000000000000000000000000000000000dEaD", data: "0x", value: 5n }]).catch((e) => e);
+    expect(String(err.message)).toMatch(/insufficient funds/);
+    expect(client.batch).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(0);
+  });
 });

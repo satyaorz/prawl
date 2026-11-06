@@ -5,11 +5,13 @@ import { clearFinishedAction, sync } from "../lib/wallet";
 import { ActivityList } from "./ActivityCard";
 import { PrivateActions } from "./PrivateActions";
 import { ReceiveCard } from "./ReceiveCard";
+import { SendSheet } from "./SendSheet";
 import { ShieldForm } from "./ShieldForm";
+import { SwapDashboard } from "./SwapDashboard";
 import { ActionButton, EthIcon, Icon, Sheet, short, fmtEthShort } from "./ui";
 
-type SheetName = "receive" | "shield" | "send" | "withdraw";
-const TITLE: Record<SheetName, string> = { receive: "Receive", shield: "Add funds (shield)", send: "Send privately", withdraw: "Withdraw to public" };
+type SheetName = "receive" | "shield" | "send" | "withdraw" | "swap";
+const TITLE: Record<SheetName, string> = { receive: "Receive", shield: "Add funds (shield)", send: "Send", withdraw: "Withdraw to public", swap: "Private swap" };
 
 /** What each PPOI status means for the user. */
 const POI_LABEL: Record<string, { text: string; tone: string }> = {
@@ -99,11 +101,12 @@ export function Home() {
             : "Loading…"}
         </p>
 
-        <div className="mt-5 flex justify-center gap-3">
+        <div className="mt-5 flex flex-wrap justify-center gap-1.5">
           <ActionButton icon="receive" label="Receive" onClick={() => open("receive")} />
           <ActionButton icon="shield" label="Shield" onClick={() => open("shield")} />
           <ActionButton icon="send" label="Send" onClick={() => open("send")} />
           <ActionButton icon="withdraw" label="Withdraw" onClick={() => open("withdraw")} />
+          <ActionButton icon="swap" label="Swap" onClick={() => open("swap")} />
         </div>
 
         <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
@@ -206,8 +209,9 @@ export function Home() {
       <Sheet open={sheet !== undefined} title={sheet ? TITLE[sheet] : ""} onClose={() => setSheet(undefined)}>
         {sheet === "receive" && <ReceiveCard />}
         {sheet === "shield" && <ShieldForm />}
-        {sheet === "send" && <PrivateActions mode="send" />}
+        {sheet === "send" && <SendSheet />}
         {sheet === "withdraw" && <PrivateActions mode="unshield" />}
+        {sheet === "swap" && <SwapDashboard />}
       </Sheet>
     </div>
   );
