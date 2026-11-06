@@ -27,8 +27,8 @@ export function App() {
   const showOffline = !unlocked || mode === "offline";
 
   return (
-    <div className="flex min-h-screen justify-center bg-black sm:py-6">
-      <main className="relative flex min-h-screen w-full max-w-[420px] flex-col bg-zinc-950 sm:min-h-[780px] sm:rounded-3xl sm:border sm:border-zinc-800">
+    <div className="flex min-h-full justify-center bg-black sm:py-6">
+      <main className="relative flex min-h-full w-full max-w-[420px] flex-col bg-zinc-950 sm:min-h-[780px] sm:rounded-3xl sm:border sm:border-zinc-800">
         {unlocked && (
           <header className="px-5 pb-1 pt-4">
             <div className="flex items-center justify-between">

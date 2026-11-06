@@ -115,7 +115,7 @@ export function Sheet({ open, title, onClose, children }: { open: boolean; title
         aria-modal="true"
         aria-labelledby={id}
         tabIndex={-1}
-        className="relative flex max-h-[92vh] w-full max-w-[420px] flex-col rounded-t-3xl border border-zinc-800 bg-zinc-950 outline-none sm:rounded-3xl"
+        className="relative flex max-h-[92%] w-full max-w-[420px] flex-col rounded-t-3xl border border-zinc-800 bg-zinc-950 outline-none sm:rounded-3xl"
       >
         <div className="flex items-center justify-between px-5 pb-2 pt-4">
           <h2 id={id} className="text-base font-semibold">

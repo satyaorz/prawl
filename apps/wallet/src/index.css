@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* The page fills its container with percentages, not vh/dvh: viewport-height units resolve to 0 in the Android app's WebView. */
+html, body, #root { height: 100%; }
+
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
