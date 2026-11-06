@@ -40,6 +40,10 @@ copy v3/deposit_proofs deposit-proofs '/python/*.py' '/java/src/***' '/java/jni/
   '/java/android_demo/src/***' '/java/android_demo/AndroidManifest.xml' '/java/android_demo/*.sh' \
   '/solidity/src/***' '/solidity/test/***' '/solidity/foundry.toml' '/*.sh' '/requirements.txt'
 mkdir -p "$DST/tools" && rsync -a "$SRC/v3/handoff.py" "$SRC/v3/handoff_sim.py" "$DST/tools/"
+# ZK proof of Android attestation (Noir/UltraHonk): circuit sources, tools, EVM verifier, Android prover build.
+# Never Prover.toml/target/inputs/bench/deps (witnesses derive from the user's phones' attestation chains).
+copy zk_attestation zk-attestation '/circuits/*/Nargo.toml' '/circuits/*/src/***' '/tools/*.py' \
+  '/android/*.sh' '/android/*.patch' '/evm/src/***' '/evm/test/***' '/evm/foundry.toml' '/evm/*.sh' '/*.sh'
 # Earlier prototypes and simulations behind the four routes.
 copy "$A/contracts" prototypes/otk-escrow '/src/***' '/test/***' '/foundry.toml'
 copy "$A/android" prototypes/otk-android '/*.kt'
