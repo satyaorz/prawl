@@ -52,6 +52,22 @@ object EcdsaDer {
      * Parses a DER `SEQUENCE { INTEGER r, INTEGER s }` strictly: minimal lengths and integers, no trailing bytes.
      * The escrow rebuilds DER from (r, s), so a non-strict encoding would make the signed bytes differ.
      */
+    /** Minimal DER of (r, s): `30 len 02 len r 02 len s`, integers without redundant leading zero bytes. */
+    fun encode(r: BigInteger, s: BigInteger): ByteArray {
+        fun int(v: BigInteger): ByteArray { val b = v.toByteArray(); return byteArrayOf(0x02, b.size.toByte()) + b }   // BigInteger.toByteArray is minimal two's complement
+        val body = int(r) + int(s)
+        return byteArrayOf(0x30, body.size.toByte()) + body
+    }
+
+    /**
+     * True if [sig] is exactly the minimal DER of its own (r, s), the form the escrow rebuilds (`derSig(r, s)`): the lowercase hex of the
+     * signature is part of the child note id, so any other encoding of the same signature would change every descendant's message.
+     */
+    fun isCanonical(sig: ByteArray): Boolean = try {
+        val rs = parseStrict(sig)
+        encode(rs.r, rs.s).contentEquals(sig)
+    } catch (e: Exception) { false }
+
     fun parseStrict(sig: ByteArray): RS {
         require(sig.size >= 8 && sig[0] == 0x30.toByte()) { "signature is not a DER SEQUENCE" }
         val seqLen = sig[1].toInt() and 0xff

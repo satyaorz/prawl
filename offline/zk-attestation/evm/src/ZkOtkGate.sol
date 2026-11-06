@@ -22,7 +22,6 @@ interface IHonkVerifier {
 /// @dev Measurement contract for RESULTS.md, not audited. Governance setters are owner-only for brevity.
 contract ZkOtkGate {
     IHonkVerifier public immutable verifier; // kind 1 (v1_ca3)
-    IHonkVerifier public factoryVerifier; // kind 2 (v2_factory), set once by the owner
     address public immutable owner;
     uint8 public constant KIND_RKP = 1;
     uint8 public constant KIND_FACTORY = 2;
@@ -33,6 +32,9 @@ contract ZkOtkGate {
     bytes32 public banRoot; // Prawl ban list of h_A extracted from double-spend tags
     uint256 public minPatch; // policy: minimum osPatchLevel YYYYMM
     mapping(bytes32 => bytes32) public attested; // keyHash(K) => keccak(C_A, C_r) (kept for later tag checks)
+    /// kind 2 (v2_factory) verifier, set once by the owner. Declared LAST so the v1-era storage layout
+    /// (slot 0 trustedCa3, 1 revRoot, 2 banRoot, 3 minPatch, 4 attested) is unchanged: anvil_run.sh's state overrides stay valid.
+    IHonkVerifier public factoryVerifier;
 
     error BadInputs();
     error UntrustedCa3();

@@ -79,6 +79,13 @@ class OfflineWallet(
 
     private fun nowS() = nowMillis() / 1000
 
+    /**
+     * Audit F1: a note is only signed from if everything that goes into the message text is in the canonical form the escrow
+     * rebuilds. (Notes accepted by this app were checked on receipt; this also covers notes from older apps.)
+     */
+    private fun canonicalRefusal(note: Note): String? =
+        Canonical.noteProblems(note).firstOrNull()?.let { "refusing to sign: this note's data is not in the canonical form the escrow can verify ($it)" }
+
     /** [base], or [base] + random suffix if that alias is taken: never replace a key that may hold value. */
     private fun freshAlias(base: String): String {
         var a = base
@@ -263,6 +270,7 @@ class OfflineWallet(
         }
         val v = note.value
         if (v < amount) { log("note too small"); return PayOutcome.Refused("note too small") }
+        canonicalRefusal(note)?.let { log("REFUSED: $it"); return PayOutcome.Refused(it) }
         val h = note.header
         val change = v - amount
         val outs = ArrayList<Output>()
@@ -419,6 +427,7 @@ class OfflineWallet(
         if (note.pendingDeposit) return RedeemOutcome.Refused("coin not deposited yet")
         val h = note.header
         if (checkExpiry && h.expiry <= nowS()) return RedeemOutcome.Refused("note expired: the escrow no longer pays it")
+        canonicalRefusal(note)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
         val outs = listOf(Output(note.value, Protocol.redeemKey(h.chainId, h.escrow, payout40)))
         val depth = note.depth
         val sig = try {
@@ -487,6 +496,7 @@ class OfflineWallet(
         if (note.pendingDeposit) return RedeemOutcome.Refused("coin not deposited yet")
         val h = note.header
         if (checkExpiry && h.expiry <= nowS()) return RedeemOutcome.Refused("note expired: the escrow no longer pays it")
+        canonicalRefusal(note)?.let { log("REFUSED: $it"); return RedeemOutcome.Refused(it) }
         val chk = checkShield(note, target)
         if (!chk.ok) { log("REFUSED: ${chk.failures}"); return RedeemOutcome.Refused("refused: " + chk.failures.joinToString("; ")) }
         val req = chk.request!!
@@ -554,6 +564,7 @@ class OfflineWallet(
             return RefreshOutcome.Refused("this coin is on escrow 0x${h.escrow}, which has no refresh; refresh needs escrow v3.1. Cash it out and load again")
         val now = nowS()
         if (h.expiry <= now) return RefreshOutcome.Refused("note expired: the escrow no longer pays it")
+        canonicalRefusal(note)?.let { log("REFUSED: $it"); return RefreshOutcome.Refused(it) }
         if (expiresInS < REFRESH_MIN_S || expiresInS > REFRESH_MAX_S)
             return RefreshOutcome.Refused("new lifetime must be between 1 and ${REFRESH_MAX_S / 86400} days (the escrow allows at most 30 from submission)")
         val newExpiry = now + expiresInS

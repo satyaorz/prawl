@@ -261,7 +261,7 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 
 ## 11. What was tested on the JVM (`./gradlew test`: all pass)
 
-**`:core`: 86 tests,** run for both debug and release (v3.1 adds 14, verdict delivery 5; see §14.5 and §15).
+**`:core`: 99 tests,** run for both debug and release (v3.1 adds 14, verdict delivery 5, audit F1/F2 13; see §14.5, §15, §16).
 
 | Suite | What it covers |
 |---|---|
@@ -455,3 +455,49 @@ Notes: the harness `redeem` without `shield` and `load_private` mint notes immed
   - The receive screen has a "Payer didn't see it?" button.
 
 **Tests (`VerdictDeliveryTest`, 5):** an in-memory transport whose stack buffers writes and drops them when the writer closes first reproduces the bug (the payer ends `VerdictLost` while the payee holds the note); with the ack wait the verdict arrives; a silent payer cannot hang the payee; a connection that dies after the verdict is written leads to a successful resend answered ACCEPTED with nothing credited twice; the idempotent record survives spending the note and expires after 7 days.
+
+
+## 16. Audit fixes F1 and F2 (wallet side), 2026-11-06
+Source: `raw/v3/audit_contracts/FINDINGS.md`. The contract is behaving as specified; both holes were in the wallet.
+
+**F1 (High), non-canonical text.**
+- **The hole:** the spend message is plain text, and the escrow rebuilds it from `uint256` / `address` / `bytes32`, so it can only print one spelling. The wallet rebuilt it from the raw strings of the bundle. Mallory could sign text with an uppercase sibling key, an uppercase coinId, a `0x`-prefixed or uppercase escrow, or a chainId with leading zeros. Bob's wallet accepted, `redeem` failed with `BadSig` forever, and Mallory reclaimed after expiry.
+- **The fix:** a canonical-text gate.
+  - `Canonical` (new, in `core/protocol`) is the single definition of "canonical".
+  - `Protocol.spendMessage` and `outputsHash` refuse to build a message from anything else (`NonCanonicalException`).
+  - `PaymentVerifier` runs the gate first (step 0b) and stops there, with a precise failing line ("Canonical text") and a fail reason starting `non-canonical text in the signed message`.
+- **What is checked, on the raw JSON strings:**
+  - header: `chainId` decimal without leading zeros; `escrow` 40 lowercase hex; `coinId` 64 lowercase hex; `expiry` an integer literal (no `1.7E9`, `.0`, sign or zeros); deposit `value` positive decimal;
+  - every output `value` (positive decimal, fits uint256) and `key` (64 lowercase hex);
+  - the followed `index`;
+  - the parent note id (when building).
+- **One class beyond the finding:** every spend signature must be **strict, minimal DER** (`EcdsaDer.isCanonical`). Its hex goes into the child note id, and the escrow rebuilds DER from (r, s), so a padded or long-form signature would change every descendant's message in the same way.
+- **Signing paths:** pay, redeem, shield and refresh refuse to sign from a note whose header, parent id or path is not canonical (`canonicalRefusal`), before any key is created or used. This also covers notes stored by older apps.
+- **Payer side:** the message is built only from values the payer computes itself (lowercase key hashes), and `Protocol.spendMessage` would throw otherwise.
+
+**F2 (Medium), fan-out.**
+- **The constant:** `Protocol.MAX_OUTPUTS = 32`.
+- **The recipient:** it refuses a spend with more outputs. The count is checked first, from the array length alone, so an oversized list is never parsed or hashed. A test checks the verdict's last line is the count check.
+- **The payer:** the wallet's own spends have at most two outputs, and `Protocol` throws above 32.
+
+**Tests (`CanonicalTest`, 13).**
+
+| Test | What |
+|---|---|
+| messagesEqualTheEscrowFixtures | The wallet's message equals the escrow's `spendMessage()` **byte for byte** for **171 messages**: every spend and redemption in `escrow_v3/fixtures/v3_phone.json` and `v3_synthetic.json`. Those messages come from `prawl_v3.spend_message`, which the Foundry tests assert equal the contract's output. The one invalid vector (a zero-value output) is refused |
+| typedModelOfTheEscrowEqualsTheWallet | 300 random typed inputs (uint256 values up to 2^256-1, up to 32 outputs, deep paths) through an independent model of `PrawlV3Codec` and through the wallet |
+| headerStringsMustBeCanonical, protocolNeverBuilds…, strictDer | Unit negatives: uppercase / `0x` / short coinId; uppercase, `0x` and EIP-55 escrow; chainId `0…`, hex, exponent, negative, empty; value `01`, `0`, `+5`, `1.0`, 2^256; expiry as `…0`, `E9`, leading zero, 0, negative; uppercase or `0x` parent id and output key; padded, trailing-byte, truncated and long-form DER. Every real phone signature is canonical |
+| control_canonicalBundleIsAccepted | The same forged-bundle machinery with canonical text is accepted |
+| nonCanonicalSpellingsAreRefusedEvenWhenTheSignatureVerifies | **The attack:** a bundle genuinely signed by the genesis key over the attacker's spelling (the signature verifies over that text, asserted). Ten spellings, including the PoCs' uppercase sibling key, uppercase coinId, `0x` / uppercase escrow and `0…` chainId: all refused for non-canonical text, Bob's receive key stays pending |
+| nonCanonicalJsonFieldsAreRefused… | Fields the wallet re-canonicalises itself (`+` value, index `00`, out-of-range index, float expiry, header value `0…`), and a padded or trailing-byte signature |
+| thirtyTwoOutputsAreAccepted / thirtyThreeOutputsAreRefused | **32 accepted, 33 refused** (and 5,000 refused at the count) |
+| thePayerNeverBuildsMoreThanTheLimit, walletRefusesToSignFromANonCanonicalNote, realPhoneBundlesAreCanonical | The payer side; notes with non-canonical data are never signed from (pay, redeem, shield, refresh all refuse, key untouched); every real phone bundle passes the gate |
+
+**Mutation check (done, not kept):** with the gate and the `Protocol` checks removed, the "uppercase sibling output key" bundle is **accepted**, and 8 of the 13 tests fail. So the tests reproduce the audit's exploit against the old logic, and the fix closes it. The remaining tests fail only when the new checks are missing, not by accident.
+
+**Legacy Java harness:**
+- `Wallet3Activity.accept3` now has the same two checks (`canonProblem`, `strictDer`, `MAX_OUTPUTS = 32`), run before anything else.
+- This is a change outside `v3/app/`, made at the coordinator's request.
+- It was **only compile-checked** (`javac` into a scratch directory). It was not run or rebuilt into a harness APK, and the payer side (`pay3`) was not changed.
+
+**Not done:** the contract-side F3/F4 hardening needs a redeploy, and the second reviewer's findings are still to come.

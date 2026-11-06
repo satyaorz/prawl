@@ -76,6 +76,23 @@ class PaymentVerifier(
         rep.coinLabel = h.label; rep.coinId = h.coinId; rep.depositValue = h.value; rep.expiry = h.expiry; rep.hops = path.size
         log("ACCEPT? coin ${h.coinId.take(16)}… (${Eth.eth(h.value)} ETH deposit), ${path.size} spend(s), as '${rep.payeeName}'")
 
+        // [0a] audit F2: bound the work and the redeemability of every spend BEFORE touching its outputs
+        val records = Canonical.spendRecords(b)
+        if (records == null) { line("0", "Bundle structure", false, "the path is not a list of spends", "malformed bundle: bad path"); return }
+        val counts = Canonical.outputCountProblems(records)
+        line("0", "Outputs per spend (at most ${Protocol.MAX_OUTPUTS})", counts.isEmpty(),
+            if (counts.isEmpty()) "${records.joinToString(", ") { ((it["outputs"] as kotlinx.serialization.json.JsonArray).size).toString() }.ifEmpty { "no spends" }}" else counts.first(),
+            counts.firstOrNull())
+        counts.drop(1).forEach { rep.fails.add(it) }
+        if (counts.isNotEmpty()) return
+        // [0b] audit F1: every string that goes into a signed message must be in the one form the escrow can rebuild
+        val canon = Canonical.headerProblems(b.json["header"] as kotlinx.serialization.json.JsonObject) + Canonical.pathProblems(records, includeCounts = false)
+        line("0", "Canonical text", canon.isEmpty(),
+            if (canon.isEmpty()) "every string in the signed messages is the form the escrow rebuilds" else canon.first(),
+            canon.firstOrNull()?.let { "non-canonical text in the signed message: $it" })
+        canon.drop(1).take(4).forEach { rep.fails.add("non-canonical text in the signed message: $it") }
+        if (canon.isNotEmpty()) return
+
         // [0] coin-level policy
         line("0", "Coin format", h.v == 3, "v=${h.v}", "not a v3 coin")
         policy.acceptedEscrows?.let { set ->

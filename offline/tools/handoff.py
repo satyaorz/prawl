@@ -80,9 +80,16 @@ def redeem(b):
                      "nextY": "0x%064x" % y if isinstance(y, int) else h32(y)})
     rd = b["redeem"]; r, ss = rs(rd["sig"])
     h = b["header"]
-    return {"v": 1, "t": "redeem", "chainId": int(h["chainId"]), "escrow": a40(h["escrow"]), "header": header(h),
-            "path": path, "redemption": {"outputs": outs(rd["outputs"]), "index": int(rd["index"]),
-                                         "payout": a40(rd["payout"]), "r": r, "s": ss}}
+    out = {"v": 1, "t": "redeem", "chainId": int(h["chainId"]), "escrow": a40(h["escrow"]), "header": header(h),
+           "path": path, "redemption": {"outputs": outs(rd["outputs"]), "index": int(rd["index"]),
+                                        "payout": a40(rd["payout"]), "r": r, "s": ss}}
+    if rd.get("kind") == "shield":  # HANDOFF v1.2 section 10: `shield` is the BARE 9-field request
+        sr = rd["shield"]
+        out["t"] = "redeem-shield"
+        out["shield"] = {"npk": sr["npk"], "tokenType": int(sr["tokenType"]), "tokenAddress": sr["tokenAddress"],
+                         "tokenSubID": str(sr["tokenSubID"]), "value": str(sr["value"]),
+                         "encryptedBundle": list(sr["encryptedBundle"]), "shieldKey": sr["shieldKey"]}
+    return out
 
 def main():
     kind, f = sys.argv[1], sys.argv[2]
@@ -90,6 +97,7 @@ def main():
     j = json.load(open(f))
     rpc = sys.argv[sys.argv.index("--rpc") + 1] if "--rpc" in sys.argv else None
     p = load(j) if kind == "load" else load_private(j, rpc) if kind == "load-private" else redeem(j)
+    kind = p["t"]  # redeem-shield is detected from the bundle
     raw = json.dumps(p, separators=(",", ":"))
     d = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
     res = {"payload": p, "d": d, "https": f"{site}/#/offline/{kind}?d={d}", "prawl": f"prawl://offline/{kind}?d={d}",

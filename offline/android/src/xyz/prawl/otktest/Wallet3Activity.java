@@ -50,6 +50,72 @@ public class Wallet3Activity extends Wallet2Activity {
     /** Test hook: spend this note alias even if the wallet's own records say it is spent (a malicious wallet). */
     String forceNote;
     static final BigInteger CAP_WEI = new BigInteger("1000000000000000000");       // 1.0 ETH offline cap
+    /** Most outputs one spend may have (audit F2): a redemption below a spend must carry them all. Mirrors the escrow and the Kotlin app. */
+    static final int MAX_OUTPUTS = 32;
+
+    static boolean isHex(String s, int n) {
+        if (s == null || s.length() != n) return false;
+        for (int i = 0; i < n; i++) { char c = s.charAt(i); if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false; }
+        return true;
+    }
+    /** Decimal without sign, leading zeros or exponent; fits uint256. */
+    static boolean isUint256(String s, boolean positive) {
+        if (s == null || s.isEmpty() || s.length() > 78) return false;
+        for (int i = 0; i < s.length(); i++) if (s.charAt(i) < '0' || s.charAt(i) > '9') return false;
+        if (s.length() > 1 && s.charAt(0) == '0') return false;
+        BigInteger v = new BigInteger(s);
+        return v.compareTo(BigInteger.ONE.shiftLeft(256)) < 0 && (!positive || v.signum() > 0);
+    }
+    /** DER SEQUENCE{INTEGER r, INTEGER s} in its minimal form (the escrow rebuilds it from r and s; its hex is part of the child note id). */
+    static boolean strictDer(byte[] b) {
+        if (b.length < 8 || b[0] != 0x30 || (b[1] & 0xff) >= 0x80 || (b[1] & 0xff) != b.length - 2) return false;
+        int i = 2;
+        for (int k = 0; k < 2; k++) {
+            if (i + 2 > b.length || b[i] != 0x02) return false;
+            int len = b[i + 1] & 0xff;
+            if (len < 1 || len > 33 || i + 2 + len > b.length) return false;
+            if ((b[i + 2] & 0x80) != 0) return false;
+            if (len > 1 && b[i + 2] == 0 && (b[i + 3] & 0x80) == 0) return false;
+            i += 2 + len;
+        }
+        return i == b.length;
+    }
+    /**
+     * Every string that goes into a spend message must be in the one spelling the escrow can rebuild (audit F1): chainId decimal,
+     * escrow 40 lowercase hex, coinId and output keys 64 lowercase hex, values positive decimal, expiry decimal, strict DER signatures.
+     * Returns the first problem, or null.
+     */
+    static String canonProblem(JSONObject h, JSONArray path) {
+        try {
+            if (!isUint256(h.getString("chainId"), false)) return "chainId is not canonical decimal";
+            if (!isHex(h.getString("escrow"), 40)) return "escrow is not 40 lowercase hex digits without 0x";
+            if (!isHex(h.getString("coinId"), 64)) return "coinId is not 64 lowercase hex digits without 0x";
+            String ex = h.getString("expiry");
+            if (!isUint256(ex, true) || ex.length() > 19) return "expiry is not canonical decimal";
+            if (!isUint256(h.getString("value"), true)) return "deposit value is not canonical positive decimal";
+            for (int d = 0; d < path.length(); d++) {
+                int n = path.getJSONObject(d).getJSONArray("outputs").length();
+                if (n < 1) return "spend " + d + " has no outputs";
+                if (n > MAX_OUTPUTS) return "spend " + d + " has too many outputs (" + n + " > " + MAX_OUTPUTS + ")";
+            }
+            for (int d = 0; d < path.length(); d++) {
+                JSONObject s = path.getJSONObject(d);
+                JSONArray outs = s.getJSONArray("outputs");
+                for (int i = 0; i < outs.length(); i++) {
+                    JSONObject o = outs.getJSONObject(i);
+                    if (!isUint256(o.getString("value"), true)) return "spend " + d + " output " + i + ": value is not canonical positive decimal";
+                    if (!isHex(o.getString("key"), 64)) return "spend " + d + " output " + i + ": key is not 64 lowercase hex digits without 0x";
+                }
+                String idx = s.getString("index");
+                if (!isUint256(idx, false) || idx.length() > 6 || Integer.parseInt(idx) >= outs.length()) return "spend " + d + ": index is not a canonical index into the outputs";
+                if (!strictDer(Base64.decode(s.getString("sig"), Base64.NO_WRAP))) return "spend " + d + ": signature is not strict canonical DER";
+            }
+            return null;
+        } catch (Exception e) {
+            return "malformed bundle: " + e.getMessage();
+        }
+    }
+
     static final BigInteger STALE_CAP_WEI = new BigInteger("50000000000000000");   // 0.05 ETH
 
     @Override
@@ -249,6 +315,9 @@ public class Wallet3Activity extends Wallet2Activity {
         JSONArray path = b.getJSONArray("path");
         List<String> fails = new ArrayList<>();
         long now = System.currentTimeMillis() / 1000;
+        // [0a] audit F1/F2: refuse anything the escrow cannot rebuild byte for byte, and fan-outs it cannot redeem
+        String cp = canonProblem(h, path);
+        if (cp != null) { log("  [0] REJECTED: " + cp); return "REJECTED"; }
         log("ACCEPT? coin " + h.getString("coinId").substring(0, 16) + "… (" + eth(new BigInteger(h.getString("value")))
                 + " ETH deposit), " + path.length() + " spend(s), as '" + name + "'");
         // [0] coin-level policy
