@@ -7,7 +7,7 @@ origin, so the site only ever links to the wallet and never tries to host it.
 ```
 apps/site
 ├── public/
-│   ├── apk/prowl.apk      the Android app, built from offline/app (see below)
+│   ├── apk/               (empty in git) where a locally built APK goes; the download button uses GitHub, see below
 │   ├── shots/             real screenshots of the wallet (captured, not drawn)
 │   └── prowl-logo.png     the same mark the wallet ships
 ├── src/
@@ -47,25 +47,24 @@ pnpm --filter @prawl/wallet dev &     # http://localhost:5173
 node apps/site/scripts/capture-shots.mjs
 ```
 
-## Refresh the APK
+## The APK
 
-`public/apk/prowl.apk` is the `prawl` debug flavor of the Android app
-(package `xyz.prawl.offline`, Android 12+). Rebuild and copy it with:
+"Download APK" links to the latest GitHub release, `releases/latest/download/prowl.apk`. That release is built and
+published by `.github/workflows/android-apk.yml` whenever `offline/app` changes on `dev` (or by hand from the Actions tab).
+Nothing large is committed to git.
+
+The app must be signed with the key the wallet site vouches for (`assetlinks.json`), otherwise passkeys do not work in the
+app. The workflow refuses to run without that key (repository secret `ANDROID_DEBUG_KEYSTORE_B64`, set once with
+`base64 -w0 offline/app/keystore/prawl-debug.keystore | gh secret set ANDROID_DEBUG_KEYSTORE_B64`) and checks the finished
+APK's certificate before it publishes. Override the link at build time with `VITE_APK_URL`.
+
+To build one locally (it lands, untracked, in `public/apk/`):
 
 ```sh
 pnpm --filter @prawl/site apk
 ```
 
-Or by hand:
-
-```sh
-cd offline/app
-ANDROID_HOME=$HOME/Android/Sdk ./gradlew assembleDebug -Pprawl.site=https://<your-wallet-site>
-cp app/build/outputs/apk/prawl/debug/app-prawl-debug.apk ../../apps/site/public/apk/prowl.apk
-```
-
-A debug build is signed with the debug key: fine for testing offline cash, not
-for release.
+A debug build is signed with the debug key: fine for testing, not for release.
 
 ## Point the buttons at your wallet
 
@@ -81,5 +80,5 @@ The passkey is bound to that domain, so choose it once and keep it.
 ## Deploy
 
 `apps/site` is a static site. `vercel.json` sets the SPA rewrite (so
-`/docs/anything` resolves), security headers, immutable caching for hashed
-assets, and `Content-Disposition: attachment` on the APK.
+`/docs/anything` resolves), security headers, and immutable caching for hashed
+assets.

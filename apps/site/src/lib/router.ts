@@ -17,8 +17,12 @@ export type Route = { name: "home" } | { name: "docs"; chapter: string };
 export const WALLET_URL: string =
   (import.meta.env.VITE_WALLET_URL as string | undefined) ?? "https://prawl-wallet.centralindia.cloudapp.azure.com";
 
-/** The APK shipped from this site's own /apk/prowl.apk. */
-export const APK_URL = "/apk/prowl.apk";
+/**
+ * The Android app: the latest GitHub release, whose asset is built by .github/workflows/android-apk.yml and signed with the
+ * key the wallet site vouches for (so passkeys work in the app). Overridable at build time: VITE_APK_URL.
+ */
+export const APK_URL: string =
+  (import.meta.env.VITE_APK_URL as string | undefined) ?? "https://github.com/satyaorz/prawl/releases/latest/download/prowl.apk";
 
 function parse(pathname: string): Route {
   if (pathname.startsWith("/docs")) {

@@ -44,7 +44,7 @@ export function Home() {
               <span className="text-zinc-200">shielded pool</span>, every request goes over{" "}
               <span className="text-zinc-200">Tor on its own circuit</span>, and there is{" "}
               <span className="text-zinc-200">no seed phrase and no server</span> — your keys come from a
-              passkey. When there is no signal at all, two phones still pay each other with{" "}
+              passkey. You can swap on Uniswap in <span className="text-zinc-200">encrypted batches</span> (testnet). When there is no signal at all, two phones still pay each other with{" "}
               <span className="text-zinc-200">offline cash</span>.
             </p>
 
@@ -89,7 +89,7 @@ export function Home() {
             </a>
             <a
               href={APK_URL}
-              download="prowl.apk"
+              rel="noopener"
               className="group inline-flex items-center justify-center gap-2 rounded-full border border-zinc-700 bg-zinc-900/60 px-5 py-3 text-[13.5px] font-medium text-zinc-100 transition hover:border-zinc-600 hover:bg-zinc-800/70 active:scale-[0.99]"
             >
               <Icon name="download" className="h-4 w-4 text-emerald-400" />
