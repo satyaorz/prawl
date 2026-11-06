@@ -117,7 +117,7 @@ export function PrivateActions() {
         </p>
       )}
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
-      {w.action && w.action.kind !== "shield" && (
+      {w.action && (w.action.kind === "send" || w.action.kind === "unshield") && (
         <div className="mt-3 text-xs">
           <p className={w.action.error ? "text-red-400" : "text-zinc-300"}>{w.action.status}</p>
           {w.action.error && <p className="mt-1 break-all text-red-400">{w.action.error}</p>}

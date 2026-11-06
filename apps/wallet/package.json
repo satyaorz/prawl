@@ -16,6 +16,7 @@
     "@prawl/anon-rpc": "workspace:*",
     "@prawl/keys": "workspace:*",
     "@prawl/railgun": "workspace:*",
+    "jsqr": "1.4.0",
     "qrcode": "1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

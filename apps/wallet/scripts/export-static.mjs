@@ -42,7 +42,7 @@ const security = [
   { key: "referrer-policy", value: "no-referrer" },
   { key: "x-content-type-options", value: "nosniff" },
   { key: "x-frame-options", value: "DENY" },
-  { key: "permissions-policy", value: "camera=(), microphone=(), geolocation=(), interest-cohort=()" },
+  { key: "permissions-policy", value: "camera=(self), microphone=(), geolocation=(), interest-cohort=()" },
 ];
 const vercel = {
   $schema: "https://openapi.vercel.sh/vercel.json",

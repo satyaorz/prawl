@@ -2,6 +2,7 @@ import { TorStatusCard } from "./components/TorStatusCard";
 import { TraceList } from "./components/TraceList";
 import { PrivateActions } from "./components/PrivateActions";
 import { ReceiveCard } from "./components/ReceiveCard";
+import { OfflineCard } from "./components/OfflineCard";
 import { ShieldForm } from "./components/ShieldForm";
 import { WalletCard } from "./components/WalletCard";
 import { WatchAddress } from "./components/WatchAddress";
@@ -16,6 +17,7 @@ export function App() {
       <WalletCard />
       <PrivateActions />
       <ReceiveCard />
+      <OfflineCard />
       <ShieldForm />
       <TorStatusCard />
       <WatchAddress />

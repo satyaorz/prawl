@@ -13,6 +13,8 @@ import { anon } from "./anon";
 import { store } from "./store";
 import { railgun } from "../railgun/controller";
 import { publicBalance, sendCalls, sendUserOp, type SentTx } from "./tx";
+import { depositCall, loadProblems, redeemCall, revertReason, simulateRedeem } from "../offline/escrow";
+import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type RedeemPayload } from "../offline/payload";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
 export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
@@ -378,4 +380,62 @@ export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: 
           },
     ),
   );
+}
+
+/**
+ * Offline cash, load: deposit a phone-minted coin into the escrow from this
+ * wallet's public account (the coin commits to it as depositor). Checked and
+ * simulated before signing; sent over the account's own Tor circuit.
+ */
+export async function offlineLoad(p: LoadPayload): Promise<void> {
+  const kind = "offline-load";
+  const status = (s: string) => update({ action: { kind, status: s } });
+  try {
+    if (!keys || !state.evmAddress) throw new Error("unlock the wallet first");
+    status("Checking the coin over Tor…");
+    const problems = await loadProblems(anon, p, state.evmAddress as Hex);
+    if (problems.length) {
+      update({ action: { kind, status: "Not loaded", done: true, error: problems.join(" ") } });
+      return;
+    }
+    const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [depositCall(p)], status);
+    const ok = txs.every((t) => t.status === "success");
+    update({ action: { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs } });
+    if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
+  } catch (e) {
+    update({ action: { kind, status: "Load failed", done: true, error: revertReason(e) } });
+  }
+}
+
+/**
+ * Offline cash, cash out: submit a phone-signed redemption. The payout address
+ * and amount are fixed by the phone's signature; this wallet only pays the
+ * gas. Simulated first: a redemption that would freeze the coin (false) or
+ * revert is never sent.
+ */
+export async function offlineRedeem(p: RedeemPayload): Promise<void> {
+  const kind = "offline-redeem";
+  const status = (s: string) => update({ action: { kind, status: s } });
+  try {
+    if (!keys || !state.evmAddress) throw new Error("unlock the wallet first");
+    status("Simulating the cash-out over Tor…");
+    const sim = await simulateRedeem(anon, p, state.evmAddress as Hex);
+    if ("error" in sim) {
+      update({ action: { kind, status: "Not sent", done: true, error: sim.error } });
+      return;
+    }
+    if (!sim.paid) {
+      update({ action: { kind, status: "Not sent", done: true, error: "the escrow would not pay this: it records a double spend and freezes the coin instead" } });
+      return;
+    }
+    const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [redeemCall(p)], status);
+    const ok = txs.every((t) => t.status === "success");
+    const amount = payoutValue(p);
+    update({
+      action: { kind, status: ok ? `Paid ${fmtEth(amount)} ETH to ${p.redemption.payout}.` : "The cash-out reverted", done: true, txs },
+    });
+    if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
+  } catch (e) {
+    update({ action: { kind, status: "Cash-out failed", done: true, error: revertReason(e) } });
+  }
 }
