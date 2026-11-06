@@ -1,0 +1,25 @@
+{
+  "name": "@prawl/anon-rpc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Anon-RPC client for Prawl: Ethereum JSON-RPC and HTTP over Tor with per-identity circuit isolation",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./harness-worker": "./src/harness-worker.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anon-rpc/browser-harness": "0.4.0",
+    "viem": "2.57.14"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}
