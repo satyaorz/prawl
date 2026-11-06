@@ -26,11 +26,18 @@ export interface OpenArgs {
    * snapshot instead of replaying all history. Never for a restored wallet.
    */
   fresh: boolean;
+  /**
+   * When the wallet was created (unix seconds, from the passkey). A restore
+   * may start from the pool snapshot if the snapshot is older than this.
+   */
+  bornAt?: number;
+  /** Drop the saved checkpoint and scan all history again. */
+  discardCheckpoint?: boolean;
 }
 
 export interface Ops {
   deployment(chainId: number): Deployment;
-  open(args: OpenArgs): { address: string; syncedBlock: string; restored: boolean; snapshotBlock?: string };
+  open(args: OpenArgs): { address: string; syncedBlock: string; restored: boolean; snapshotBlock?: string; fullScan: boolean };
   sync(args: { head: string; windowBlocks?: string }): { syncedBlock: string };
   refreshPoi(): void;
   /** Number of our own operations whose PPOI proofs are not submitted yet. */

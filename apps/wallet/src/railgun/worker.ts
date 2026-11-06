@@ -68,6 +68,24 @@ async function loadSnapshot(chainId: number): Promise<string | undefined> {
   }
 }
 
+/**
+ * A snapshot taken this long before the wallet was born is safe to start a
+ * restore from: covers clock skew between the creating device and the chain.
+ */
+const SNAPSHOT_SLACK_S = 2 * 3600;
+
+/** Block timestamp over the RAILGUN transport (so over Tor, on the shared RAILGUN circuit). */
+async function blockTimestamp(rpcUrl: string, block: bigint): Promise<number | undefined> {
+  const res = await self.fetch(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBlockByNumber", params: [`0x${block.toString(16)}`, false] }),
+  });
+  const body = (await res.json()) as { result?: { timestamp?: string } };
+  const ts = body.result?.timestamp;
+  return ts ? Number(BigInt(ts)) : undefined;
+}
+
 // ------------------------------------------------------------------ state
 let wallet: RailgunWallet | undefined;
 let storageKey: CryptoKey | undefined;
@@ -103,6 +121,7 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
     await wallet?.close();
     storageKey = args.storageKey;
     checkpointName = args.checkpointName;
+    if (args.discardCheckpoint) await store.delete(checkpointName);
     const sealed = await store.get<Sealed>(checkpointName);
     let checkpoint: string | undefined;
     if (sealed) {
@@ -114,14 +133,22 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
     }
     let fromSnapshot: bigint | undefined;
     let expectedAddress: string | undefined;
-    if (!checkpoint && args.fresh) {
+    if (!checkpoint && (args.fresh || args.bornAt !== undefined)) {
       const snap = await loadSnapshot(args.chainId);
-      if (snap) {
+      const block = snap ? snapshotBlock(snap) : undefined;
+      // A new wallet cannot own older notes. A restored one can skip history
+      // from before it was born: use the snapshot only if it is clearly older.
+      let usable = args.fresh;
+      if (!usable && block !== undefined && args.bornAt !== undefined) {
+        const ts = await blockTimestamp(args.rpcUrl, block).catch(() => undefined);
+        usable = ts !== undefined && ts + SNAPSHOT_SLACK_S <= args.bornAt;
+      }
+      if (snap && usable) {
         const addr = wasm.RailgunAddress.fromPrivateKeys(args.spendingKey, args.viewingKey, BigInt(args.chainId));
         expectedAddress = addr.toString();
         addr.free();
         checkpoint = seedFreshAccount(snap, expectedAddress);
-        fromSnapshot = snapshotBlock(snap);
+        fromSnapshot = block;
       }
     }
     const openWith = (cp: string | undefined) =>
@@ -146,6 +173,7 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
       address: wallet.address,
       syncedBlock: wallet.syncedBlock.toString(),
       restored: !!checkpoint && fromSnapshot === undefined,
+      fullScan: !checkpoint,
       ...(fromSnapshot !== undefined ? { snapshotBlock: fromSnapshot.toString() } : {}),
     };
   },

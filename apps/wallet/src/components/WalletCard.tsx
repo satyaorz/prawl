@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { formatEther } from "viem";
 import { useWallet } from "../lib/use-wallet";
-import { createWallet, lockWallet, sync, unlockWallet } from "../lib/wallet";
+import { createWallet, lockWallet, rescanWallet, sync, unlockWallet } from "../lib/wallet";
 
 function short(s: string, head = 10, tail = 8): string {
   return s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s;
@@ -35,7 +35,7 @@ const POI_LABEL: Record<string, { text: string; tone: string }> = {
 
 export function WalletCard() {
   const w = useWallet();
-  const busy = w.phase === "unlocking" || w.phase === "opening";
+  const busy = w.phase === "unlocking" || (w.phase === "opening" && !w.railgunAddress);
 
   if (w.phase === "locked" || (w.phase === "error" && !w.railgunAddress) || busy) {
     return (
@@ -78,14 +78,21 @@ export function WalletCard() {
         </button>
       </div>
 
-      {w.phase === "syncing" && (
+      {(w.phase === "syncing" || w.phase === "opening") && (
         <div className="mt-3">
           <div className="h-1.5 overflow-hidden rounded-full bg-zinc-800">
             <div className="h-full bg-emerald-400 transition-all" style={{ width: `${pct}%` }} />
           </div>
           <p className="mt-1 text-xs text-zinc-500">
             Scanning the private pool over Tor
-            {w.restored ? " from your saved checkpoint" : w.snapshotBlock ? " from the latest pool snapshot" : ""}… {pct.toFixed(0)}%
+            {w.restored
+              ? " from your saved checkpoint"
+              : w.snapshotBlock
+                ? " from the pool snapshot (your wallet is newer)"
+                : w.fullScan
+                  ? " from the start of RAILGUN history (first open on this device)"
+                  : ""}
+            … {pct.toFixed(0)}%
           </p>
         </div>
       )}
@@ -133,6 +140,15 @@ export function WalletCard() {
           {w.phase === "syncing" ? "Syncing…" : "Refresh"}
         </button>
         {w.lastSyncMs !== undefined && w.phase === "ready" && <span className="text-xs text-zinc-500">synced in {(w.lastSyncMs / 1000).toFixed(1)} s</span>}
+        <button
+          disabled={w.phase === "syncing" || w.phase === "opening"}
+          onClick={() => {
+            if (confirm("Scan all RAILGUN history again from the start? This takes a few minutes over Tor.")) void rescanWallet();
+          }}
+          className="ml-auto text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-50"
+        >
+          Full rescan
+        </button>
       </div>
       {w.error && <p className="mt-3 text-xs text-red-400">{w.error}</p>}
     </section>

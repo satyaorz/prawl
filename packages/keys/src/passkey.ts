@@ -26,6 +26,43 @@ export interface PasskeyRoot {
   /** 32-byte root secret. Pass to deriveWalletKeys() and drop the reference. */
   root: Uint8Array;
   credentialId: string;
+  /**
+   * When the wallet was created (unix seconds), read back from the passkey's
+   * user handle; undefined for passkeys made before v1 handles. The wallet
+   * cannot own notes from before this, so a restore may skip older history.
+   */
+  bornAt?: number;
+}
+
+/**
+ * User handle v1: [0x01][creation time, u64 big-endian unix seconds][16 random bytes].
+ * The authenticator stores it with the passkey and returns it on every
+ * sign-in, also on a synced device. It holds no name, email or address; the
+ * passkey provider already knows when the passkey was made.
+ */
+const HANDLE_V1 = 0x01;
+const HANDLE_V1_LEN = 25;
+
+export function encodeUserHandle(bornAt: number, random: Uint8Array = crypto.getRandomValues(new Uint8Array(16))): Uint8Array {
+  if (!Number.isSafeInteger(bornAt) || bornAt < 0) throw new Error("bornAt must be unix seconds");
+  if (random.byteLength !== 16) throw new Error("need 16 random bytes");
+  const h = new Uint8Array(HANDLE_V1_LEN);
+  h[0] = HANDLE_V1;
+  new DataView(h.buffer).setBigUint64(1, BigInt(bornAt));
+  h.set(random, 9);
+  return h;
+}
+
+/** Creation time from a v1 user handle, or undefined (older or foreign handle). */
+export function decodeUserHandle(handle: ArrayBuffer | Uint8Array | null | undefined): number | undefined {
+  if (!handle) return undefined;
+  const h = handle instanceof Uint8Array ? handle : new Uint8Array(handle);
+  if (h.byteLength !== HANDLE_V1_LEN || h[0] !== HANDLE_V1) return undefined;
+  const t = new DataView(h.buffer, h.byteOffset, h.byteLength).getBigUint64(1);
+  // Before 2026 or more than a day ahead of this clock: not a time we wrote.
+  const n = Number(t);
+  if (n < 1_767_225_600 || n > Date.now() / 1000 + 86_400) return undefined;
+  return n;
 }
 
 async function prfSalt(): Promise<Uint8Array> {
@@ -82,7 +119,8 @@ export async function unlockWithPasskey(credentialId?: string): Promise<PasskeyR
     if (!root || root.byteLength !== 32) {
       throw new PasskeyError("This passkey or browser does not support the PRF extension", "NO_PRF");
     }
-    return { root, credentialId: b64url(cred.rawId) };
+    const bornAt = decodeUserHandle((cred.response as AuthenticatorAssertionResponse).userHandle);
+    return { root, credentialId: b64url(cred.rawId), ...(bornAt !== undefined ? { bornAt } : {}) };
   } catch (e) {
     throw wrap(e);
   }
@@ -96,13 +134,14 @@ export async function unlockWithPasskey(credentialId?: string): Promise<PasskeyR
 export async function createPasskey(label = "Prawl wallet"): Promise<PasskeyRoot> {
   if (!passkeysAvailable()) throw new PasskeyError("Passkeys are not available in this browser", "UNSUPPORTED");
   const salt = await prfSalt();
+  const bornAt = Math.floor(Date.now() / 1000);
   let cred: PublicKeyCredential | null;
   try {
     cred = (await navigator.credentials.create({
       publicKey: {
         rp: { name: RP_NAME, id: location.hostname },
-        // Random user handle: the passkey carries no name, email or address.
-        user: { id: crypto.getRandomValues(new Uint8Array(16)), name: label, displayName: label },
+        // Creation time plus random bytes: the passkey carries no name, email or address.
+        user: { id: encodeUserHandle(bornAt) as BufferSource, name: label, displayName: label },
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         pubKeyCredParams: [
           { type: "public-key", alg: -7 },
@@ -122,6 +161,6 @@ export async function createPasskey(label = "Prawl wallet"): Promise<PasskeyRoot
   }
   const credentialId = b64url(cred.rawId);
   const root = prfFirst(cred);
-  if (root?.byteLength === 32) return { root, credentialId };
-  return unlockWithPasskey(credentialId);
+  if (root?.byteLength === 32) return { root, credentialId, bornAt };
+  return { ...(await unlockWithPasskey(credentialId)), bornAt };
 }

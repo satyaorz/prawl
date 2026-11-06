@@ -32,7 +32,9 @@ export interface WalletState {
   balances?: Balance[];
   wrappedBaseToken?: string;
   restored?: boolean;
-  /** Block of the public pool snapshot a new wallet started from. */
+  /** True when this open scans RAILGUN history from the start (no checkpoint, no usable snapshot). */
+  fullScan?: boolean;
+  /** Block of the public pool snapshot a new or restored wallet started from. */
   snapshotBlock?: bigint;
   lastSyncMs?: number;
   /** Our operations whose PPOI proofs are still queued (submitted on each sync). */
@@ -69,9 +71,19 @@ void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id })
 
 railgun().onProgress((p) => update({ syncedBlock: BigInt(p.synced), head: BigInt(p.head) }));
 
-async function start(root: Uint8Array, fresh: boolean): Promise<void> {
+interface StartOptions {
+  fresh: boolean;
+  bornAt?: number;
+  discardCheckpoint?: boolean;
+}
+async function start(root: Uint8Array, opts: StartOptions): Promise<void> {
   keys = await deriveWalletKeys(root);
   root.fill(0);
+  await openRailgun(opts);
+}
+
+async function openRailgun(opts: StartOptions): Promise<void> {
+  if (!keys) throw new Error("wallet is locked");
   const evmAddress = privateKeyToAddress(keys.evmAccount);
   update({ phase: "opening", evmAddress, error: undefined });
   const rg = railgun();
@@ -85,7 +97,9 @@ async function start(root: Uint8Array, fresh: boolean): Promise<void> {
     viewingKey: keys.railgunViewing,
     storageKey: keys.storage,
     checkpointName,
-    fresh,
+    fresh: opts.fresh,
+    ...(opts.bornAt !== undefined ? { bornAt: opts.bornAt } : {}),
+    ...(opts.discardCheckpoint ? { discardCheckpoint: true } : {}),
   });
   update({
     railgunAddress: opened.address,
@@ -93,7 +107,8 @@ async function start(root: Uint8Array, fresh: boolean): Promise<void> {
     deploymentBlock: BigInt(deployment.deploymentBlock),
     wrappedBaseToken: deployment.wrappedBaseToken.toLowerCase(),
     restored: opened.restored,
-    ...(opened.snapshotBlock ? { snapshotBlock: BigInt(opened.snapshotBlock) } : {}),
+    fullScan: opened.fullScan,
+    snapshotBlock: opened.snapshotBlock ? BigInt(opened.snapshotBlock) : undefined,
   });
   await sync();
   startAutoSync();
@@ -181,10 +196,10 @@ async function guarded(fn: () => Promise<void>): Promise<void> {
 
 export function createWallet(): Promise<void> {
   return guarded(async () => {
-    const { root, credentialId } = await createPasskey();
+    const { root, credentialId, bornAt } = await createPasskey();
     await store.set(CREDENTIAL_KEY, credentialId);
     update({ hasPasskey: true });
-    await start(root, true);
+    await start(root, { fresh: true, ...(bornAt !== undefined ? { bornAt } : {}) });
   });
 }
 
@@ -192,11 +207,27 @@ export function createWallet(): Promise<void> {
 export function unlockWallet(): Promise<void> {
   return guarded(async () => {
     const remembered = await store.get<string>(CREDENTIAL_KEY);
-    const { root, credentialId } = await unlockWithPasskey(remembered);
+    const { root, credentialId, bornAt } = await unlockWithPasskey(remembered);
     if (!remembered) await store.set(CREDENTIAL_KEY, credentialId);
     update({ hasPasskey: true });
-    await start(root, false);
+    await start(root, { fresh: false, ...(bornAt !== undefined ? { bornAt } : {}) });
   });
+}
+
+/**
+ * Forget the saved checkpoint and scan all RAILGUN history again, ignoring the
+ * snapshot and the passkey's creation time. The escape hatch if a balance
+ * looks wrong.
+ */
+export async function rescanWallet(): Promise<void> {
+  stopAutoSync();
+  update({ phase: "opening", balances: undefined, poiQueue: undefined, poiError: undefined, error: undefined });
+  try {
+    await railgun().call("close", undefined as never);
+    await openRailgun({ fresh: false, discardCheckpoint: true });
+  } catch (e) {
+    update({ phase: "error", error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 export async function lockWallet(): Promise<void> {

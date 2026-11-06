@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // The RAILGUN worker, Tor client, storage and passkey are all faked: this tests
 // the wallet session logic only (single-flight sync, PPOI queue submission).
 const calls: string[] = [];
+const openArgs: Array<Record<string, unknown>> = [];
 const answers: Record<string, unknown> = {};
 const rg = {
   onProgress: vi.fn(),
   prepare: vi.fn(async () => ({ deployment: { deploymentBlock: "1", wrappedBaseToken: "0xWETH" }, rpcUrl: "https://rpc.invalid" })),
-  call: vi.fn(async (op: string) => {
+  call: vi.fn(async (op: string, args: unknown) => {
     calls.push(op);
+    if (op === "open") openArgs.push(args as Record<string, unknown>);
     if (op === "sync") await new Promise((r) => setTimeout(r, 20));
     const a = answers[op];
     return typeof a === "function" ? (a as () => unknown)() : a;
@@ -20,7 +22,7 @@ vi.mock("../src/lib/anon", () => ({ anon: { head: vi.fn(async () => 100n) } }));
 vi.mock("../src/lib/store", () => ({ store: { get: vi.fn(async () => undefined), set: vi.fn(async () => undefined) } }));
 vi.mock("../src/lib/tx", () => ({ publicBalance: vi.fn(async () => 0n), sendCalls: vi.fn(), sendUserOp: vi.fn() }));
 vi.mock("@prawl/keys", () => ({
-  createPasskey: vi.fn(async () => ({ root: new Uint8Array(32), credentialId: "cred" })),
+  createPasskey: vi.fn(async () => ({ root: new Uint8Array(32), credentialId: "cred", bornAt: 1_794_000_000 })),
   unlockWithPasskey: vi.fn(),
   deriveWalletKeys: vi.fn(async () => ({
     railgunSpending: `0x${"01".repeat(32)}`,
@@ -79,5 +81,18 @@ describe("wallet sync", () => {
     expect(s.phase).toBe("ready");
     expect(s.poiError).toBe("PPOI node down");
     expect(calls).not.toContain("refreshPoi");
+  });
+
+  it("passes the passkey's creation time to the worker, and a full rescan drops it with the checkpoint", async () => {
+    reset(0);
+    openArgs.length = 0;
+    await wallet.createWallet();
+    expect(openArgs[0]).toMatchObject({ fresh: true, bornAt: 1_794_000_000 });
+    expect(openArgs[0]).not.toHaveProperty("discardCheckpoint");
+    await wallet.rescanWallet();
+    expect(openArgs[1]).toMatchObject({ fresh: false, discardCheckpoint: true });
+    expect(openArgs[1]).not.toHaveProperty("bornAt");
+    expect(calls.lastIndexOf("close")).toBeLessThan(calls.lastIndexOf("open"));
+    expect(wallet.walletState.get().phase).toBe("ready");
   });
 });
