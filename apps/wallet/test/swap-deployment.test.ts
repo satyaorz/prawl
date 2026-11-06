@@ -30,7 +30,7 @@ function fakeClient(config: SwapDeployment, badCode = false, badWrapper = false)
       const { to, data } = params[0] as { to: string; data: string };
       const selector = data.slice(0, 10);
       if (to.toLowerCase() === config.batch.toLowerCase()) {
-        if (selector === toFunctionSelector("VERSION()")) return encodeFunctionResult({ abi: batchAbi, functionName: "VERSION", result: 4n });
+        if (selector === toFunctionSelector("VERSION()")) return encodeFunctionResult({ abi: batchAbi, functionName: "VERSION", result: 5n });
         const fields = { cTokenA: config.wrapperA, cTokenB: config.wrapperB, priceOracle: config.oracle, router: config.router, permit2: config.permit2 } as const;
         for (const [name, value] of Object.entries(fields)) if (selector === toFunctionSelector(`${name}()`)) {
           return encodeFunctionResult({ abi: parseAbi([`function ${name}() view returns (address)`]), functionName: name, result: value });

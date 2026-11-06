@@ -57,7 +57,14 @@ const SEPOLIA = {
   universalRouter: "0x3a9d48ab9751398bbfa63ad67599bb04e4bdf98b",
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3",
   poolModifyLiquidityTest: "0x0c478023803a644c94c4ce1c1e7b9a087e411b0a",
+  stateView: "0xe1dd9c3fa50edb962e442f60dfbc432e24537e4c",
 };
+
+/** Full range for a 60-tick spacing: the nearest multiples of the spacing inside Uniswap's tick bounds. */
+const MIN_TICK = -887272;
+const MAX_TICK = 887272;
+const usableTick = (tick, spacing) => Math.trunc(tick / spacing) * spacing;
+
 
 const POOL_FEE = Number(process.env.PRAWL_POOL_FEE ?? 3000);
 const TICK_SPACING = Number(process.env.PRAWL_TICK_SPACING ?? 60);
@@ -66,6 +73,11 @@ const MIN_USERS = Number(process.env.PRAWL_MIN_USERS ?? 2);
 const REFUND_DELAY = Number(process.env.PRAWL_REFUND_DELAY ?? 3600);
 const MAX_PRICE_AGE = Number(process.env.PRAWL_MAX_PRICE_AGE ?? 1800);
 const SUPPLY = BigInt(process.env.PRAWL_TOKEN_SUPPLY ?? "100000000000000000000000000"); // 100M
+// WETH put into the pool (with PRAWL at the starting price). One lot is the
+// unit every order is a multiple of; keep it a small share of this depth so a
+// residual does not move the price, or the 97% floor will refuse the trade.
+const SEED_WETH = ethers.parseEther(process.env.PRAWL_SEED_WETH ?? "0.06");
+const LOT_WETH = BigInt(process.env.PRAWL_LOT_WETH ?? "100000000000000"); // 0.0001 WETH
 
 const provider = new ethers.JsonRpcProvider(RPC, SEPOLIA.chainId, { staticNetwork: true });
 const deployer = new ethers.Wallet(KEY, provider);
@@ -104,8 +116,8 @@ async function deploy(relative, args, label) {
   await contract.waitForDeployment();
   const receipt = await contract.deploymentTransaction().wait();
   const address = await contract.getAddress();
-  log(`${label}: ${address} (block ${receipt.blockNumber})`);
-  return { address, abi, block: receipt.blockNumber };
+  log(`${label}: ${address} (block ${receipt.blockNumber}, tx ${receipt.hash})`);
+  return { address, abi, block: receipt.blockNumber, tx: receipt.hash };
 }
 
 const poolKeyArgs = (key) => [key.currency0, key.currency1, key.fee, key.tickSpacing, key.hooks];
@@ -113,7 +125,8 @@ const poolKeyArgs = (key) => [key.currency0, key.currency1, key.fee, key.tickSpa
 async function main() {
   const balance = await provider.getBalance(deployer.address);
   log(`deployer ${deployer.address} has ${ethers.formatEther(balance)} ETH`);
-  if (balance < ethers.parseEther("0.05")) throw new Error("Deployer needs at least 0.05 Sepolia ETH");
+  const needed = SEED_WETH + ethers.parseEther("0.04"); // seed + gas for ~12 transactions
+  if (balance < needed) throw new Error(`Deployer needs at least ${ethers.formatEther(needed)} Sepolia ETH (seed liquidity + gas)`);
 
   // Confirm the infrastructure addresses actually hold code on this chain.
   for (const [name, address] of Object.entries({
@@ -122,6 +135,7 @@ async function main() {
     universalRouter: SEPOLIA.universalRouter,
     permit2: SEPOLIA.permit2,
     liquidityHelper: SEPOLIA.poolModifyLiquidityTest,
+    stateView: SEPOLIA.stateView,
   })) {
     const code = await provider.getCode(address);
     if (code === "0x") throw new Error(`${name} at ${address} has no code on chain ${SEPOLIA.chainId}`);
@@ -140,11 +154,8 @@ async function main() {
   const token = new ethers.Contract(state.token.address, tokenAbi, deployer);
   const weth = new ethers.Contract(SEPOLIA.weth, wethAbi, deployer);
   const existingWeth = await weth.balanceOf(deployer.address);
-  const requiredWeth = ethers.parseEther("0.02");
+  const requiredWeth = SEED_WETH;
   if (!state.wrapped || existingWeth < requiredWeth) {
-    const wrappedEth = await provider.getBalance(deployer.address);
-    // Seed with whatever the deployer can spare beyond gas; the pool price is set below.
-    if (wrappedEth < ethers.parseEther("0.02")) throw new Error("Deployer needs at least 0.02 Sepolia ETH for WETH liquidity");
     const toWrap = requiredWeth - existingWeth;
     await wait((await weth.deposit({ value: toWrap })).hash, `wrap ${ethers.formatEther(toWrap)} ETH to WETH`);
     state.wrapped = true;
@@ -194,14 +205,17 @@ async function main() {
     "function modifyLiquidity((address,address,uint24,int24,address) key, (int24,int24,int256,bytes32) params, bytes hookData) external returns (int256)",
   ], deployer);
   if (!state.liquidity) {
-    // Seed both sides at the quoted price so the position is balanced: for a
-    // small amount of WETH, provide `price` times as much PRAWL.
+    // Full-range liquidity around the starting price. For a full-range
+    // position at price P (token1 per token0, both 18 dp), the amounts it
+    // holds are about L / sqrt(P) of token0 and L * sqrt(P) of token1, so the
+    // largest L the balances allow is min(amount0 * sqrtP, amount1 / sqrtP).
+    // (The earlier version used ticks -600..600, which only covers prices
+    // within 6% of 1:1: at 100:1 the pool then had no liquidity at its price.)
     const prawlPerWeth = Number(state.pricePrawlPerWeth ?? process.env.PRAWL_PER_WETH ?? "100");
-    const wethBal = await weth.balanceOf(deployer.address);
-    const seedWeth = wethBal / 2n;
+    const seedWeth = SEED_WETH;
     const seedPrawl = BigInt(Math.floor(Number(seedWeth) * prawlPerWeth));
     if (seedPrawl > (await token.balanceOf(deployer.address))) throw new Error("Not enough PRAWL to seed at the configured price");
-    if (seedWeth === 0n || seedPrawl === 0n) throw new Error("Insufficient balances to seed liquidity");
+    if (seedWeth > (await weth.balanceOf(deployer.address))) throw new Error("Not enough WETH to seed");
     for (const [contract, amount, label] of [[weth, seedWeth, "WETH"], [token, seedPrawl, "PRAWL"]]) {
       if ((await contract.allowance(deployer.address, SEPOLIA.poolModifyLiquidityTest)) < amount) {
         await wait((await contract.approve(SEPOLIA.poolModifyLiquidityTest, ethers.MaxUint256)).hash, `approve ${label} for liquidity helper`);
@@ -209,17 +223,35 @@ async function main() {
     }
     const isWeth0 = currency0 === SEPOLIA.weth.toLowerCase();
     const [amount0, amount1] = isWeth0 ? [seedWeth, seedPrawl] : [seedPrawl, seedWeth];
-
-    // Liquidity must be a real number, not MaxInt256: the position math casts it
-    // to int256/uint128 and MaxInt256 overflows (SafeCastOverflow). For a range
-    // around the current price, the amount of each token a position needs is at
-    // most roughly `amount`, so L = min(amount0, amount1) * 2 is a safe, honest
-    // value that uses about half of each balance at the seeded price.
-    const liquidity = ((amount0 < amount1 ? amount0 : amount1) * 2n) - 1n;
+    const price = isWeth0 ? prawlPerWeth : 1 / prawlPerWeth; // token1 per token0
+    const sqrtP = Math.sqrt(price);
+    // 5% margin so rounding in the position maths never asks for more than is held.
+    const liquidity = BigInt(Math.floor(Math.min(Number(amount0) * sqrtP, Number(amount1) / sqrtP) * 0.95));
     if (liquidity <= 0n) throw new Error("Computed non-positive liquidity; check seeded amounts");
-    await wait((await helper.modifyLiquidity(poolKeyArgs(key), [-600, 600, liquidity, ethers.ZeroHash], "0x")).hash, "seed pool liquidity");
-    log(`seeded ${ethers.formatUnits(amount0, 18)} c0 and ${ethers.formatUnits(amount1, 18)} c1 (L=${liquidity})`);
+    const tickLower = usableTick(MIN_TICK, TICK_SPACING);
+    const tickUpper = usableTick(MAX_TICK, TICK_SPACING);
+    await wait((await helper.modifyLiquidity(poolKeyArgs(key), [tickLower, tickUpper, liquidity, ethers.ZeroHash], "0x")).hash, `seed pool liquidity (full range ${tickLower}..${tickUpper})`);
+    log(`seeded about ${ethers.formatUnits(amount0, 18)} c0 and ${ethers.formatUnits(amount1, 18)} c1 (L=${liquidity})`);
     state.liquidity = true;
+    save();
+  }
+
+  // The pool must now have liquidity AT its current price; otherwise the first
+  // swap would cross an empty range (or fill nothing) and the round would fail.
+  {
+    const poolId = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "address", "uint24", "int24", "address"], poolKeyArgs(key)));
+    const view = new ethers.Contract(SEPOLIA.stateView, [
+      "function getSlot0(bytes32 poolId) view returns (uint160 sqrtPriceX96, int24 tick, uint24 protocolFee, uint24 lpFee)",
+      "function getLiquidity(bytes32 poolId) view returns (uint128)",
+    ], provider);
+    let liquidityNow = 0n, slot0;
+    for (let attempt = 0; attempt < 12 && liquidityNow === 0n; ++attempt) {
+      try { [slot0, liquidityNow] = await Promise.all([view.getSlot0(poolId), view.getLiquidity(poolId)]); } catch { /* node lag: retry */ }
+      if (liquidityNow === 0n) await new Promise((r) => setTimeout(r, 2500));
+    }
+    if (liquidityNow === 0n) throw new Error(`Pool ${poolId} has no active liquidity at its current price`);
+    state.poolId = poolId;
+    log(`pool ${poolId}: tick ${slot0.tick}, active liquidity ${liquidityNow}`);
     save();
   }
 
@@ -231,9 +263,10 @@ async function main() {
     const tokenA = key.currency0 === SEPOLIA.weth.toLowerCase() ? SEPOLIA.weth : state.token.address;
     const wrapperA0 = key.currency0 === SEPOLIA.weth.toLowerCase() ? state.wrapperWeth.address : state.wrapperPrawl.address;
     const wrapperB0 = key.currency0 === SEPOLIA.weth.toLowerCase() ? state.wrapperPrawl.address : state.wrapperWeth.address;
-    // A WETH lot must fit the liquidity left after seeding. The custom token
-    // uses one whole token; WETH uses 0.001 ETH when it is currency0.
-    const defaultLotA = key.currency0 === SEPOLIA.weth.toLowerCase() ? "1000000000000000" : "1000000000000000000";
+    // The lot is defined in WETH terms (a small share of the pool's depth), so
+    // it is the same real size whichever token sorts first. tokenA is currency0.
+    const prawlPerWethNow = Number(state.pricePrawlPerWeth ?? process.env.PRAWL_PER_WETH ?? "100");
+    const defaultLotA = key.currency0 === SEPOLIA.weth.toLowerCase() ? LOT_WETH : BigInt(Math.round(Number(LOT_WETH) * prawlPerWethNow));
     const lotAUnits = BigInt(process.env.PRAWL_LOT_A_UNITS ?? defaultLotA);
     state.oracle = await deploy("PoolLotPriceOracle.sol/PoolLotPriceOracle.json", [
       SEPOLIA.poolManager,
@@ -263,7 +296,7 @@ async function main() {
       REFUND_DELAY,
       state.oracle.address,
       MAX_PRICE_AGE,
-    ], "VeilBatchSwap v4");
+    ], "VeilBatchSwap v5");
     save();
   } else log(`resuming with VeilBatchSwap ${state.batch.address}`);
 
@@ -289,7 +322,7 @@ async function main() {
     throw new Error(`${label} returned no data after retries`);
   };
   const version = await readWithRetry("batch VERSION()", () => batch.VERSION());
-  if (version !== 4n) throw new Error(`unexpected batch version ${version}`);
+  if (version !== 5n) throw new Error(`unexpected batch version ${version}`);
   if ((await batch.cTokenA()).toLowerCase() !== wrapperA.toLowerCase()) throw new Error("batch cTokenA mismatch");
   if ((await batch.cTokenB()).toLowerCase() !== wrapperB.toLowerCase()) throw new Error("batch cTokenB mismatch");
   const onchainKey = await batch.poolKey();
@@ -331,6 +364,8 @@ async function main() {
     liquidityHelper: SEPOLIA.poolModifyLiquidityTest,
     deployer: deployer.address,
     deployedAt: new Date().toISOString(),
+    poolId: state.poolId,
+    txs: { token: state.token.tx, wrapperWeth: state.wrapperWeth.tx, wrapperPrawl: state.wrapperPrawl.tx, oracle: state.oracle.tx, batch: state.batch.tx },
     parameters: { minRoundSeconds: MIN_ROUND_SECONDS, minUsers: MIN_USERS, refundDelay: REFUND_DELAY, maxPriceAge: MAX_PRICE_AGE, tokenSupply: SUPPLY.toString() },
   };
   writeFileSync(resolve(outDir, "sepolia.json"), JSON.stringify(record, null, 2));
