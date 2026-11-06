@@ -4,6 +4,7 @@
  *
  *   /anon-rpc/worker-0x<keccak>.js  <- .local/worker/*-0x<keccak>.js (+ .br/.gz if present)
  *   /tor/bootstrap.zip.zst          <- .local/tor/bootstrap.zip.zst (written by gateway/start.sh)
+ *   /railgun/<file>                 <- .local/railgun/web/<file> (packages/railgun/scripts/build-wasm.sh)
  *
  * It also exposes the local gateway address (.local/gateway/kps-address) to
  * the app as `import.meta.env.VITE_PRAWL_GATEWAY`, unless that is already set.
@@ -19,6 +20,11 @@ export function prawlLocalAssets(root: string): Plugin {
   const workerDir = path.join(local, "worker");
   const snapshot = path.join(local, "tor", "bootstrap.zip.zst");
   const kpsFile = path.join(local, "gateway", "kps-address");
+  const railgunDir = path.join(local, "railgun", "web");
+  const RAILGUN_FILES: Record<string, string> = {
+    "kohaku_railgun_wasm.js": "text/javascript; charset=utf-8",
+    "kohaku_railgun_wasm_bg.wasm": "application/wasm",
+  };
 
   const findWorker = (hash: string): string | undefined => {
     if (!existsSync(workerDir)) return undefined;
@@ -43,6 +49,21 @@ export function prawlLocalAssets(root: string): Plugin {
       if (!variant) return next();
       for (const [k, v] of Object.entries(variant.headers)) res.setHeader(k, v);
       res.end(readFileSync(file + variant.suffix));
+      return;
+    }
+    if (url.startsWith("/railgun/")) {
+      const name = url.slice("/railgun/".length);
+      const type = RAILGUN_FILES[name];
+      const file = path.join(railgunDir, name);
+      if (!type || !existsSync(file)) {
+        res.statusCode = 404;
+        res.end("RAILGUN wasm not built (packages/railgun/scripts/build-wasm.sh)");
+        return;
+      }
+      res.setHeader("content-type", type);
+      res.setHeader("cache-control", "no-cache");
+      res.setHeader("x-content-type-options", "nosniff");
+      res.end(readFileSync(file));
       return;
     }
     if (url === BOOTSTRAP_PATH) {

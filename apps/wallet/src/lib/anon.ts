@@ -71,11 +71,20 @@ const host = new WorkerHost({
   onEvent,
 });
 
+/** HTTPS hosts the wallet may reach (besides JSON-RPC providers): RAILGUN's indexer, PPOI node, circuit artifacts, bundler. */
+export const HTTP_HOSTS = [
+  "rail-squid.squids.live",
+  "ppoi.fdi.network",
+  "raw.githubusercontent.com",
+  "ipfs-lb.com",
+  "public.pimlico.io",
+];
+
 export const anon = new AnonRpcClient({
   host,
   onTrace,
   prewarmChainId: SEPOLIA,
-  httpHosts: [],
+  httpHosts: HTTP_HOSTS,
 });
 
 export const torStatus = {
