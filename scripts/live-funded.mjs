@@ -104,25 +104,30 @@ async function returnAddress() {
   throw new Error("no return address");
 }
 
+/** Withdraw what fits: spendable minus a gas reserve (paid from the private balance) and the 0.25% fee; retry smaller if refused. */
 async function withdrawAll(ret) {
   for (const w of wallets) {
     const avail = await spendable(w);
-    const amt = Math.floor(avail * 0.8 * 1e6) / 1e6; // room for the 0.25% fee and paymaster gas
-    if (amt <= 0) continue;
-    const s = w.page.locator("section", { hasText: "Send privately" });
-    log(`${w.name} withdraws ${amt} ETH to ${ret}`);
-    await s.getByRole("button", { name: "Withdraw to public" }).click();
-    await s.locator("input").nth(0).fill(ret);
-    await s.locator("input").nth(1).fill(String(amt));
-    await s.getByRole("button", { name: "Withdraw", exact: true }).click();
-    const end = Date.now() + 30 * MIN;
-    let t = "";
-    while (Date.now() < end) {
-      t = await actionText(w, "Withdraw to public");
-      if (/Done\.|reverted|failed/.test(t)) break;
-      await sleep(5000);
+    let amt = Math.floor(((avail - 0.0045) / 1.0025) * 1e6) / 1e6;
+    for (let attempt = 0; attempt < 3 && amt > 0; attempt++) {
+      const s = w.page.locator("section", { hasText: "Send privately" });
+      log(`${w.name} withdraws ${amt} ETH to ${ret}`);
+      await s.getByRole("button", { name: "Withdraw to public" }).click();
+      await s.locator("input").nth(0).fill(ret);
+      await s.locator("input").nth(1).fill(String(amt));
+      await s.getByRole("button", { name: "Withdraw", exact: true }).click();
+      const end = Date.now() + 30 * MIN;
+      let t = "";
+      while (Date.now() < end) {
+        t = await actionText(w, "Withdraw to public");
+        if (/Done\.|reverted|failed|Try at most|is spendable/.test(t)) break;
+        await sleep(5000);
+      }
+      log(`${w.name} withdraw result: ${t}`);
+      const fits = t.match(/Try at most ([\d.]+) ETH/)?.[1];
+      if (!fits) break;
+      amt = Math.floor(Number(fits) * 0.95 * 1e6) / 1e6;
     }
-    log(`${w.name} withdraw result: ${t}`);
   }
 }
 
@@ -176,7 +181,7 @@ try {
 
   const B = await wallet("B");
   const actions = A.page.locator("section", { hasText: "Send privately" });
-  const sendAmt = Math.floor((valid / 3) * 1e6) / 1e6;
+  const sendAmt = Math.floor((valid / 2) * 1e6) / 1e6; // B must afford its own withdrawal gas
   log(`A sends ${sendAmt} ETH privately to B`);
   await actions.getByRole("button", { name: "Send privately" }).click();
   await actions.locator("input").nth(0).fill(B.zk);

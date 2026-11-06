@@ -2,7 +2,7 @@ import { useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
 import type { Balance } from "@prawl/railgun";
 import { useWallet } from "../lib/use-wallet";
-import { privateSendEth, unshieldEth } from "../lib/wallet";
+import { maxPrivateAmountWei, privateFeeWei, privateGasEstimateWei, privateSendEth, unshieldEth } from "../lib/wallet";
 
 type Tab = "send" | "unshield";
 
@@ -34,7 +34,15 @@ export function PrivateActions() {
       return setError("Enter an amount in ETH");
     }
     if (wei <= 0n) return setError("Enter an amount above zero");
-    if (wei > available) return setError(`Only ${formatEther(available)} ETH is spendable (PPOI-valid)`);
+    const kind = tab;
+    if (wei + privateFeeWei(kind, wei) + privateGasEstimateWei() > available) {
+      const max = maxPrivateAmountWei(kind, available);
+      return setError(
+        `${formatEther(available)} ETH is spendable, and about ${formatEther(privateGasEstimateWei())} ETH of gas comes out of it` +
+          (kind === "unshield" ? ", plus the 0.25% fee" : "") +
+          (max > 0n ? `. Try at most ${formatEther(max)} ETH.` : "."),
+      );
+    }
     if (tab === "send") {
       if (!/^0zk1[0-9a-z]+$/.test(to)) return setError("Enter a private 0zk address");
       if (to === w.railgunAddress) return setError("That is your own address");
@@ -61,7 +69,8 @@ export function PrivateActions() {
       <p className="mt-2 text-xs text-zinc-500">
         {tab === "send"
           ? "Only you and the recipient see the amount. Gas is paid from your private balance by a fresh one-time account."
-          : "The recipient and amount become public, not who sent it. A 0.25% RAILGUN fee is added."}
+          : "The recipient and amount become public, not who sent it. A 0.25% RAILGUN fee is added."}{" "}
+        About {formatEther(privateGasEstimateWei())} ETH of gas.
       </p>
       <div className="mt-3 flex flex-col gap-2">
         <input

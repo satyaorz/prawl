@@ -41,6 +41,8 @@ export interface WalletState {
   lastSyncMs?: number;
   /** Our operations whose PPOI proofs are still queued (submitted on each sync). */
   poiQueue?: number;
+  /** Gas the paymaster took from the private balance for this wallet's last private operation. */
+  privateGasWei?: bigint;
   /** Last PPOI submission problem, if any. The proofs stay queued. */
   poiError?: string;
   /** Public ETH on the EVM account (the way in and out). */
@@ -261,15 +263,70 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
 }
 
 /**
+ * Gas for a private operation is paid by the RAILGUN paymaster out of the
+ * private balance (WETH), on top of the amount. Measured live on Sepolia:
+ * an unshield used 2.05M gas, about 0.0033 ETH. Until this wallet has
+ * measured its own, assume this much.
+ */
+export const DEFAULT_PRIVATE_GAS_WEI = 3_500_000_000_000_000n;
+/** RAILGUN unshield fee, basis points, added on top of the amount. */
+export const UNSHIELD_FEE_BPS = 25n;
+
+export function privateFeeWei(kind: "send" | "unshield", amountWei: bigint): bigint {
+  return kind === "unshield" ? (amountWei * UNSHIELD_FEE_BPS) / 10_000n : 0n;
+}
+
+/** Gas to expect for the next private operation: the last one measured here, with 20% headroom, or the default. */
+export function privateGasEstimateWei(): bigint {
+  return state.privateGasWei !== undefined ? (state.privateGasWei * 12n) / 10n : DEFAULT_PRIVATE_GAS_WEI;
+}
+
+/** Largest amount that fits in `available` once gas and the fee are taken. */
+export function maxPrivateAmountWei(kind: "send" | "unshield", available: bigint): bigint {
+  const rest = available - privateGasEstimateWei();
+  if (rest <= 0n) return 0n;
+  return kind === "unshield" ? (rest * 10_000n) / (10_000n + UNSHIELD_FEE_BPS) : rest;
+}
+
+function wethTotal(): bigint {
+  return (state.balances ?? []).filter((b) => b.token !== undefined && b.token === state.wrappedBaseToken).reduce((sum, b) => sum + BigInt(b.amount), 0n);
+}
+
+function fmtEth(wei: bigint): string {
+  const s = (wei < 0n ? 0n : wei).toString().padStart(19, "0");
+  return `${s.slice(0, -18)}.${s.slice(-18, -14)}`.replace(/\.?0+$/, "") || "0";
+}
+
+/** kohaku's "Insufficient balance for intent" in words, with what would fit. */
+function explain(kind: "send" | "unshield", e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (!/Insufficient balance for intent/i.test(msg)) return msg;
+  const spendable = (state.balances ?? [])
+    .filter((b) => b.token !== undefined && b.token === state.wrappedBaseToken && b.poiStatus === "Valid")
+    .reduce((sum, b) => sum + BigInt(b.amount), 0n);
+  const max = maxPrivateAmountWei(kind, spendable);
+  return (
+    `Not enough spendable private ETH for this amount plus gas (about ${fmtEth(privateGasEstimateWei())} ETH, paid from your private balance)` +
+    (kind === "unshield" ? " and the 0.25% fee" : "") +
+    (max > 0n ? `. Try at most ${fmtEth(max)} ETH.` : ".")
+  );
+}
+
+/**
  * Private transfer or unshield, as a paymaster-sponsored UserOperation.
  * The UserOperation's sender is a fresh one-time EIP-7702 account, never the
  * wallet's public account: gas comes out of the private balance, so the
  * sender needs no ETH and has no history to link to.
  */
-async function privateOp(kind: "send" | "unshield", run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>): Promise<void> {
+async function privateOp(
+  kind: "send" | "unshield",
+  amountWei: bigint,
+  run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>,
+): Promise<void> {
   if (!keys) throw new Error("wallet is locked");
   const status = (s: string) => update({ action: { kind, status: s } });
   try {
+    const before = wethTotal();
     status("Proving in your browser… (this takes a while)");
     const oneTimeKey = generatePrivateKey();
     const sender = privateKeyToAddress(oneTimeKey);
@@ -279,8 +336,11 @@ async function privateOp(kind: "send" | "unshield", run: (oneTimeKey: Hex) => Pr
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
     update({ action: { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] } });
     await sync();
+    // What the paymaster took: everything that left the balance beyond the amount and fee.
+    const gas = before - wethTotal() - amountWei - privateFeeWei(kind, amountWei);
+    if (tx.status === "success" && gas > 0n && gas < 50_000_000_000_000_000n) update({ privateGasWei: gas });
   } catch (e) {
-    update({ action: { kind, status: kind === "send" ? "Send failed" : "Unshield failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+    update({ action: { kind, status: kind === "send" ? "Send failed" : "Unshield failed", done: true, error: explain(kind, e) } });
   }
 }
 
@@ -288,7 +348,7 @@ async function privateOp(kind: "send" | "unshield", run: (oneTimeKey: Hex) => Pr
 export function privateSendEth(recipient: string, amountWei: bigint): Promise<void> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
-  return privateOp("send", (accountPrivateKey) =>
+  return privateOp("send", amountWei, (accountPrivateKey) =>
     railgun().call("prepareTransfer", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
   );
 }
@@ -297,7 +357,7 @@ export function privateSendEth(recipient: string, amountWei: bigint): Promise<vo
 export function unshieldEth(recipient: Hex, amountWei: bigint): Promise<void> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
-  return privateOp("unshield", (accountPrivateKey) =>
+  return privateOp("unshield", amountWei, (accountPrivateKey) =>
     railgun().call("prepareUnshield", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
   );
 }

@@ -96,3 +96,22 @@ describe("wallet sync", () => {
     expect(wallet.walletState.get().phase).toBe("ready");
   });
 });
+
+describe("private op costs", () => {
+  it("fits amount, 0.25% fee and gas inside the spendable balance", () => {
+    const available = 43_890_000_000_000_000n; // 0.04389 ETH, as in the live run
+    for (const kind of ["send", "unshield"] as const) {
+      const max = wallet.maxPrivateAmountWei(kind, available);
+      expect(max).toBeGreaterThan(0n);
+      expect(max + wallet.privateFeeWei(kind, max) + wallet.privateGasEstimateWei()).toBeLessThanOrEqual(available);
+      // One more gwei-scale step would not fit.
+      expect(max + 1_000_000_000n + wallet.privateFeeWei(kind, max + 1_000_000_000n) + wallet.privateGasEstimateWei()).toBeGreaterThan(available);
+    }
+    expect(wallet.privateFeeWei("send", 10n ** 18n)).toBe(0n);
+    expect(wallet.privateFeeWei("unshield", 10n ** 18n)).toBe(2_500_000_000_000_000n);
+  });
+
+  it("has nothing to offer when gas alone exceeds the balance", () => {
+    expect(wallet.maxPrivateAmountWei("unshield", 1_000_000_000_000_000n)).toBe(0n);
+  });
+});
