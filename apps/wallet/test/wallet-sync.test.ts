@@ -105,6 +105,19 @@ describe("wallet sync", () => {
 });
 
 describe("private op costs", () => {
+  it("matches kohaku's gross_up vectors (railgun-wasm userop.rs tests)", () => {
+    expect(wallet.grossUp(9_975n, 25n)).toBe(9_999n);
+    expect(wallet.grossUp(1n, 25n)).toBe(1n);
+    expect(wallet.grossUp(1_000n, 25n)).toBe(1_002n);
+    expect(wallet.grossUp(310_000_000_000_000_000n, 25n)).toBe(310_776_942_355_889_724n);
+    expect(wallet.grossUp(12_345n, 0n)).toBe(12_345n);
+    for (let a = 1n; a < 3_000n; a += 7n) {
+      const g = wallet.grossUp(a, 25n);
+      expect(g - (g * 25n) / 10_000n).toBeGreaterThanOrEqual(a);
+      expect(g - 1n - ((g - 1n) * 25n) / 10_000n).toBeLessThan(a);
+    }
+  });
+
   it("fits amount, 0.25% fee and gas inside the spendable balance", () => {
     const available = 43_890_000_000_000_000n; // 0.04389 ETH, as in the live run
     for (const kind of ["send", "unshield"] as const) {
@@ -115,7 +128,8 @@ describe("private op costs", () => {
       expect(max + 1_000_000_000n + wallet.privateFeeWei(kind, max + 1_000_000_000n) + wallet.privateGasEstimateWei()).toBeGreaterThan(available);
     }
     expect(wallet.privateFeeWei("send", 10n ** 18n)).toBe(0n);
-    expect(wallet.privateFeeWei("unshield", 10n ** 18n)).toBe(2_500_000_000_000_000n);
+    // kohaku's gross_up: the recipient gets exactly the amount, so the fee is grossed up (not amount * 0.25%).
+    expect(wallet.privateFeeWei("unshield", 10n ** 18n)).toBe(wallet.grossUp(10n ** 18n) - 10n ** 18n);
   });
 
   it("has nothing to offer when gas alone exceeds the balance", () => {

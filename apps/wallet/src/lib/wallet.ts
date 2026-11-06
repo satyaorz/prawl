@@ -46,6 +46,8 @@ export interface WalletState {
   poiQueue?: number;
   /** This wallet's own history, newest first (sealed on disk). */
   activity?: Activity[];
+  /** RAILGUN unshield fee of this chain, basis points (from the chain config). */
+  unshieldFeeBps?: number;
   /** Gas the paymaster took from the private balance for this wallet's last private operation. */
   privateGasWei?: bigint;
   /** Last PPOI submission problem, if any. The proofs stay queued. */
@@ -131,6 +133,7 @@ async function openRailgun(opts: StartOptions): Promise<void> {
     syncedBlock: BigInt(opened.syncedBlock),
     deploymentBlock: BigInt(deployment.deploymentBlock),
     wrappedBaseToken: deployment.wrappedBaseToken.toLowerCase(),
+    unshieldFeeBps: deployment.unshieldFeeBps,
     restored: opened.restored,
     fullScan: opened.fullScan,
     snapshotBlock: opened.snapshotBlock ? BigInt(opened.snapshotBlock) : undefined,
@@ -311,11 +314,26 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
  * measured its own, assume this much.
  */
 export const DEFAULT_PRIVATE_GAS_WEI = 3_500_000_000_000_000n;
-/** RAILGUN unshield fee, basis points, added on top of the amount. */
+/** RAILGUN unshield fee in basis points when the chain config has not told us (Sepolia and mainnet: 25). */
 export const UNSHIELD_FEE_BPS = 25n;
+const feeBps = (): bigint => BigInt(state.unshieldFeeBps ?? Number(UNSHIELD_FEE_BPS));
+
+/**
+ * kohaku's gross_up: the smallest gross whose net after RAILGUN's fee,
+ * gross - floor(gross * bps / 10000), is at least `amount`. The recipient gets
+ * exactly `amount`; the fee is gross - amount.
+ */
+export function grossUp(amount: bigint, bps: bigint = feeBps()): bigint {
+  if (amount <= 0n) return 0n;
+  const net = (g: bigint) => g - (g * bps) / 10_000n;
+  let g = (amount * 10_000n + (10_000n - bps) - 1n) / (10_000n - bps);
+  while (g > 1n && net(g - 1n) >= amount) g -= 1n;
+  while (net(g) < amount) g += 1n;
+  return g;
+}
 
 export function privateFeeWei(kind: "send" | "unshield", amountWei: bigint): bigint {
-  return kind === "unshield" ? (amountWei * UNSHIELD_FEE_BPS) / 10_000n : 0n;
+  return kind === "unshield" ? grossUp(amountWei) - amountWei : 0n;
 }
 
 /** Gas to expect for the next private operation: the last one measured here, with 20% headroom, or the default. */
@@ -323,11 +341,16 @@ export function privateGasEstimateWei(): bigint {
   return state.privateGasWei !== undefined ? (state.privateGasWei * 12n) / 10n : DEFAULT_PRIVATE_GAS_WEI;
 }
 
+/** A measured gas outside this band is treated as noise (a note arrived or left mid-operation) and ignored. */
+const GAS_MEASURE_MIN = DEFAULT_PRIVATE_GAS_WEI / 2n;
+const GAS_MEASURE_MAX = DEFAULT_PRIVATE_GAS_WEI * 3n;
+
 /** Largest amount that fits in `available` once gas and the fee are taken. */
 export function maxPrivateAmountWei(kind: "send" | "unshield", available: bigint): bigint {
   const rest = available - privateGasEstimateWei();
   if (rest <= 0n) return 0n;
-  return kind === "unshield" ? (rest * 10_000n) / (10_000n + UNSHIELD_FEE_BPS) : rest;
+  // The net of a gross of `rest`: grossUp of it is at most `rest`.
+  return kind === "unshield" ? rest - (rest * feeBps()) / 10_000n : rest;
 }
 
 function wethTotal(): bigint {
@@ -382,7 +405,7 @@ async function privateOp(
     await sync();
     // What the paymaster took: everything that left the balance beyond the amount and fee.
     const gas = before - wethTotal() - amountWei - privateFeeWei(kind, amountWei);
-    if (tx.status === "success" && gas > 0n && gas < 50_000_000_000_000_000n) update({ privateGasWei: gas });
+    if (tx.status === "success" && gas >= GAS_MEASURE_MIN && gas <= GAS_MEASURE_MAX) update({ privateGasWei: gas });
   } catch (e) {
     update({ action: { kind, status: kind === "send" ? "Send failed" : "Unshield failed", done: true, error: explain(kind, e) } });
   }
