@@ -360,8 +360,9 @@ async function main() {
     pool: { currency0, currency1, fee: POOL_FEE, tickSpacing: TICK_SPACING, hooks: ethers.ZeroAddress },
     codeHashes: {
       batch: await hashOf(state.batch.address),
-      tokenA: await hashOf(SEPOLIA.weth),
-      tokenB: await hashOf(state.token.address),
+      // The batch's positions: tokenA is currency0, whichever asset that is (PRAWL sorts below WETH on this chain).
+      tokenA: await hashOf(currency0),
+      tokenB: await hashOf(currency1),
       wrapperA: await hashOf(wrapperA),
       wrapperB: await hashOf(wrapperB),
       oracle: await hashOf(state.oracle.address),

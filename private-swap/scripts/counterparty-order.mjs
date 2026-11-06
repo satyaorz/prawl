@@ -61,8 +61,9 @@ const [lotA] = await oracle.latestLotPrice();
 const units = lotA * lots;
 const instance = await sdk.createInstance({ ...sdk.SepoliaConfig, network: process.env.SEPOLIA_RPC_URL });
 
-// Fund only if this account has no vault balance of A yet (a funded balance is enough for a few lots).
-if ((await batch.fundedBalance(me.address, 0)) === ethers.ZeroHash) {
+// Always top the vault up by the order's size: an earlier round may have used or exited the balance,
+// and an order larger than the vault is silently zeroed (by design), which would make a no-op round.
+{
   const underlying = units * (await wrapper.rate());
   if ((await token.balanceOf(me.address)) < underlying) throw new Error(`counterparty needs ${underlying} PRAWL wei; it holds ${await token.balanceOf(me.address)}`);
   if ((await token.allowance(me.address, wrapper.target)) < underlying) await (await token.approve(wrapper.target, underlying)).wait();

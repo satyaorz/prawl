@@ -8,7 +8,7 @@ import { SEPOLIA } from "@prawl/anon-rpc";
 import { createPasskey, deriveReclaimKey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
 import type { Balance, Hex } from "@prawl/railgun";
 import { generatePrivateKey, privateKeyToAccount, privateKeyToAddress } from "viem/accounts";
-import { getAddress, keccak256, toHex } from "viem";
+import { encodeFunctionData, getAddress, keccak256, parseAbi, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
@@ -76,16 +76,18 @@ let activityLog: ActivityLog | undefined;
  * must not touch the screen or another wallet's history after the change.
  */
 let epoch = 0;
-let swapService: SwapService | undefined;
-let swapOpening: Promise<SwapService> | undefined;
+/** The swap session of the main account is keyed by this; swap accounts are keyed by their derivation index. */
+const MAIN_SWAP_ACCOUNT = -1;
+const swapServices = new Map<number, SwapService>();
+const swapOpenings = new Map<number, Promise<SwapService>>();
 
-/** Close the FHE worker and forget its decryption session on wallet changes. */
+/** Close every FHE worker and forget their decryption sessions on wallet changes. */
 function closeSwapSession(): void {
-  swapService?.close();
-  swapService = undefined;
-  const opening = swapOpening;
-  swapOpening = undefined;
-  if (opening) void opening.then((service) => service.close(), () => undefined);
+  for (const service of swapServices.values()) service.close();
+  swapServices.clear();
+  const openings = [...swapOpenings.values()];
+  swapOpenings.clear();
+  for (const opening of openings) void opening.then((service) => service.close(), () => undefined);
 }
 
 /** A deployment is supplied at build time; the old mock-token pool is incompatible. */
@@ -93,10 +95,23 @@ export function swapConfigured(): boolean {
   return !!import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT;
 }
 
-export async function openSwapSession(): Promise<SwapService> {
+/** The key of a swap participant: the main account, or a fresh account derived from the passkey (never the main one). */
+async function swapKey(accountIndex: number): Promise<Hex> {
+  if (!keys) throw new Error("Wallet was locked or changed");
+  return accountIndex === MAIN_SWAP_ACCOUNT ? keys.evmAccount : deriveReclaimKey(keys.reclaimSeed, accountIndex);
+}
+
+/**
+ * Open the confidential swap as the main account (default) or as one of this wallet's swap accounts.
+ * A swap account is a fresh address derived from the passkey: funded from the private balance, it has
+ * no on-chain link to the main account, and it talks to Tor and to the Zama gateway on a circuit of its own.
+ */
+export async function openSwapSession(accountIndex: number = MAIN_SWAP_ACCOUNT): Promise<SwapService> {
   if (!keys || !state.evmAddress || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
-  if (swapService) return swapService;
-  if (swapOpening) return swapOpening;
+  const existing = swapServices.get(accountIndex);
+  if (existing) return existing;
+  const pending = swapOpenings.get(accountIndex);
+  if (pending) return pending;
   const raw = import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT as string | undefined;
   if (!raw) throw new Error("No WETH/custom-token swap deployment is configured");
   let manifest: unknown;
@@ -108,27 +123,30 @@ export async function openSwapSession(): Promise<SwapService> {
     if (!keys || myEpoch !== epoch) throw new Error("Wallet was locked or changed");
     return keys;
   };
-  const opening = SwapService.open(anon, getAddress(state.evmAddress), config, {
+  const account = getAddress(privateKeyToAddress(await swapKey(accountIndex)));
+  const opening = SwapService.open(anon, account, config, {
     async signDecrypt(request, contracts) {
-      const key = ensureOpen().evmAccount;
+      ensureOpen();
+      const key = await swapKey(accountIndex);
       const typedData = validateDecryptAuthorization(request, contracts);
       const signature = await privateKeyToAccount(key).signTypedData(typedData);
       ensureOpen();
       return signature;
     },
     async send(calls, onStatus) {
-      const key = ensureOpen().evmAccount;
+      ensureOpen();
+      const key = await swapKey(accountIndex);
       const receipts = await sendCalls(anon, config.chainId, key, calls, onStatus, ensureOpen);
       ensureOpen();
       return receipts;
     },
   }).then((service) => {
     if (myEpoch !== epoch || !keys) { service.close(); throw new Error("Wallet was locked or changed"); }
-    swapService = service;
+    swapServices.set(accountIndex, service);
     return service;
   });
-  swapOpening = opening;
-  try { return await opening; } finally { if (swapOpening === opening) swapOpening = undefined; }
+  swapOpenings.set(accountIndex, opening);
+  try { return await opening; } finally { if (swapOpenings.get(accountIndex) === opening) swapOpenings.delete(accountIndex); }
 }
 
 /** Set the action result only if the wallet it belongs to is still the open one. */
@@ -508,6 +526,105 @@ export async function shieldFromReclaim(index: number): Promise<void> {
     updateAction(myEpoch, { ...failedAction("Shield failed", e), kind });
     if (e instanceof UnconfirmedError) void sync();
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Swap accounts: a fresh account per private swap, so the swap is not tied to the main public address. It is one of the passkey-derived
+// accounts used for offline-cash reclaim (same counter, so an index is never reused). A restored wallet does not know which indices it
+// used; reclaimAccounts() scans a window and shows their balances.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+export interface SwapAccount {
+  index: number;
+  address: Hex;
+}
+
+const swapAccountsKey = (): string => `swap:accounts:${state.evmAddress ?? "none"}`;
+
+/** The swap accounts this wallet has created, oldest first. */
+export async function swapAccounts(): Promise<SwapAccount[]> {
+  return (await store.get<SwapAccount[]>(swapAccountsKey())) ?? [];
+}
+
+/** Reserve a fresh swap account. Nothing is sent: it has no balance and no on-chain trace yet. */
+export async function newSwapAccount(): Promise<SwapAccount> {
+  const account = await nextReclaimAddress();
+  await store.set(swapAccountsKey(), [...(await swapAccounts()), account]);
+  return account;
+}
+
+/** Gas the swap account keeps for its own transactions (wrap, fund, order, advance, exit): FHE calls cost up to ~3M gas each. */
+export const SWAP_ACCOUNT_GAS_WEI = 3_000_000_000_000_000n;
+
+const wethAbi = parseAbi(["function deposit() payable", "function withdraw(uint256)"]);
+
+/** A token balance read over the account's own Tor circuit (not the shared public one), like the rest of a swap account's traffic. */
+async function accountTokenBalance(token: Hex, owner: Hex): Promise<bigint> {
+  const data = `0x70a08231${owner.slice(2).toLowerCase().padStart(64, "0")}`;
+  const out = await anon.read(anon.identities.account(owner), state.chainId, "eth_call", [{ to: token, data }, "latest"]);
+  if (typeof out !== "string" || !/^0x[0-9a-fA-F]*$/.test(out)) throw new Error("Invalid token balance response");
+  return out === "0x" ? 0n : BigInt(out);
+}
+
+/**
+ * Fund a swap account from the PRIVATE balance: the amount (plus gas) is unshielded straight to it, so no
+ * transaction connects it to the main account, then it turns the ETH into WETH by itself. The user pays the
+ * usual unshield fee out of the private balance. Returns whether everything completed.
+ */
+export async function fundSwapAccount(index: number, wethWei: bigint, onStatus?: (status: string) => void): Promise<boolean> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const myEpoch = epoch;
+  const weth = state.wrappedBaseToken as Hex;
+  const key = await swapKey(index);
+  const address = privateKeyToAddress(key);
+  const total = wethWei + SWAP_ACCOUNT_GAS_WEI;
+  onStatus?.("Moving the amount from your private balance to a fresh swap account…");
+  if (!(await unshieldEth(address, total))) return false;
+  // Public nodes can lag a block behind: wait until the account really shows the ETH.
+  let balance = 0n;
+  for (let i = 0; i < 30 && balance < total; i++) {
+    balance = await publicBalance(anon, state.chainId, address).catch(() => 0n);
+    if (balance < total) await new Promise((r) => setTimeout(r, 4000));
+    if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+  }
+  if (balance < total) throw new Error("The swap account has not received the funds yet. Try again in a minute.");
+  onStatus?.("The swap account is turning the ETH into WETH…");
+  const txs = await sendCalls(anon, state.chainId, key, [{ to: weth, value: wethWei, data: encodeFunctionData({ abi: wethAbi, functionName: "deposit" }) }], onStatus, () => {
+    if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+  });
+  return txs.every((t) => t.status === "success");
+}
+
+/** WETH and ETH a swap account holds, for display. */
+export async function swapAccountBalances(index: number): Promise<{ address: Hex; ethWei: bigint; wethWei: bigint }> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const address = privateKeyToAddress(await swapKey(index));
+  const [ethWei, wethWei] = await Promise.all([
+    publicBalance(anon, state.chainId, address),
+    accountTokenBalance(state.wrappedBaseToken as Hex, address),
+  ]);
+  return { address, ethWei, wethWei };
+}
+
+/**
+ * Return a swap account's WETH to the private balance: unwrap it to ETH there, then shield the ETH (minus the gas
+ * the shield transaction needs), signed by that account. Anything above dust is shielded; the rest stays for gas.
+ */
+export async function shieldBackFromSwapAccount(index: number, onStatus?: (status: string) => void): Promise<void> {
+  if (!keys || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  const myEpoch = epoch;
+  const key = await swapKey(index);
+  const address = privateKeyToAddress(key);
+  const weth = await accountTokenBalance(state.wrappedBaseToken as Hex, address);
+  if (weth > 0n) {
+    onStatus?.("Unwrapping WETH in the swap account…");
+    const txs = await sendCalls(anon, state.chainId, key, [{ to: state.wrappedBaseToken as Hex, value: 0n, data: encodeFunctionData({ abi: wethAbi, functionName: "withdraw", args: [weth] }) }], onStatus, () => {
+      if (myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+    });
+    if (!txs.every((t) => t.status === "success")) throw new Error("Unwrapping reverted");
+  }
+  onStatus?.("Shielding it back into your private balance…");
+  await shieldFromReclaim(index);
 }
 
 /**
