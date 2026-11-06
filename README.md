@@ -12,7 +12,7 @@ A privacy-first Ethereum wallet for the browser.
 |---|---|
 | Create | A passkey derives the RAILGUN spending/viewing keys, the public account key and a storage key (HKDF). A new wallet opens from our public pool snapshot in about 20 s over Tor. |
 | Fund | Send Sepolia ETH to the public account, then **Shield ETH** into the private balance. |
-| Settle | New shields wait for the PPOI check (about an hour). The wallet refreshes every minute and shows each note's PPOI state. |
+| Settle | New shields wait for the PPOI check (2–4 minutes measured on Sepolia; up to an hour on mainnet). The wallet refreshes every minute and shows each note's PPOI state. |
 | Pay privately | Private send to a `0zk` address as an ERC-4337 UserOperation from a fresh one-time EIP-7702 sender. The RAILGUN paymaster takes gas from the private balance, so the sender has no ETH and no history. Queued PPOI proofs are submitted on the following syncs. |
 | Exit | Withdraw to a public address as native ETH (or WETH), with warnings when that would link you (own account, right after a shield). Gas comes from the private balance; the wallet checks it fits before proving. |
 | Offline cash | Load coins minted on the Prawl Android app into the offline escrow, and cash out phone-signed redemptions, from links or QR codes (`#/offline/load?d=…`, `#/offline/redeem?d=…`). Simulated before sending; escrow errors are named. |
