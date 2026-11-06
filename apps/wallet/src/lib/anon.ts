@@ -3,8 +3,10 @@
  * goes through it, over Tor, on a circuit chosen by the identity it names.
  *
  * Boot: our own Tor snapshot from /tor/bootstrap.zip.zst, the keep-alive
- * worker build (fork-v3) from our own origin, and our own gateway when
- * gateway/start.sh has run (VITE_PRAWL_GATEWAY), else the public demo one.
+ * worker build (fork-v3) from our own origin, and a gateway chosen in this
+ * order: one the user confirmed from a `?gateway=` link (remembered in this
+ * browser), the build's VITE_PRAWL_GATEWAY (our own, when gateway/start.sh
+ * has run), else the public demo one.
  */
 import { AnonRpcClient, WorkerHost, loadOwnBootstrap, SEPOLIA, type HostEvent, type Trace, type WorkerChoice } from "@prawl/anon-rpc";
 import { DEMO_GATEWAY, harnessWorkerFactory } from "@prawl/anon-rpc/harness-worker";
@@ -15,6 +17,8 @@ export interface TorStatus {
   phase: TorPhase;
   gateway: string;
   ownGateway: boolean;
+  /** Picked by the user from a ?gateway= link rather than built in. */
+  chosenGateway: boolean;
   worker: string;
   bootMs?: number;
   bootstrapBytes?: number;
@@ -25,13 +29,49 @@ export interface TorStatus {
 
 const MAX_TRACES = 200;
 const env = import.meta.env as Record<string, string | undefined>;
-const gateway = env.VITE_PRAWL_GATEWAY || DEMO_GATEWAY;
+const GATEWAY_KEY = "prawl:gateway";
+/** tor-js gateway address: IPv4, port, then the multihash of its certificate. */
+export const GATEWAY_RE = /^(\d{1,3}\.){3}\d{1,3}:\d{1,5}:[A-Za-z0-9_-]{20,}$/;
+const buildGateway = env.VITE_PRAWL_GATEWAY || DEMO_GATEWAY;
+
+/**
+ * A gateway sees the user's IP address (never what goes over Tor), so a link
+ * can only propose one: the user must confirm it. `?gateway=default` forgets
+ * the choice. The query is removed from the address bar either way.
+ */
+function chooseGateway(): string {
+  if (typeof window === "undefined") return buildGateway;
+  try {
+    const url = new URL(window.location.href);
+    const proposed = url.searchParams.get("gateway");
+    if (proposed !== null) {
+      if (proposed === "" || proposed === "default") window.localStorage.removeItem(GATEWAY_KEY);
+      else if (
+        GATEWAY_RE.test(proposed) &&
+        window.confirm(
+          `Connect to Tor through the gateway ${proposed}?\n\nA gateway sees your IP address, not what you do over Tor. Only accept a gateway you run or trust.`,
+        )
+      )
+        window.localStorage.setItem(GATEWAY_KEY, proposed);
+      url.searchParams.delete("gateway");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+    const saved = window.localStorage.getItem(GATEWAY_KEY);
+    if (saved && GATEWAY_RE.test(saved)) return saved;
+  } catch {
+    // Storage blocked: use the build's gateway.
+  }
+  return buildGateway;
+}
+
+const gateway = chooseGateway();
 const worker = (env.VITE_PRAWL_WORKER as WorkerChoice | undefined) ?? "fork-v3";
 
 let status: TorStatus = {
   phase: "idle",
   gateway,
   ownGateway: gateway !== DEMO_GATEWAY,
+  chosenGateway: gateway !== buildGateway,
   worker: typeof worker === "string" ? worker : "custom",
   generation: 0,
   traces: [],

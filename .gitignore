@@ -10,3 +10,4 @@ coverage/
 .env.*
 !.env.example
 apps/wallet/dist-phone/
+apps/wallet/dist-web/

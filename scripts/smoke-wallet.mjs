@@ -22,13 +22,13 @@ try {
   await cdp.send("WebAuthn.addVirtualAuthenticator", {
     options: { protocol: "ctap2", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, hasPrf: true, automaticPresenceSimulation: true },
   });
+  page.on("dialog", (d) => void d.accept()); // passkey-free prompts: gateway confirmation, rescan
   page.on("pageerror", (e) => console.log(`[${s()}] pageerror`, e.message));
   page.on("console", (m) => ["error", "warning"].includes(m.type()) && console.log(`[${s()}] console.${m.type()}`, m.text().slice(0, 300)));
   await page.goto(url);
   await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 120_000 });
   console.log(`[${s()}] tor ready`);
   const card = () => page.locator("section").first();
-  page.on("dialog", (d) => void d.accept());
   async function openAndSync(button, what) {
     const t = Date.now();
     await page.getByRole("button", { name: button }).click();

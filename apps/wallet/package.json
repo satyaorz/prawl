@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "build:web": "tsc -p tsconfig.json && VITE_PRAWL_GATEWAY=${VITE_PRAWL_GATEWAY:-152.236.3.22:12298:uEiCH0VdbhryzJcMtCfB0vLA4sOvHdQ4hq5w7CopcwU59bQ} vite build --outDir dist-web && node scripts/export-static.mjs dist-web"
   },
   "dependencies": {
     "@anon-rpc/browser-harness": "0.4.0",

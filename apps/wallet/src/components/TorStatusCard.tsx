@@ -27,7 +27,12 @@ export function TorStatusCard() {
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
         <dt className="text-zinc-500">Gateway</dt>
         <dd className="font-mono text-zinc-300">
-          {tor.ownGateway ? "own (this laptop)" : "public demo"} · {short(tor.gateway, 14)}
+          {tor.chosenGateway ? "chosen by you" : tor.ownGateway ? "own" : "public demo"} · {short(tor.gateway, 14)}
+          {tor.chosenGateway && (
+            <a href="?gateway=default" className="ml-2 text-zinc-500 underline hover:text-zinc-300">
+              reset
+            </a>
+          )}
         </dd>
         <dt className="text-zinc-500">Worker</dt>
         <dd className="font-mono text-zinc-300">{tor.worker}</dd>
