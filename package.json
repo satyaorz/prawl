@@ -1,0 +1,13 @@
+{
+  "name": "prawl",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "scripts": {
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "dev": "pnpm --filter @prawl/wallet dev",
+    "build": "pnpm -r build"
+  },
+  "engines": { "node": ">=22" }
+}
