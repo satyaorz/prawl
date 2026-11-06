@@ -6,7 +6,8 @@
 // Both wallets use virtual passkeys that live only in this browser session: if the
 // process dies, what is still shielded is stuck. Use small testnet amounts.
 //
-// Usage: CHROME=... node scripts/live-funded.mjs <url> <workdir>
+// SKIP_SEND=1 skips wallet B: shield, PPOI, then withdraw (as native ETH, the default).
+// Usage: CHROME=... [SKIP_SEND=1] node scripts/live-funded.mjs <url> <workdir>
 //   <workdir>/address-a.txt   written: A's public account (fund it)
 //   <workdir>/return.txt      read when needed: 0x address for the final withdrawal
 //   <workdir>/control.txt     optional command, consumed when read:
@@ -179,6 +180,11 @@ try {
   }, 360 * MIN, 60_000);
   log(`A spendable: ${valid} ETH`);
 
+  if (process.env.SKIP_SEND) {
+    await withdrawAll(await returnAddress());
+    log("LIVE TEST DONE");
+    process.exit(0);
+  }
   const B = await wallet("B");
   const actions = A.page.locator("section", { hasText: "Send privately" });
   const sendAmt = Math.floor((valid / 2) * 1e6) / 1e6; // B must afford its own withdrawal gas

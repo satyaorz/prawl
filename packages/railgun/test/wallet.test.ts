@@ -79,6 +79,22 @@ describe("RailgunWallet", () => {
     const t = await wallet.prepareTransfer({ recipient: "0zk1bob", token: "0x1234", amount: 7n, accountPrivateKey: `0x${"33".repeat(32)}`, bundlerUrl: "https://b" });
     expect(t.userOpHash).toBe("0xabc");
     const u = await wallet.prepareUnshield({ recipient: "0x1234", token: "0x1234", amount: 8n, accountPrivateKey: `0x${"33".repeat(32)}`, bundlerUrl: "https://b" });
+    const native = await wallet.prepareUnshield({
+      recipient: "0x00000000000000000000000000000000000000c3",
+      token: "0x1234",
+      amount: 5n,
+      unwrapNative: true,
+      tailCalls: [{ target: "0x00000000000000000000000000000000000000d4", value: 5_000_000_000_000_000_000n, data: "0x" }],
+      accountPrivateKey: `0x${"33".repeat(32)}`,
+      bundlerUrl: "https://b",
+    });
+    // kohaku reads tail calls as JSON {target, value (decimal string), data}.
+    expect(native.signed).toEqual({
+      amount: "5",
+      recipient: "0x00000000000000000000000000000000000000c3",
+      unwrap: true,
+      tail: [{ target: "0x00000000000000000000000000000000000000d4", value: "5000000000000000000", data: "0x" }],
+    });
     expect(u.userOpHash).toBe("0xdef");
   });
 

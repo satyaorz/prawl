@@ -76,8 +76,8 @@ export function fakeWasm(opts: { syncDelayMs?: number } = {}) {
     prepareTransferUserOpJson(_r: WasmRailgunAddress, _t: string, amount: bigint) {
       return this.#hold(() => JSON.stringify({ signed: { amount: amount.toString() }, userOpHash: "0xabc" }));
     }
-    prepareUnshieldUserOpJson(_r: string, _t: string, amount: bigint) {
-      return this.#hold(() => JSON.stringify({ signed: { amount: amount.toString() }, userOpHash: "0xdef" }));
+    prepareUnshieldUserOpJson(recipient: string, _t: string, amount: bigint, unwrap: boolean, tail: string) {
+      return this.#hold(() => JSON.stringify({ signed: { amount: amount.toString(), recipient, unwrap, tail: JSON.parse(tail) }, userOpHash: "0xdef" }));
     }
   }
 

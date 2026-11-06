@@ -18,6 +18,7 @@ export function PrivateActions() {
   const [tab, setTab] = useState<Tab>("send");
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("");
+  const [asWeth, setAsWeth] = useState(false);
   const [error, setError] = useState<string>();
   if (!w.railgunAddress) return null;
 
@@ -52,7 +53,7 @@ export function PrivateActions() {
       if (w.evmAddress && to.toLowerCase() === w.evmAddress.toLowerCase()) {
         return setError("Withdrawing to the account you shielded from links the two. Use a fresh address.");
       }
-      void unshieldEth(to, wei);
+      void unshieldEth(to, wei, { asWeth });
     }
   }
 
@@ -97,6 +98,12 @@ export function PrivateActions() {
           </button>
         </div>
       </div>
+      {tab === "unshield" && (
+        <label className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
+          <input type="checkbox" checked={asWeth} onChange={(e) => setAsWeth(e.target.checked)} />
+          Receive as WETH instead of ETH (slightly cheaper)
+        </label>
+      )}
       {tab === "unshield" && lastShield && (
         <p className="mt-2 text-xs text-amber-300">
           You shielded moments ago. Withdrawing soon after, or the same amount, makes the two easy to match. Waiting longer and using different amounts helps.

@@ -353,11 +353,29 @@ export function privateSendEth(recipient: string, amountWei: bigint): Promise<vo
   );
 }
 
-/** Withdraw private ETH to a public address (as WETH; the 0.25% RAILGUN fee is added on top). */
-export function unshieldEth(recipient: Hex, amountWei: bigint): Promise<void> {
+/**
+ * Withdraw private ETH to a public address; the 0.25% RAILGUN fee is added on top.
+ * As native ETH (default): WETH is unshielded to the one-time account, unwrapped
+ * there, and the ETH forwarded to the recipient in the same UserOperation.
+ * With `asWeth`, the recipient gets WETH directly (cheaper).
+ */
+export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: boolean } = {}): Promise<void> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
   return privateOp("unshield", amountWei, (accountPrivateKey) =>
-    railgun().call("prepareUnshield", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
+    railgun().call(
+      "prepareUnshield",
+      opts.asWeth
+        ? { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }
+        : {
+            recipient: privateKeyToAddress(accountPrivateKey),
+            token: weth,
+            amount: amountWei.toString(),
+            unwrapNative: true,
+            tailCalls: [{ target: recipient, value: amountWei.toString(), data: "0x" }],
+            accountPrivateKey,
+            bundlerUrl: BUNDLER_URL,
+          },
+    ),
   );
 }

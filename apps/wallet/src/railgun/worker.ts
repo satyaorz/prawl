@@ -224,7 +224,12 @@ const ops: { [K in keyof Ops]: (args: never) => Promise<ReturnType<Ops[K]>> } = 
 
   async prepareUnshield(args: ArgsOf<"prepareUnshield">) {
     const w = need();
-    const out = await w.prepareUnshield({ ...args, amount: BigInt(args.amount) });
+    const { tailCalls, ...rest } = args;
+    const out = await w.prepareUnshield({
+      ...rest,
+      amount: BigInt(args.amount),
+      ...(tailCalls ? { tailCalls: tailCalls.map((c) => ({ ...c, value: BigInt(c.value) })) } : {}),
+    });
     await saveCheckpoint(await w.checkpoint());
     return out;
   },

@@ -248,12 +248,16 @@ export class RailgunWallet {
     recipient: Hex;
     token: Hex;
     amount: bigint;
+    /** Unwrap WETH to ETH. The recipient must then be the one-time account itself. */
     unwrapNative?: boolean;
+    /** Calls the one-time account makes after the unshield (and unwrap), e.g. forwarding the ETH. */
+    tailCalls?: ReadonlyArray<{ target: Hex; value: bigint; data: Hex }>;
     accountPrivateKey: Hex;
     bundlerUrl: string;
   }): Promise<PreparedUserOp> {
+    const tail = JSON.stringify((args.tailCalls ?? []).map((c) => ({ target: c.target, value: c.value.toString(), data: c.data })));
     const raw = await this.#run((s) =>
-      s.prepareUnshieldUserOpJson(args.recipient, args.token, args.amount, args.unwrapNative ?? false, "[]", args.accountPrivateKey, args.bundlerUrl),
+      s.prepareUnshieldUserOpJson(args.recipient, args.token, args.amount, args.unwrapNative ?? false, tail, args.accountPrivateKey, args.bundlerUrl),
     );
     return JSON.parse(raw) as PreparedUserOp;
   }

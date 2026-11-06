@@ -48,7 +48,15 @@ export interface Ops {
   notes(): Note[];
   buildShield(args: { recipient: string; items: Array<{ token: "native" | Hex; amount: string }> }): Call[];
   prepareTransfer(args: { recipient: string; token: Hex; amount: string; memo?: string; accountPrivateKey: Hex; bundlerUrl: string }): PreparedUserOp;
-  prepareUnshield(args: { recipient: Hex; token: Hex; amount: string; unwrapNative?: boolean; accountPrivateKey: Hex; bundlerUrl: string }): PreparedUserOp;
+  prepareUnshield(args: {
+    recipient: Hex;
+    token: Hex;
+    amount: string;
+    unwrapNative?: boolean;
+    tailCalls?: Array<{ target: Hex; value: string; data: Hex }>;
+    accountPrivateKey: Hex;
+    bundlerUrl: string;
+  }): PreparedUserOp;
   close(): void;
 }
 
