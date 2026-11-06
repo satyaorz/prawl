@@ -33,7 +33,7 @@ pool holding real value.
 ## Testing
 
 ```bash
-npm ci
+npm ci --ignore-scripts   # scripts off: a git dependency's install script needs rimraf and fails otherwise
 npm run setup:harness   # one-time: Uniswap v4 harness dependencies
 npm run compile
 npm test                # FHEVM mock network: 24 lifecycle tests + 3 real-pool tests

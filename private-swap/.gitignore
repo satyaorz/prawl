@@ -6,4 +6,3 @@ deployments/
 node_modules
 lib/forge-std
 lib/solmate
-package-lock.json
