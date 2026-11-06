@@ -4,7 +4,7 @@ import { formatEther } from "viem";
 import { anon } from "../lib/anon";
 import { useWallet } from "../lib/use-wallet";
 import { buildShieldTarget, clearFinishedAction, offlineLoad, offlineLoadPrivate, offlineRedeem } from "../lib/wallet";
-import { coinStatus, type CoinStatus } from "../offline/escrow";
+import { coinStatus, privateLoadProblems, type CoinStatus } from "../offline/escrow";
 import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, type OfflinePayload } from "../offline/payload";
 import { parseEther } from "viem";
 import { QrScanner } from "./QrScanner";
@@ -102,6 +102,8 @@ export function OfflineCard() {
   const [qr, setQr] = useState<string>();
   const [status, setStatus] = useState<CoinStatus | { error: string }>();
   const [ownCoin, setOwnCoin] = useState(false);
+  /** Read-only checks of a private load against the escrow (deposit address, reservation, expiry), run when it opens. */
+  const [chainProblems, setChainProblems] = useState<string[]>();
 
   const take = useCallback((t: string) => {
     setError(undefined);
@@ -139,6 +141,18 @@ export function OfflineCard() {
   useEffect(refreshStatus, [refreshStatus]);
 
   useEffect(() => {
+    setChainProblems(undefined);
+    if (payload?.t !== "load-private" || configProblems(payload).length > 0) return;
+    let live = true;
+    privateLoadProblems(anon, payload)
+      .then((r) => live && setChainProblems(r.problems))
+      .catch((e: unknown) => live && setChainProblems([`could not check the coin over Tor: ${e instanceof Error ? e.message : String(e)}`]));
+    return () => {
+      live = false;
+    };
+  }, [payload]);
+
+  useEffect(() => {
     if (!showDepositor || !w.evmAddress) return setQr(undefined);
     void QRCode.toDataURL(depositorUri(w.evmAddress), { margin: 1, width: 220, color: { dark: "#09090b", light: "#fafafa" } }).then(setQr);
   }, [showDepositor, w.evmAddress]);
@@ -152,7 +166,8 @@ export function OfflineCard() {
   if (!payload && !w.railgunAddress) return null;
   const running = !!w.action && !w.action.done;
   const unlocked = !!w.evmAddress && w.phase !== "locked";
-  const problems = payload ? configProblems(payload) : [];
+  const problems = payload ? [...configProblems(payload), ...(chainProblems ?? [])] : [];
+  const checking = payload?.t === "load-private" && chainProblems === undefined && payload && configProblems(payload).length === 0;
   const isLoad = payload?.t === "load" || payload?.t === "load-private";
   const mismatch = payload?.t === "load" && w.evmAddress && payload.depositor.toLowerCase() !== w.evmAddress.toLowerCase();
 
@@ -283,7 +298,7 @@ export function OfflineCard() {
             <p className="mt-3 text-xs text-amber-400">Unlock your wallet to {isLoad ? "load this coin" : "send this cash-out"}.</p>
           ) : (
             <button
-              disabled={running || problems.length > 0 || !!mismatch || (isLoad && !ownCoin)}
+              disabled={running || checking || problems.length > 0 || !!mismatch || (isLoad && !ownCoin)}
               onClick={() => void (payload.t === "load" ? offlineLoad(payload) : payload.t === "load-private" ? offlineLoadPrivate(payload) : offlineRedeem(payload))}
               className="mt-3 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-zinc-950 disabled:opacity-50"
             >
