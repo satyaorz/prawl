@@ -13,7 +13,7 @@
  * Everything here is callable by anyone — the keeper is just the party that
  * is always online. Run:  node scripts/keeper.mjs   (loop interval: KEEPER_INTERVAL_MS)
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ethers } from 'ethers';
@@ -55,18 +55,21 @@ const WRAPPER_ABI = [
   'function finalizeUnwrap(bytes32 unwrapAmount, uint64 unwrapAmountCleartext, bytes calldata decryptionProof)',
   'function unwrapRequester(bytes32) view returns (address)',
   'function confidentialBalanceOf(address) view returns (bytes32)',
+  'function rate() view returns (uint256)',
   'event UnwrapRequested(address indexed receiver, bytes32 amount)',
 ];
 const BATCH_ABI = [
   'function currentRound() view returns (uint256)',
-  'function rounds(uint256) view returns (bytes32 aToB, bytes32 bToA, bool closed, bool prepared, bool executed, bool aWasSurplus, uint64 totalAIn, uint64 totalBIn, uint64 matched, uint64 netSwapped, uint64 minSwapOutput, bytes32 unwrapHandle, uint64 swapOutput)',
-  'function withdrawn(uint256,uint8,address) view returns (bool)',
+  'function rounds(uint256) view returns (bytes32 aToB, bytes32 bToA, bytes32 netEnc, bytes32 surplusEnc, bool closed, bool prepared, bool executed, uint64 netSwapped, uint8 surplusSide, uint256 minSwapOutput, bytes32 unwrapHandle, uint64 swapOutput)',
   'function distinctSubmitters() view returns (uint256)',
   'function lastUpdateTime() view returns (uint256)',
   'function closeRound()',
-  'function prepareSettle(uint256 roundId, bytes clearValues, bytes decryptionProof, uint64 minSwapOutput)',
+  'function submitOrder(bytes32,bytes,bytes32,bytes)',
+  'function prepareSettle(uint256 roundId, bytes clearValues, bytes decryptionProof)',
   'function executeSettle(uint256 roundId, uint64 unwrapCleartext, bytes decryptionProof)',
-  'function withdrawForAndUnwrap(uint256 roundId, uint8 direction, address user)',
+  'function creditOrder(uint256 roundId, address user)',
+  'event OrderSubmitted(uint256 indexed round, address indexed user)',
+  'event OrderCredited(uint256 indexed round, address indexed user)',
   'event DepositSubmitted(uint256 indexed round, uint8 indexed direction, address indexed user)',
   'event RoundPrepared(uint256 indexed round, uint64 matched, uint64 net, bytes32 unwrapHandle)',
   'event UnwrapRequested(address indexed receiver, bytes32 amount)',
@@ -81,30 +84,6 @@ const POOL_MANAGER = new ethers.Contract(
 const batch = new ethers.Contract(config.batch, BATCH_ABI, keeper);
 const readBatch = new ethers.Contract(config.batch, BATCH_ABI, provider);
 
-// Older deployments return a 12-field rounds() struct (no minSwapOutput);
-// newer ones return 13. Try the artifact ABI first, fall back to the legacy
-// layout so the keeper drives both stacks.
-const ROUNDS_LEGACY = new ethers.Interface([
-  'function rounds(uint256) view returns (bytes32 aToB, bytes32 bToA, bool closed, bool prepared, bool executed, bool aWasSurplus, uint64 totalAIn, uint64 totalBIn, uint64 matched, uint64 netSwapped, bytes32 unwrapHandle, uint64 swapOutput)',
-]);
-let roundsUsesLegacy = null;
-async function getRound(roundId) {
-  if (roundsUsesLegacy === false) return readBatch.rounds(roundId);
-  try {
-    const r = await readBatch.rounds(roundId);
-    roundsUsesLegacy = false;
-    return r;
-  } catch (error) {
-    if (!/could not decode|missing data|invalid/i.test(String(error.message))) throw error;
-    roundsUsesLegacy = true;
-    const [batchIf] = readBatch.interface.fragments;
-    const data = ROUNDS_LEGACY.encodeFunctionData('rounds', [roundId]);
-    const res = await provider.call({ to: config.batch, data });
-    const parsed = ROUNDS_LEGACY.decodeFunctionResult('rounds', res);
-    const [aToB, bToA, closed, prepared, executed, aWasSurplus, totalAIn, totalBIn, matched, netSwapped, unwrapHandle, swapOutput] = parsed;
-    return { aToB, bToA, closed, prepared, executed, aWasSurplus, totalAIn, totalBIn, matched, netSwapped, unwrapHandle, swapOutput, minSwapOutput: 0n };
-  }
-}
 const wrappers = [config.cTokenA, config.cTokenB].map((a) => new ethers.Contract(a, WRAPPER_ABI, keeper));
 const wrapperReads = [config.cTokenA, config.cTokenB].map((a) => new ethers.Contract(a, WRAPPER_ABI, provider));
 
@@ -167,6 +146,10 @@ async function anchoredMinSwapOutput(roundId, net, aSurplus) {
   return minOut;
 }
 
+async function getRound(roundId) {
+  return readBatch.rounds(roundId);
+}
+
 // --- state machine steps -----------------------------------------------------
 
 // minRoundDuration/minDistinctSubmitters are immutables — no getters on the
@@ -198,15 +181,13 @@ async function maybeCloseRound() {
 async function maybePrepareSettle(roundId) {
   const round = await getRound(roundId);
   if (!round.closed || round.prepared || round.executed) return false;
-  const handleA = ethers.hexlify(round.aToB);
-  const handleB = ethers.hexlify(round.bToA);
-  const dec = await publicDecryptRetry([handleA, handleB], `round ${roundId} totals`);
-  const totalA = clearValue(dec, handleA);
-  const totalB = clearValue(dec, handleB);
-  const net = totalA >= totalB ? totalA - totalB : totalB - totalA;
-  log(`round ${roundId} totals: aToB=${totalA} bToA=${totalB} net=${net}`);
-  const minOut = await anchoredMinSwapOutput(roundId, net, totalA >= totalB);
-  await waitTx(batch, 'prepareSettle', [roundId, dec.abiEncodedClearValues, dec.decryptionProof, minOut], `prepareSettle ${roundId}`);
+  const handleNet = ethers.hexlify(round.netEnc);
+  const handleSurplus = ethers.hexlify(round.surplusEnc);
+  const dec = await publicDecryptRetry([handleNet, handleSurplus], `round ${roundId} net+surplus`);
+  const net = clearValue(dec, handleNet);
+  const surplus = Number(clearValue(dec, handleSurplus));
+  log(`round ${roundId} public disclosures: net=${net} surplusSide=${surplus} (totals stay encrypted)`);
+  await waitTx(batch, 'prepareSettle', [roundId, dec.abiEncodedClearValues, dec.decryptionProof], `prepareSettle ${roundId}`);
   return true;
 }
 
@@ -241,38 +222,35 @@ async function maybeExecuteSettle(roundId) {
   return true;
 }
 
-// After the T2 redeploy the batch exposes withdrawForAndUnwrap — pay every
-// depositor their pro-rata share in UNDERLYING tokens, permissionlessly.
-async function maybeClaimDepositors(roundId) {
-  if (!batch.interface.hasFunction('withdrawForAndUnwrap')) return false;
+// v3: payouts credit confidential vault balances — permissionless creditOrder
+// for every orderer of a settled round (found via OrderSubmitted events).
+async function maybeCreditOrders(roundId) {
+  if (!batch.interface.hasFunction('creditOrder')) return false;
   const round = await getRound(roundId);
   if (!round.executed) return false;
   const head = await provider.getBlockNumber();
   const fromBlock = '0x' + Math.max(0, head - 5000).toString(16);
-  let claimed = 0;
-  for (const direction of [1, 2]) {
-    const logs = await logsProvider.send('eth_getLogs', [{
-      fromBlock,
-      toBlock: 'latest',
-      address: config.batch,
-      topics: [
-        batch.interface.getEvent('DepositSubmitted').topicHash,
-        ethers.zeroPadValue(ethers.toBeHex(roundId), 32),
-        ethers.zeroPadValue(ethers.toBeHex(direction), 32),
-      ],
-    }]);
-    const users = [...new Set(logs.map((l) => ethers.getAddress('0x' + l.topics[3].slice(26))))];
-    for (const user of users) {
-      if (await readBatch.withdrawn(roundId, direction, user)) continue;
-      try {
-        await waitTx(batch, 'withdrawForAndUnwrap', [roundId, direction, user], `withdrawForAndUnwrap r${roundId}d${direction} ${user.slice(0, 8)}`);
-        claimed++;
-      } catch (error) {
-        log(`claim ${user.slice(0, 8)} failed: ${String(error.message).slice(0, 100)}`);
-      }
+  const logs = await logsProvider.send('eth_getLogs', [{
+    fromBlock,
+    toBlock: 'latest',
+    address: config.batch,
+    topics: [
+      batch.interface.getEvent('OrderSubmitted').topicHash,
+      ethers.zeroPadValue(ethers.toBeHex(roundId), 32),
+    ],
+  }]);
+  const users = [...new Set(logs.map((l) => ethers.getAddress('0x' + l.topics[2].slice(26))))];
+  let credited = 0;
+  for (const user of users) {
+    try {
+      await waitTx(batch, 'creditOrder', [roundId, user], `creditOrder r${roundId} ${user.slice(0, 8)}`);
+      credited++;
+    } catch (error) {
+      const msg = String(error.message?.shortMessage || error.message);
+      if (!/AlreadyCredited|NoOrder/.test(msg)) log(`credit ${user.slice(0, 8)} failed: ${msg.slice(0, 90)}`);
     }
   }
-  return claimed > 0;
+  return credited > 0;
 }
 
 // Finalize ANY user's pending unwrap request — permissionless by design.
@@ -312,29 +290,49 @@ async function finalizePendingUnwraps() {
 // round completes (matched internally, net leg swaps on Uniswap). The bot's
 // deposits are public in Transparency — labeled as the keeper address.
 // ---------------------------------------------------------------------------
-const BOT_C_UNITS = 1n * 10n ** 6n; // 1 c-unit per direction
+const BOT_C_UNITS = 1n * 10n ** 6n; // 1 c-unit per bot order
+const BOT_FUND_FILE = new URL('./bot-funded.json', import.meta.url);
 
-async function botDepositDirection(which, data) {
-  const wrapper = which === 'A' ? wrappers[0] : wrappers[1];
-  const readWrapper = which === 'A' ? wrapperReads[0] : wrapperReads[1];
-  const underlying = new ethers.Contract(
-    which === 'A' ? config.tokenA : config.tokenB,
-    ['function mint(address,uint256)', 'function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)'],
-    keeper,
-  );
-  const wrapperAddress = await wrapper.getAddress();
-  const uNeeded = (BOT_C_UNITS * 11n) / 10n;
-  const have = BigInt(await underlying.balanceOf(keeper.address));
-  if (have < uNeeded) {
-    await waitTx(underlying, 'mint', [keeper.address, uNeeded * 2n], `bot faucet ${which === 'A' ? 'vUSD' : 'vETH'}`);
+// Fund the bot's confidential vault balance ONCE (public leg — the bot is the
+// keeper address and its funding is labeled as such). Later orders draw on the
+// funded balance without revealing sizes.
+async function botEnsureFunded() {
+  let funded;
+  try { funded = JSON.parse(readFileSync(BOT_FUND_FILE, 'utf8')); } catch { funded = {}; }
+  if (funded.batch === config.batch) return;
+  for (const [which, wrapper, readWrapper] of [['A', wrappers[0], wrapperReads[0]], ['B', wrappers[1], wrapperReads[1]]]) {
+    const underlying = new ethers.Contract(
+      which === 'A' ? config.tokenA : config.tokenB,
+      ['function mint(address,uint256)', 'function approve(address,uint256) returns (bool)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)'],
+      keeper,
+    );
+    const wrapperAddress = await wrapper.getAddress();
+    const uAmount = 200n * 10n ** 6n; // 200 c-units of funding, plenty for the demo
+    if (BigInt(await underlying.balanceOf(keeper.address)) < uAmount) {
+      await waitTx(underlying, 'mint', [keeper.address, uAmount * 2n], `bot faucet ${which === 'A' ? 'vUSD' : 'vETH'}`);
+    }
+    if (BigInt(await underlying.allowance(keeper.address, wrapperAddress)) < uAmount) {
+      await waitTx(underlying, 'approve', [wrapperAddress, uAmount * 10n], `bot approve ${which === 'A' ? 'vUSD' : 'vETH'}`);
+    }
+    await waitTx(wrapper, 'wrap', [keeper.address, uAmount], `bot wrap ${which === 'A' ? 'vUSD' : 'vETH'}`);
+    // fund: transfer c-tokens to the batch with data 0x00
+    const rate = BigInt(await readWrapper.rate());
+    const enc2 = await fhevm.createEncryptedInput(wrapperAddress, keeper.address).add64(uAmount / rate).encrypt();
+    await waitTx(wrapper, 'confidentialTransferAndCall', [config.batch, enc2.handles[0], enc2.inputProof, '0x00'], `bot fund ${which === 'A' ? 'vUSD' : 'vETH'}`);
   }
-  const allowance = BigInt(await underlying.allowance(keeper.address, wrapperAddress));
-  if (allowance < uNeeded) {
-    await waitTx(underlying, 'approve', [wrapperAddress, uNeeded * 1000n], `bot approve ${which === 'A' ? 'vUSD' : 'vETH'}`);
-  }
-  await waitTx(wrapper, 'wrap', [keeper.address, uNeeded], `bot wrap ${which === 'A' ? 'vUSD' : 'vETH'}`);
-  const enc = await fhevm.createEncryptedInput(wrapperAddress, keeper.address).add64(BOT_C_UNITS).encrypt();
-  await waitTx(wrapper, 'confidentialTransferAndCall', [config.batch, enc.handles[0], enc.inputProof, data], `bot deposit d${data === '0x01' ? 1 : 2}`);
+  writeFileSync(BOT_FUND_FILE, JSON.stringify({ batch: config.batch, at: new Date().toISOString() }));
+  log('liquidity bot: confidential funding complete (200 c-units each side)');
+}
+
+// The bot cannot know which side needs liquidity (directions are encrypted!),
+// so it submits ONE order in a random direction. Either way the round
+// completes for the waiting trader: opposite → matched 1:1 internally;
+// same → both join the net leg swapped on Uniswap.
+async function botOrder() {
+  await botEnsureFunded();
+  const dir = Math.random() < 0.5 ? 1 : 2;
+  const enc = await fhevm.createEncryptedInput(config.batch, keeper.address).add64(BOT_C_UNITS).add8(dir).encrypt();
+  await waitTx(batch, 'submitOrder', [enc.handles[0], enc.inputProof, enc.handles[1], enc.inputProof], `bot order (encrypted dir=${dir})`);
 }
 
 async function maybeCounterparty() {
@@ -347,9 +345,8 @@ async function maybeCounterparty() {
   let users = null;
   try { users = Number(await readBatch.distinctSubmitters()); } catch { /* getter absent on older stacks */ }
   if (users === null || users !== 1) return false; // nobody waiting, or threshold already met
-  log(`liquidity bot: 1 trader waited out round ${currentRound} — adding counter-liquidity`);
-  await botDepositDirection('A', '0x01');
-  await botDepositDirection('B', '0x02');
+  log(`liquidity bot: 1 trader waited out round ${currentRound} — submitting encrypted counter-order`);
+  await botOrder();
   return true;
 }
 
@@ -363,11 +360,11 @@ async function tick() {
       ['close', () => maybeCloseRound()],
       ['prepare', () => maybePrepareSettle(currentRound - 1)],
       ['execute', () => maybeExecuteSettle(currentRound - 1)],
-      ['claim', () => maybeClaimDepositors(currentRound - 1)],
+      ['credit', () => maybeCreditOrders(currentRound - 1)],
       ['finalize-unwraps', () => finalizePendingUnwraps()],
       ['liquidity-bot', () => maybeCounterparty()],
     ]) {
-      if (currentRound - 1 < 1 && label !== 'close' && label !== 'finalize-unwraps') continue;
+      if (currentRound - 1 < 1 && label !== 'close' && label !== 'finalize-unwraps' && label !== 'liquidity-bot') continue;
       try { await step(); } catch (error) {
         log(`${label}: ${String(error.message?.shortMessage || error.message || error).slice(0, 120)}`);
       }

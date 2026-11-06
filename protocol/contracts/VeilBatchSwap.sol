@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 
-import {FHE, ebool, euint64, euint128} from "@fhevm/solidity/lib/FHE.sol";
+import {FHE, ebool, euint8, euint64, euint128, externalEuint8, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
 import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -18,51 +18,58 @@ import {Actions} from "@uniswap/v4-periphery/src/libraries/Actions.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolKey, IHooks} from "@uniswap/v4-core/src/types/PoolKey.sol";
 
-/// @title VeilBatchSwap — batched confidential swaps with internal netting.
+/// @title VeilBatchSwap v3 — fully confidential batched swaps.
 ///
-/// Users deposit a confidential token (ERC-7984 wrapper) into the current
-/// round, choosing a direction (A→B or B→A). Amounts are euint64 ciphertexts:
-/// the contract sums them without ever seeing a value.
+/// Privacy model (honest version):
+///  * Funding: a user moves confidential tokens (ERC-7984 wrappers) into this
+///    vault once. That funding tx is public (wallet, token, amount) — it does
+///    NOT hide the wallet↔funding link. Later orders draw on the funded
+///    balance, so the funding amount does not reveal order sizes.
+///  * Orders: direction AND amount are encrypted (euint8/euint64). One shared
+///    order entry point for both assets; the order event carries no plaintext
+///    direction or amount. The batch holds both c-tokens, so the entry path
+///    does not reveal which side the user chose.
+///  * Rounds: the two directional totals, the matched amount and every user's
+///    order stay encrypted forever. Only the NET residual and WHICH side is in
+///    surplus are publicly decryptable (needed to run the Uniswap leg).
+///  * Payouts: credited back into the user's confidential vault balance —
+///    never sent as plain ERC-20 by the settlement flow. Exits to plain
+///    tokens are a separate, intentionally-public step.
+///  * Public by design: relayer, round timing, token pair, the net Uniswap
+///    trade, and (honestly) WHICH ADDRESSES ORDERED in a round. Batching
+///    blurs per-order patterns; it is not an anonymity guarantee.
 ///
-/// Round lifecycle:
-///  1. closeRound(): after the time window + participation threshold, makes
-///     the encrypted direction totals publicly decryptable. Nothing else.
-///  2. The configured settler verifies the Zama Gateway values and commits an
-///     output minimum. Anyone can execute that prepared settlement. The contract:
-///       matched = min(aIn, bIn)  → settles internally at the demo's 1:1 rate
-///       net     = |aIn − bIn|    → unwrapped from the surplus side and swapped
-///                                  on Uniswap v4; output wrapped back.
-///     If aIn == bIn the round settles with zero on-chain swap.
-///
-/// Distribution (pro-rata inside FHE, per side):
-///   surplus == A: A-side share = dep × (matched + swapOut) / aIn (c-tokenB)
-///                 B-side share = dep × matched / bIn            (c-tokenA)
-///   surplus == B: mirrored.
-///
-/// This implementation is for the parity-priced demo pair. Arbitrary pairs
-/// need price-aware matching and order-level execution bounds before use.
+/// Matching: greedy pairwise netting inside FHE. For every pair of orders
+/// with opposite (encrypted) directions, m = min(remaining_i, remaining_j) is
+/// matched 1:1; the leftovers form the round's net residual. Because fhEVM
+/// has no encrypted division, pro-rata division is avoided: deficit-side
+/// payouts are exactly the matched amount, and the surplus side's share of
+/// the Uniswap output is residual × swapOutput / net — division by the
+/// PUBLIC net only (FHE mul/div by clear scalars).
 contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     using SafeERC20 for IERC20;
 
-    uint256 public constant VERSION = 2;
+    uint256 public constant VERSION = 3;
 
-    uint8 public constant DIRECTION_A_TO_B = 1;
-    uint8 public constant DIRECTION_B_TO_A = 2;
+    uint8 public constant DIR_A_TO_B = 1; // sell c-tokenA, receive c-tokenB
+    uint8 public constant DIR_B_TO_A = 2;
+
+    /// Max orders per round — bounds the O(n²) encrypted netting gas.
+    uint256 public constant MAX_ORDERS_PER_ROUND = 6;
 
     struct RoundState {
-        euint64 aToB; // encrypted sum of deposits wanting A→B
-        euint64 bToA; // encrypted sum of deposits wanting B→A
+        euint64 aToB; // encrypted total sold A→B (c-tokenA units)
+        euint64 bToA; // encrypted total sold B→A (c-tokenB units)
+        euint64 netEnc; // encrypted net residual (decrypted copy is public)
+        euint8 surplusEnc; // encrypted surplus side (decrypted copy is public)
         bool closed;
-        bool prepared; // gateway totals verified, unwrap request created
+        bool prepared;
         bool executed;
-        bool aWasSurplus; // true → tokenA side had the net residual
-        uint64 totalAIn;
-        uint64 totalBIn;
-        uint64 matched; // min(aIn, bIn) — settled internally
-        uint64 netSwapped; // clear amount sent to Uniswap
-        uint64 minSwapOutput; // settlement bound committed by the designated settler
-        bytes32 unwrapHandle; // ciphertext of the pending unwrap request
-        uint64 swapOutput; // output of the Uniswap leg, in the non-surplus token units
+        uint64 netSwapped; // clear net residual, after gateway decryption
+        uint8 surplusSide; // clear surplus side (1 = A, 2 = B)
+        uint256 minSwapOutput; // slippage floor in c-units, set on-chain
+        bytes32 unwrapHandle; // pending async unwrap request for the net
+        uint64 swapOutput; // Uniswap leg output, c-units of the other token
     }
 
     IUniversalRouter public immutable router;
@@ -77,24 +84,31 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     uint256 public currentRound = 1;
     uint256 public lastUpdateTime;
     uint256 public distinctSubmitters;
-    mapping(address => uint256) private _userLastRound;
+
+    // Confidential funding vault: [user][0 = asset A, 1 = asset B].
+    mapping(address => mapping(uint8 => euint64)) private _funded;
+
+    // Orders per round.
+    mapping(uint256 => mapping(address => euint64)) private _orderAmount;
+    mapping(uint256 => mapping(address => euint8)) private _orderDir;
+    mapping(uint256 => mapping(address => euint64)) private _orderMatched;
+    mapping(uint256 => mapping(address => euint64)) private _orderResidual;
+    mapping(uint256 => mapping(address => bool)) private _orderCredited;
+    mapping(uint256 => address[]) private _orderers;
+    mapping(uint256 => mapping(address => bool)) private _isOrderer;
 
     mapping(uint256 => RoundState) public rounds;
-    mapping(uint256 => mapping(uint8 => mapping(address => euint64))) public userDeposits;
-    mapping(uint256 => mapping(uint8 => mapping(address => bool))) public withdrawn;
 
-    event DepositSubmitted(uint256 indexed round, uint8 indexed direction, address indexed user);
+    event Funded(address indexed user, uint8 indexed asset); // asset: 0 = A, 1 = B
+    event OrderSubmitted(uint256 indexed round, address indexed user); // no direction, no amount
     event RoundClosed(uint256 indexed round);
-    event RoundPrepared(uint256 indexed round, uint64 matched, uint64 netSwapped, bytes32 unwrapHandle);
-    event RoundSettled(
-        uint256 indexed round,
-        bool aWasSurplus,
-        uint64 matched,
-        uint64 netSwapped,
-        uint64 swapOutput
-    );
-    event ClaimedForUser(uint256 indexed roundId, uint8 indexed direction, address indexed user);
+    event RoundPrepared(uint256 indexed round, uint64 netSwapped, bytes32 unwrapHandle);
+    event RoundSettled(uint256 indexed round, uint8 surplusSide, uint64 netSwapped, uint64 swapOutput);
+    event OrderCredited(uint256 indexed round, address indexed user); // no amounts
 
+    error RoundNotOpen();
+    error OrderAlreadySubmitted();
+    error TooManyOrders();
     error TooEarlyForNextRound();
     error NotEnoughSubmitters();
     error RoundAlreadyClosed();
@@ -104,13 +118,10 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     error UnwrapMismatch(uint64 provided, uint64 expected);
     error UnknownDirection();
     error UntrustedToken();
-    error DirectionTokenMismatch();
-    error AlreadyWithdrawn();
-    error NothingDeposited();
-    error ZeroNetButMismatchedTotals();
+    error NoOrder();
+    error AlreadyCredited();
     error SlippageExceeded(uint256 swapOutput, uint256 minSwapOutput);
     error NotSettler();
-    error MissingSwapMinimum();
     error SwapOutputOverflow();
 
     constructor(
@@ -136,94 +147,170 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     }
 
     // ------------------------------------------------------------------
-    // Deposits
+    // Confidential funding vault
     // ------------------------------------------------------------------
 
-    /// @notice ERC-7984 receiver hook. `data` = abi.encodePacked(uint8 direction).
+    /// @notice ERC-7984 receiver hook. Empty data (or a single 0x00 byte)
+    /// funds the sender's confidential balance of the transferred asset.
+    /// Funding is public by design (see the header); the credited amount is
+    /// stored encrypted so it never reveals order sizes.
     function onConfidentialTransferReceived(
         address, // operator — always the wrapper
         address from,
         euint64 eAmount,
         bytes calldata data
     ) external returns (ebool success) {
-        // Only our two confidential wrappers may call this.
         if (msg.sender != address(cTokenA) && msg.sender != address(cTokenB)) {
             success = FHE.asEbool(false);
-            FHE.allow(success, msg.sender); // wrapper needs ACL to evaluate the refund
+            FHE.allow(success, msg.sender);
             return success;
         }
-        uint8 direction = data.length == 1 ? uint8(data[0]) : 0;
-        if (direction != DIRECTION_A_TO_B && direction != DIRECTION_B_TO_A) {
+        if (data.length != 0 && !(data.length == 1 && data[0] == 0x00)) {
             success = FHE.asEbool(false);
             FHE.allow(success, msg.sender);
             return success;
         }
-        // Direction must match the token deposited.
-        if ((direction == DIRECTION_A_TO_B) != (msg.sender == address(cTokenA))) {
-            success = FHE.asEbool(false);
-            FHE.allow(success, msg.sender);
-            return success;
-        }
+        uint8 asset = msg.sender == address(cTokenA) ? 0 : 1;
 
-        RoundState storage round = rounds[currentRound];
-        mapping(address => euint64) storage deposits = userDeposits[currentRound][direction];
-
-        // Uninitialized euint64 handles cannot be used in FHE ops (ACL error),
-        // so guard exactly like OZ's FHESafeMath.tryIncrease.
-        euint64 previousUserAmount = FHE.isInitialized(deposits[from]) ? deposits[from] : FHE.asEuint64(0);
-        euint64 updated = FHE.add(previousUserAmount, eAmount);
-        // Reject zero-value and uint64-overflowing deposits without exposing
-        // either condition. The wrapper refunds the transfer when success is
-        // false; select keeps the rejected value out of the round state.
-        ebool accepted = FHE.gt(updated, previousUserAmount);
-        euint64 previousTotal;
-        euint64 updatedTotal;
-        if (direction == DIRECTION_A_TO_B) {
-            previousTotal = FHE.isInitialized(round.aToB) ? round.aToB : FHE.asEuint64(0);
-            updatedTotal = FHE.add(previousTotal, eAmount);
-        } else {
-            previousTotal = FHE.isInitialized(round.bToA) ? round.bToA : FHE.asEuint64(0);
-            updatedTotal = FHE.add(previousTotal, eAmount);
-        }
-        accepted = FHE.and(accepted, FHE.gt(updatedTotal, previousTotal));
-        updated = FHE.select(accepted, updated, previousUserAmount);
-        updatedTotal = FHE.select(accepted, updatedTotal, previousTotal);
+        euint64 previous = FHE.isInitialized(_funded[from][asset]) ? _funded[from][asset] : FHE.asEuint64(0);
+        euint64 updated = FHE.add(previous, eAmount);
+        // Reject zero-value and uint64-overflowing funding without exposing
+        // either condition (the wrapper refunds when success is false).
+        ebool accepted = FHE.gt(updated, previous);
+        updated = FHE.select(accepted, updated, previous);
         FHE.allowThis(updated);
-        FHE.allow(updated, msg.sender);
-        FHE.allow(updated, from); // depositor can read their own position
-        deposits[from] = updated;
-
-        if (direction == DIRECTION_A_TO_B) {
-            round.aToB = updatedTotal;
-            FHE.allowThis(round.aToB);
-        } else {
-            round.bToA = updatedTotal;
-            FHE.allowThis(round.bToA);
+        FHE.allow(updated, from);
+        _funded[from][asset] = updated;
+        // Initialize the other side too, so the user can always decrypt both
+        // balances (uninitialized handles cannot be user-decrypted).
+        uint8 other = asset == 0 ? uint8(1) : uint8(0);
+        if (!FHE.isInitialized(_funded[from][other])) {
+            _funded[from][other] = FHE.asEuint64(0);
+            FHE.allowThis(_funded[from][other]);
+            FHE.allow(_funded[from][other], from);
         }
 
-        if (_userLastRound[from] < currentRound) {
-            _userLastRound[from] = currentRound;
-            ++distinctSubmitters;
-        }
-
-        emit DepositSubmitted(currentRound, direction, from);
+        emit Funded(from, asset);
         success = accepted;
-        FHE.allow(success, msg.sender); // wrapper needs ACL to evaluate the refund
+        FHE.allow(success, msg.sender);
         return success;
     }
 
+    /// @notice Encrypted handle of a user's funded balance (for self-decryption).
+    function fundedBalance(address user, uint8 asset) external view returns (euint64) {
+        return _funded[user][asset];
+    }
+
     // ------------------------------------------------------------------
-    // Phase 1 — close the round (permissionless once eligible)
+    // Orders — encrypted direction and amount, one shared entry point
     // ------------------------------------------------------------------
 
-    function closeRound() external {
+    /// @notice Submit an order from the funded confidential balance.
+    /// @param encAmount encrypted order size in c-token units (6 dp).
+    /// @param encDirection encrypted direction: 1 = sell A→B, 2 = sell B→A.
+    /// Both values come from ONE client-side encrypted input; the same input
+    /// proof covers both handles. Neither value is ever public.
+    function submitOrder(externalEuint64 encAmount, bytes calldata amountProof, externalEuint8 encDirection, bytes calldata directionProof) external {
         RoundState storage round = rounds[currentRound];
+        require(!round.closed, RoundNotOpen());
+        require(euint8.unwrap(_orderDir[currentRound][msg.sender]) == 0, OrderAlreadySubmitted());
+        require(_orderers[currentRound].length < MAX_ORDERS_PER_ROUND, TooManyOrders());
+
+        euint64 amt = FHE.fromExternal(encAmount, amountProof);
+        euint8 dir = FHE.fromExternal(encDirection, directionProof);
+
+        // Debit the funded balance of the chosen asset. The direction stays
+        // encrypted: each side's debit is the amount masked by the direction
+        // bit, and an underfunded order is silently zeroed (OZ pattern) so
+        // the revert-or-not channel never leaks the balance comparison.
+        ebool isA = FHE.eq(dir, DIR_A_TO_B);
+        ebool isB = FHE.eq(dir, DIR_B_TO_A);
+        euint64 debitA = FHE.select(isA, amt, FHE.asEuint64(0));
+        euint64 debitB = FHE.select(isB, amt, FHE.asEuint64(0));
+
+        euint64 balA = FHE.isInitialized(_funded[msg.sender][0]) ? _funded[msg.sender][0] : FHE.asEuint64(0);
+        euint64 balB = FHE.isInitialized(_funded[msg.sender][1]) ? _funded[msg.sender][1] : FHE.asEuint64(0);
+        debitA = FHE.select(FHE.ge(balA, debitA), debitA, FHE.asEuint64(0));
+        debitB = FHE.select(FHE.ge(balB, debitB), debitB, FHE.asEuint64(0));
+
+        euint64 newBalA = FHE.sub(balA, debitA);
+        euint64 newBalB = FHE.sub(balB, debitB);
+        FHE.allowThis(newBalA);
+        FHE.allowThis(newBalB);
+        FHE.allow(newBalA, msg.sender);
+        FHE.allow(newBalB, msg.sender);
+        _funded[msg.sender][0] = newBalA;
+        _funded[msg.sender][1] = newBalB;
+
+        // Round totals (encrypted forever).
+        euint64 prevA = FHE.isInitialized(round.aToB) ? round.aToB : FHE.asEuint64(0);
+        euint64 prevB = FHE.isInitialized(round.bToA) ? round.bToA : FHE.asEuint64(0);
+        round.aToB = FHE.add(prevA, debitA);
+        round.bToA = FHE.add(prevB, debitB);
+        FHE.allowThis(round.aToB);
+        FHE.allowThis(round.bToA);
+
+        _orderAmount[currentRound][msg.sender] = FHE.add(debitA, debitB); // exactly one side is non-zero
+        _orderDir[currentRound][msg.sender] = dir;
+        FHE.allowThis(_orderAmount[currentRound][msg.sender]);
+        FHE.allowThis(dir);
+
+        if (!_isOrderer[currentRound][msg.sender]) {
+            _orderers[currentRound].push(msg.sender);
+            _isOrderer[currentRound][msg.sender] = true;
+            ++distinctSubmitters;
+        }
+
+        emit OrderSubmitted(currentRound, msg.sender);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 1 — close the round: encrypted netting, nothing decrypts
+    // ------------------------------------------------------------------
+
+    /// @notice Close the round and run the greedy pairwise netting entirely
+    /// inside FHE. Per-order matched/residual amounts are computed and stored
+    /// encrypted. Only the NET residual and the surplus SIDE become publicly
+    /// decryptable — never the two totals, never the matched amount, never
+    /// any user's order.
+    function closeRound() external {
         require(block.timestamp >= lastUpdateTime + minRoundDuration, TooEarlyForNextRound());
         require(distinctSubmitters >= minDistinctSubmitters, NotEnoughSubmitters());
+        RoundState storage round = rounds[currentRound];
         require(!round.closed, RoundAlreadyClosed());
-
         round.closed = true;
-        // Rounds may close with one side empty; initialize before exposing.
+
+        address[] memory orderers = _orderers[currentRound];
+        uint256 n = orderers.length;
+
+        // Greedy pairwise netting: for every opposite-direction pair, match
+        // min(remaining_i, remaining_j) 1:1. Sequential encrypted state, no
+        // branching on encrypted values.
+        euint64[] memory remaining = new euint64[](n);
+        euint64[] memory matched = new euint64[](n);
+        for (uint256 i = 0; i < n; ++i) {
+            remaining[i] = _orderAmount[currentRound][orderers[i]];
+            matched[i] = FHE.asEuint64(0);
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            for (uint256 j = i + 1; j < n; ++j) {
+                ebool opposite = FHE.not(FHE.eq(_orderDir[currentRound][orderers[i]], _orderDir[currentRound][orderers[j]]));
+                euint64 m = FHE.min(remaining[i], remaining[j]);
+                m = FHE.select(opposite, m, FHE.asEuint64(0));
+                remaining[i] = FHE.sub(remaining[i], m);
+                remaining[j] = FHE.sub(remaining[j], m);
+                matched[i] = FHE.add(matched[i], m);
+                matched[j] = FHE.add(matched[j], m);
+            }
+        }
+        for (uint256 i = 0; i < n; ++i) {
+            _orderMatched[currentRound][orderers[i]] = matched[i];
+            _orderResidual[currentRound][orderers[i]] = remaining[i];
+            FHE.allowThis(matched[i]);
+            FHE.allowThis(remaining[i]);
+        }
+
+        // Round totals for the net computation (stay encrypted).
         if (!FHE.isInitialized(round.aToB)) {
             round.aToB = FHE.asEuint64(0);
             FHE.allowThis(round.aToB);
@@ -232,10 +319,17 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             round.bToA = FHE.asEuint64(0);
             FHE.allowThis(round.bToA);
         }
-        FHE.makePubliclyDecryptable(round.aToB);
-        FHE.makePubliclyDecryptable(round.bToA);
+        euint64 net = FHE.sub(FHE.max(round.aToB, round.bToA), FHE.min(round.aToB, round.bToA));
+        ebool aSurplus = FHE.ge(round.aToB, round.bToA);
+        euint8 surplus = FHE.select(aSurplus, FHE.asEuint8(1), FHE.asEuint8(2));
+        round.netEnc = net;
+        round.surplusEnc = surplus;
+        FHE.allowThis(net);
+        FHE.allowThis(surplus);
+        // The ONLY two values made publicly decryptable in the whole protocol.
+        FHE.makePubliclyDecryptable(net);
+        FHE.makePubliclyDecryptable(surplus);
 
-        // Emit BEFORE advancing counters (fixes the reference event bug).
         emit RoundClosed(currentRound);
 
         currentRound++;
@@ -244,57 +338,38 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     }
 
     // ------------------------------------------------------------------
-    // Phase 2 — prepare (configured settler) then execute (permissionless)
+    // Phase 2 — prepare (settler) then execute (permissionless)
     // ------------------------------------------------------------------
 
-    /// @param clearValues abi.encode(uint64 totalAIn, uint64 totalBIn)
-    /// @param decryptionProof Zama Gateway signature over the two ciphertexts.
-    /// @param minSwapOutput minimum output in confidential-token units. Only
-    ///        the configured settler can commit this bound; anyone may execute
-    ///        the settlement once it has been committed.
-    /// @notice Phase 1 of settlement (settler-only). Verifies the gateway
-    ///         decryption of the round totals, records matched/net, and opens
-    ///         the async unwrap request for the net surplus. The OZ
-    ///         confidential wrapper delivers underlying tokens only in a
-    ///         second step ({finalizeUnwrap}), so the swap leg lives in
-    ///         {executeSettle}.
-    function prepareSettle(uint256 roundId, bytes calldata clearValues, bytes calldata decryptionProof, uint64 minSwapOutput) external {
+    /// @param clearValues abi.encode(uint64 net, uint8 surplusSide) — the
+    ///        gateway decryption of the round's net residual and surplus side.
+    /// @notice Verifies the gateway signatures, records the (public by design)
+    ///         net/surplus, sets the on-chain slippage floor, and opens the
+    ///         async unwrap request for the net residual.
+    function prepareSettle(uint256 roundId, bytes calldata clearValues, bytes calldata decryptionProof) external {
         if (msg.sender != settler) revert NotSettler();
         RoundState storage round = rounds[roundId];
         require(round.closed, RoundNotClosed());
         require(!round.prepared && !round.executed, RoundAlreadySettled());
 
-        (uint64 totalAIn, uint64 totalBIn) = abi.decode(clearValues, (uint64, uint64));
+        (uint64 net, uint8 surplusSide) = abi.decode(clearValues, (uint64, uint8));
+        require(surplusSide == DIR_A_TO_B || surplusSide == DIR_B_TO_A, UnknownDirection());
 
         bytes32[] memory cts = new bytes32[](2);
-        cts[0] = FHE.toBytes32(round.aToB);
-        cts[1] = FHE.toBytes32(round.bToA);
+        cts[0] = euint64.unwrap(round.netEnc);
+        cts[1] = euint8.unwrap(round.surplusEnc);
         FHE.checkSignatures(cts, clearValues, decryptionProof);
 
         round.prepared = true;
-        round.totalAIn = totalAIn;
-        round.totalBIn = totalBIn;
-
-        uint64 matched = totalAIn < totalBIn ? totalAIn : totalBIn;
-        uint64 net;
-        bool aWasSurplus;
-        if (totalAIn >= totalBIn) {
-            net = totalAIn - totalBIn;
-            aWasSurplus = true;
-        } else {
-            net = totalBIn - totalAIn;
-        }
-        round.matched = matched;
-        round.aWasSurplus = aWasSurplus;
         round.netSwapped = net;
-        if (net > 0 && minSwapOutput == 0) revert MissingSwapMinimum();
-        if (net == 0 && minSwapOutput != 0) revert SlippageExceeded(0, minSwapOutput);
-        round.minSwapOutput = minSwapOutput;
+        round.surplusSide = surplusSide;
+        // Slippage floor computed on-chain: 90% of the net input (the batch
+        // price is 1:1 internally, so the net leg should not lose >10%).
+        round.minSwapOutput = (net * 9000) / 10000;
 
         bytes32 unwrapHandle = 0;
         if (net > 0) {
-            ERC7984ERC20Wrapper surplusWrapper = aWasSurplus ? cTokenA : cTokenB;
-            // The wrapper itself performs FHE ops on `amount`; grant transient ACL.
+            ERC7984ERC20Wrapper surplusWrapper = surplusSide == DIR_A_TO_B ? cTokenA : cTokenB;
             euint64 netEnc = FHE.asEuint64(net);
             FHE.allowTransient(netEnc, address(surplusWrapper));
             // _burn may re-key the handle; the returned value is the one the
@@ -303,15 +378,14 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             unwrapHandle = FHE.toBytes32(unwrapped);
             round.unwrapHandle = unwrapHandle;
         }
-        emit RoundPrepared(roundId, matched, net, unwrapHandle);
+        emit RoundPrepared(roundId, net, unwrapHandle);
     }
 
     /// @param unwrapCleartext the gateway-decrypted value of the unwrap request
-    ///        (must equal the round's net surplus)
-    /// @param decryptionProof Zama Gateway signature over the unwrap ciphertext.
-    /// @notice Phase 2 of settlement (permissionless). Finalizes the unwrap
-    ///         (underlying tokens arrive), swaps the net leg on Uniswap v4,
-    ///         wraps the output back, and enforces the slippage guard.
+    /// @notice Permissionless: finalizes the unwrap, swaps the net leg on
+    ///         Uniswap v4, wraps the output back, and enforces the slippage
+    ///         guard. The per-order encrypted matched/residual amounts are
+    ///         untouched here — payouts credit confidential vault balances.
     function executeSettle(uint256 roundId, uint64 unwrapCleartext, bytes calldata decryptionProof) external {
         RoundState storage round = rounds[roundId];
         require(round.prepared, RoundNotPrepared());
@@ -320,13 +394,11 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
         uint64 swapOutput = 0;
         if (round.netSwapped > 0) {
             if (unwrapCleartext != round.netSwapped) revert UnwrapMismatch(unwrapCleartext, round.netSwapped);
-            ERC7984ERC20Wrapper surplusWrapper = round.aWasSurplus ? cTokenA : cTokenB;
-            ERC7984ERC20Wrapper outputWrapper = round.aWasSurplus ? cTokenB : cTokenA;
+            ERC7984ERC20Wrapper surplusWrapper = round.surplusSide == DIR_A_TO_B ? cTokenA : cTokenB;
+            ERC7984ERC20Wrapper outputWrapper = round.surplusSide == DIR_A_TO_B ? cTokenB : cTokenA;
             uint256 rateIn = surplusWrapper.rate();
             uint256 rateOut = outputWrapper.rate();
 
-            // Async unwrap step 2: the wrapper verifies the gateway signature
-            // and transfers unwrapCleartext * rateIn underlying to this batcher.
             surplusWrapper.finalizeUnwrap(euint64.wrap(round.unwrapHandle), unwrapCleartext, decryptionProof);
 
             IERC20 inputToken = IERC20(surplusWrapper.underlying());
@@ -334,8 +406,8 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             uint256 underlyingIn = uint256(round.netSwapped) * rateIn;
             uint256 amountOut = _swapExactInput(inputToken, outputToken, underlyingIn);
             uint256 outputInWrapperUnits = amountOut / rateOut;
-            if (outputInWrapperUnits > type(uint64).max - round.matched) revert SwapOutputOverflow();
-            swapOutput = uint64(outputInWrapperUnits); // back to c-token units
+            if (outputInWrapperUnits > type(uint64).max) revert SwapOutputOverflow();
+            swapOutput = uint64(outputInWrapperUnits);
             outputToken.forceApprove(address(outputWrapper), amountOut);
             outputWrapper.wrap(address(this), amountOut);
         }
@@ -345,78 +417,81 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
         }
         round.executed = true;
         round.swapOutput = swapOutput;
-        emit RoundSettled(roundId, round.aWasSurplus, round.matched, round.netSwapped, swapOutput);
+        emit RoundSettled(roundId, round.surplusSide, round.netSwapped, swapOutput);
     }
 
     // ------------------------------------------------------------------
-    // Withdrawals — pro-rata, computed inside FHE
+    // Payouts — credited to confidential vault balances, permissionless
     // ------------------------------------------------------------------
 
-    /// @notice Permissionless claim: pays a depositor their pro-rata payout in
-    /// UNDERLYING tokens (vUSD/vETH) instead of confidential tokens. Anyone may
-    /// call this for any user — the keeper runs it automatically so users never
-    /// sign a withdraw or an unwrap. The batch burns its own c-token share and
-    /// queues an async unwrap request to `user`; finalizing that request (also
-    /// permissionless) transfers the plain underlying tokens.
-    function withdrawForAndUnwrap(uint256 roundId, uint8 direction, address user) external {
-        if (direction != DIRECTION_A_TO_B && direction != DIRECTION_B_TO_A) revert UnknownDirection();
+    /// @notice Credit an orderer's payout back into their confidential vault
+    /// balance (never plain ERC-20 — that would expose the payout amount and
+    /// recipient). Permissionless: anyone may credit anyone; the credit always
+    /// lands in the orderer's own encrypted balance. Single-credit enforced
+    /// with a flag; the credited amounts stay encrypted.
+    ///
+    /// Payout math (no encrypted division):
+    ///   deficit side: payout = matched_i                       (1:1 match)
+    ///   surplus side: payout = matched_i + residual_i × swapOutput / net
+    /// where swapOutput and net are public by design; the mul/div use clear
+    /// scalars, which fhEVM supports.
+    function creditOrder(uint256 roundId, address user) external {
         RoundState storage round = rounds[roundId];
         require(round.executed, RoundNotClosed());
-        require(!withdrawn[roundId][direction][user], AlreadyWithdrawn());
+        euint8 dir = _orderDir[roundId][user];
+        require(euint8.unwrap(dir) != 0, NoOrder());
+        require(!_orderCredited[roundId][user], AlreadyCredited());
+        _orderCredited[roundId][user] = true;
 
-        euint64 deposit = userDeposits[roundId][direction][user];
-        require(FHE.isInitialized(deposit), NothingDeposited());
-        withdrawn[roundId][direction][user] = true;
+        ebool isA = FHE.eq(dir, DIR_A_TO_B); // sold A → receives B
+        ebool onSurplusSide = FHE.eq(dir, FHE.asEuint8(round.surplusSide));
 
-        if (direction == DIRECTION_A_TO_B) {
-            if (round.totalAIn == 0) revert NothingDeposited();
-            uint64 totalOutB = round.aWasSurplus ? round.matched + round.swapOutput : round.matched;
-            euint128 share128 = FHE.div(FHE.mul(FHE.asEuint128(deposit), FHE.asEuint128(totalOutB)), uint128(round.totalAIn));
-            euint64 share = FHE.asEuint64(share128);
-            // The batch owns the c-tokens: burn its share and queue an async
-            // unwrap request that pays `user` plain c-tokenB underlying.
-            FHE.allowTransient(share, address(cTokenB));
-            cTokenB.unwrap(address(this), user, share);
-        } else {
-            if (round.totalBIn == 0) revert NothingDeposited();
-            uint64 totalOutA = round.aWasSurplus ? round.matched : round.matched + round.swapOutput;
-            euint128 share128 = FHE.div(FHE.mul(FHE.asEuint128(deposit), FHE.asEuint128(totalOutA)), uint128(round.totalBIn));
-            euint64 share = FHE.asEuint64(share128);
-            FHE.allowTransient(share, address(cTokenA));
-            cTokenA.unwrap(address(this), user, share);
+        euint64 payout = _orderMatched[roundId][user];
+        if (round.netSwapped > 0) {
+            // share of the Uniswap output: residual_i × swapOutput / net
+            euint64 swapShare = FHE.div(
+                FHE.mul(_orderResidual[roundId][user], round.swapOutput),
+                round.netSwapped
+            );
+            payout = FHE.add(payout, FHE.select(onSurplusSide, swapShare, FHE.asEuint64(0)));
         }
-        emit ClaimedForUser(roundId, direction, user);
+
+        // Sold A → the payout lands in the B balance, and vice versa.
+        euint64 toA = FHE.select(isA, FHE.asEuint64(0), payout);
+        euint64 toB = FHE.select(isA, payout, FHE.asEuint64(0));
+
+        euint64 balA = FHE.isInitialized(_funded[user][0]) ? _funded[user][0] : FHE.asEuint64(0);
+        euint64 balB = FHE.isInitialized(_funded[user][1]) ? _funded[user][1] : FHE.asEuint64(0);
+        euint64 newA = FHE.add(balA, toA);
+        euint64 newB = FHE.add(balB, toB);
+        FHE.allowThis(newA);
+        FHE.allowThis(newB);
+        FHE.allow(newA, user);
+        FHE.allow(newB, user);
+        _funded[user][0] = newA;
+        _funded[user][1] = newB;
+
+        emit OrderCredited(roundId, user);
     }
 
-    function withdraw(uint256 roundId, uint8 direction) external {
-        if (direction != DIRECTION_A_TO_B && direction != DIRECTION_B_TO_A) revert UnknownDirection();
-        RoundState storage round = rounds[roundId];
-        require(round.executed, RoundNotClosed());
-        require(!withdrawn[roundId][direction][msg.sender], AlreadyWithdrawn());
+    /// @notice Exit: unwrap part of the caller's confidential balance to plain
+    /// ERC-20 in their wallet. Intentionally public (funding/exit leg — see
+    /// the header). The amount is caller-supplied and capped by the caller's
+    /// own encrypted balance (silently zeroed if larger, OZ pattern). The
+    /// unwrap is async: anyone finalizes it and the underlying arrives.
+    function exit(uint8 asset, externalEuint64 encAmount, bytes calldata proof) external {
+        require(asset <= 1, UnknownDirection());
+        euint64 amt = FHE.fromExternal(encAmount, proof);
+        euint64 bal = FHE.isInitialized(_funded[msg.sender][asset]) ? _funded[msg.sender][asset] : FHE.asEuint64(0);
+        amt = FHE.select(FHE.ge(bal, amt), amt, FHE.asEuint64(0));
+        euint64 newBal = FHE.sub(bal, amt);
+        FHE.allowThis(newBal);
+        FHE.allow(newBal, msg.sender);
+        _funded[msg.sender][asset] = newBal;
 
-        euint64 deposit = userDeposits[roundId][direction][msg.sender];
-        require(FHE.isInitialized(deposit), NothingDeposited());
-        withdrawn[roundId][direction][msg.sender] = true;
-
-        if (direction == DIRECTION_A_TO_B) {
-            if (round.totalAIn == 0) revert NothingDeposited();
-            // A-side always receives c-tokenB: the internal match plus, if the
-            // A side was the surplus, the Uniswap output.
-            uint64 totalOutB = round.aWasSurplus ? round.matched + round.swapOutput : round.matched;
-            // euint128 math: deposit * totalOut can exceed 2^64 for full-range
-            // amounts; widen before multiplying, narrow the (smaller) result.
-            euint128 share128 = FHE.div(FHE.mul(FHE.asEuint128(deposit), FHE.asEuint128(totalOutB)), uint128(round.totalAIn));
-            euint64 share = FHE.asEuint64(share128);
-            FHE.allowTransient(share, address(cTokenB));
-            cTokenB.confidentialTransfer(msg.sender, share);
-        } else {
-            if (round.totalBIn == 0) revert NothingDeposited();
-            uint64 totalOutA = round.aWasSurplus ? round.matched : round.matched + round.swapOutput;
-            euint128 share128 = FHE.div(FHE.mul(FHE.asEuint128(deposit), FHE.asEuint128(totalOutA)), uint128(round.totalBIn));
-            euint64 share = FHE.asEuint64(share128);
-            FHE.allowTransient(share, address(cTokenA));
-            cTokenA.confidentialTransfer(msg.sender, share);
-        }
+        ERC7984ERC20Wrapper w = asset == 0 ? cTokenA : cTokenB;
+        FHE.allowTransient(amt, address(w));
+        w.unwrap(address(this), msg.sender, amt);
     }
 
     // ------------------------------------------------------------------
@@ -434,15 +509,12 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
             IV4Router.ExactInputSingleParams({
                 poolKey: poolKey,
                 zeroForOne: zeroForOne,
-                amountIn: uint128(amountIn), // net*rate fits uint128 (net ≤ 2^64)
-                amountOutMinimum: 0, // guarded below via balance check + quote off-chain
+                amountIn: uint128(amountIn),
+                amountOutMinimum: 0, // guarded below via balance check + slippage floor
                 hookData: bytes('')
             })
         );
         params[1] = abi.encode(inputCurrency, amountIn); // SETTLE_ALL
-        // TAKE with amount 0 (open delta) sends the full swap output straight
-        // to the batcher. TAKE_ALL credits the router itself and does not sweep
-        // on the deployed Universal Router — use the proven TAKE form.
         params[2] = abi.encode(outputCurrency, address(this), uint256(0)); // TAKE
         bytes[] memory inputs = new bytes[](1);
         inputs[0] = abi.encode(

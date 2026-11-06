@@ -1,236 +1,109 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Veil · Confidential Batch Swap (FHE)</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <title>Veil — private swaps</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; background: #0b0e14; color: #e6e9f0;
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .card {
+      width: 100%; max-width: 420px; background: #12161f; border: 1px solid #232a38;
+      border-radius: 16px; padding: 24px;
+    }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+    h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+    h1 span { color: #7c8aa5; font-weight: 400; font-size: 13px; display: block; }
+    .connect {
+      background: #1d2432; color: #e6e9f0; border: 1px solid #2e3850; border-radius: 10px;
+      padding: 8px 14px; font-size: 13px; cursor: pointer;
+    }
+    .connect.ok { border-color: #2e6b4f; color: #7ee2a8; }
+    .balances { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+    .bal { background: #0e1219; border: 1px solid #1d2432; border-radius: 10px; padding: 10px 12px; }
+    .bal .t { font-size: 11px; color: #7c8aa5; text-transform: uppercase; letter-spacing: .5px; }
+    .bal .v { font-size: 16px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .bal .v.lock { color: #9db4ff; }
+    .dir { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+    .dir button {
+      background: #0e1219; border: 1px solid #232a38; color: #aab4c8; border-radius: 10px;
+      padding: 10px; font-size: 14px; cursor: pointer;
+    }
+    .dir button.on { border-color: #4f7cff; color: #fff; background: #16203a; }
+    .amount {
+      width: 100%; background: #0e1219; border: 1px solid #232a38; color: #e6e9f0;
+      border-radius: 10px; padding: 12px 14px; font-size: 18px; margin-bottom: 12px;
+    }
+    .amount:focus { outline: none; border-color: #4f7cff; }
+    .swap {
+      width: 100%; background: #4f7cff; border: none; color: #fff; border-radius: 12px;
+      padding: 14px; font-size: 16px; font-weight: 600; cursor: pointer;
+    }
+    .swap:disabled { opacity: .5; cursor: default; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .mini {
+      background: transparent; border: 1px solid #2e3850; color: #aab4c8; border-radius: 10px;
+      padding: 9px; font-size: 13px; cursor: pointer;
+    }
+    .status { margin-top: 14px; font-size: 13px; color: #9aa5ba; min-height: 38px; }
+    .status.ok { color: #7ee2a8; }
+    .status.err { color: #ff8f8f; }
+    .round { margin-top: 6px; font-size: 12px; color: #66718a; }
+    details { margin-top: 14px; font-size: 12px; color: #66718a; }
+    summary { cursor: pointer; }
+    #engineLogList { max-height: 180px; overflow-y: auto; margin-top: 8px; }
+    .engine-log-line { display: flex; gap: 6px; padding: 2px 0; word-break: break-all; }
+    .engine-log-time { color: #4d5670; flex: none; }
+    .note { margin-top: 12px; font-size: 11.5px; color: #5d6880; line-height: 1.45; }
+  </style>
 </head>
-<body class="batch-body">
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">◈</span>
-      <span class="brand-name">Veil</span>
-      <span class="brand-sub">confidential batch swap · FHE + Uniswap v4 · Sepolia</span>
-      <a href="/" style="font-size:12px;color:#6b7385;">← RAILGUN mode</a>
-    </div>
-    <nav class="tabs" id="tabs">
-      <button class="tab active" data-tab="trade">Trade</button>
-      <button class="tab" data-tab="transparency">Transparency</button>
-      <button class="tab" data-tab="operator">Operator</button>
-    </nav>
-    <div class="topbar-right">
-      <span class="chain-badge" id="chainBadge">—</span>
-      <button class="btn btn-primary" id="connectBtn">Connect wallet</button>
-    </div>
-  </header>
+<body>
+  <main class="card">
+    <header>
+      <h1>Veil<span>private batched swaps · Sepolia</span></h1>
+      <button id="connectBtn" class="connect">Connect</button>
+    </header>
 
-  <main class="page">
-    <!-- ==================== TRADE ==================== -->
-    <section class="tab-panel" id="panel-trade">
-      <div class="grid grid-3">
-        <div class="card stat">
-          <div class="stat-label">Current round</div>
-          <div class="stat-value" id="statRound">—</div>
-          <div class="stat-hint" id="statRoundHint">opens at deposit #1</div>
-        </div>
-        <div class="card stat">
-          <div class="stat-label">Round closes in</div>
-          <div class="stat-value" id="statCountdown">—</div>
-          <div class="stat-hint" id="statCountdownHint">min round duration —</div>
-        </div>
-        <div class="card stat">
-          <div class="stat-label">Distinct participants</div>
-          <div class="stat-value" id="statUsers">—</div>
-          <div class="stat-hint" id="statUsersHint">minimum submitter addresses —</div>
-        </div>
+    <section class="balances" id="balances">
+      <div class="bal"><div class="t">vUSD</div><div class="v" id="balA">—</div></div>
+      <div class="bal"><div class="t">vETH</div><div class="v" id="balB">—</div></div>
+      <div class="bal"><div class="t">🔒 vault vUSD</div><div class="v lock" id="balCA">—</div></div>
+      <div class="bal"><div class="t">🔒 vault vETH</div><div class="v lock" id="balCB">—</div></div>
+    </section>
+
+    <section>
+      <div class="dir">
+        <button id="dirAB" class="on">vUSD → vETH</button>
+        <button id="dirBA">vETH → vUSD</button>
       </div>
-
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>Deposit an encrypted intent</h2>
-          <p class="muted">Your amount is encrypted client-side (FHE input + ZK well-formedness proof). The batcher only ever sees ciphertexts. When the round closes, the encrypted totals become publicly decryptable — the amounts, never your individual deposit.</p>
-          <div class="timeline" id="lifecycleTimeline"></div>
-          <div class="quote-line" id="quoteLine">Connect a wallet to load the live batch quote.</div>
-          <div class="direction-toggle" id="directionToggle">
-            <button class="dir-btn active" data-direction="1">vUSD → vETH</button>
-            <button class="dir-btn" data-direction="2">vETH → vUSD</button>
-          </div>
-          <label class="field">
-            <span>Amount (c-tokens, 6 dp)</span>
-            <input id="depositAmount" type="text" inputmode="decimal" placeholder="1.5" />
-          </label>
-          <div class="row-actions">
-            <button class="btn btn-primary" id="oneClickBtn">⚡ One-click swap</button>
-            <button class="btn" id="depositBtn">Encrypt &amp; deposit</button>
-            <button class="btn" id="maxDepositBtn">Max</button>
-          </div>
-          <div class="status" id="depositStatus"></div>
-          <div class="explain-box" id="depositExplain"></div>
-        </div>
-
-        <div class="card">
-          <h2>Wallet &amp; balances</h2>
-          <table class="data-table" id="balanceTable">
-            <thead><tr><th>Token</th><th>Wallet</th><th>Confidential balance</th></tr></thead>
-            <tbody><tr><td colspan="3" class="muted">Connect wallet…</td></tr></tbody>
-          </table>
-          <div class="row-actions">
-            <button class="btn" id="refreshBalancesBtn">Refresh</button>
-            <button class="btn" id="faucetBtn">Faucet mint 10 vUSD + 10 vETH</button>
-          </div>
-          <div class="status" id="balanceStatus"></div>
-        </div>
-      </div>
-
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>Wrap / unwrap</h2>
-          <p class="muted">c-vUSD and c-vETH are confidential (ERC-7984) wrappers of the demo tokens. Wrap before depositing.</p>
-          <div class="grid grid-2 gap-s">
-            <label class="field"><span>Token</span>
-              <select id="wrapToken"><option value="A">vUSD → c-vUSD</option><option value="B">vETH → c-vETH</option></select>
-            </label>
-            <label class="field"><span>Amount (underlying, 18 dp)</span>
-              <input id="wrapAmount" type="text" inputmode="decimal" placeholder="10" />
-            </label>
-          </div>
-          <div class="row-actions">
-            <button class="btn btn-primary" id="wrapBtn">Wrap</button>
-            <button class="btn" id="unwrapBtn">Unwrap</button>
-          </div>
-          <div class="status" id="wrapStatus"></div>
-        </div>
-
-        <div class="card">
-          <h2>My round positions</h2>
-          <table class="data-table" id="positionsTable">
-            <thead><tr><th>Round</th><th>Direction</th><th>My deposit</th><th>Status</th><th></th></tr></thead>
-            <tbody><tr><td colspan="5" class="muted">No deposits yet.</td></tr></tbody>
-          </table>
-          <div class="status" id="positionsStatus"></div>
-        </div>
+      <input id="amount" class="amount" inputmode="decimal" placeholder="0.0" autocomplete="off" />
+      <button id="swapBtn" class="swap" disabled>Private swap</button>
+      <div class="row2">
+        <button id="exitA" class="mini">Withdraw vUSD</button>
+        <button id="exitB" class="mini">Withdraw vETH</button>
       </div>
     </section>
 
-    <!-- ==================== TRANSPARENCY ==================== -->
-    <section class="tab-panel hidden" id="panel-transparency">
-      <div class="card">
-        <h2>Privacy ledger — what is public, what is not, and why</h2>
-        <p class="muted">Every row below is verifiable on Sepolia. "Private · FHE" fields exist only as ciphertext handles; "Public after close" fields become decryptable by anyone through the Zama Gateway once the round is closed — by design, not by accident.</p>
-        <table class="data-table" id="privacyMatrix">
-          <thead><tr><th>Data</th><th>Visibility</th><th>Where it lives</th><th>Who can see it</th><th>How to verify</th></tr></thead>
-          <tbody id="privacyMatrixBody"></tbody>
-        </table>
-      </div>
+    <div id="status" class="status"></div>
+    <div id="roundLine" class="round"></div>
 
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>Round ledger</h2>
-          <p class="muted">Built from on-chain events (<code>DepositSubmitted</code>, <code>RoundClosed</code>, <code>RoundSettled</code>). Nothing here comes from our servers.</p>
-          <table class="data-table" id="roundLedger">
-            <thead><tr><th>Round</th><th>Deposits</th><th>Closed</th><th>Settled</th><th>Matched</th><th>Net→AMM</th><th>AMM out</th><th>Surplus</th></tr></thead>
-            <tbody><tr><td colspan="8" class="muted">No rounds yet.</td></tr></tbody>
-          </table>
-        </div>
-        <div class="card">
-          <h2>Round detail</h2>
-          <label class="field"><span>Round id</span><input id="detailRound" type="number" min="1" value="1" /></label>
-          <button class="btn" id="loadRoundBtn">Load from chain</button>
-          <div id="roundDetail" class="detail-box"><span class="muted">Load a round to inspect its raw state.</span></div>
-        </div>
-      </div>
+    <details>
+      <summary>engine log</summary>
+      <div id="engineLogList"></div>
+    </details>
 
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>On-chain event feed</h2>
-          <table class="data-table" id="eventFeed">
-            <thead><tr><th>Event</th><th>Round</th><th>Detail</th><th>Tx</th></tr></thead>
-            <tbody><tr><td colspan="4" class="muted">No events yet.</td></tr></tbody>
-          </table>
-        </div>
-        <div class="card">
-          <h2>Honest limitations</h2>
-          <ul class="audit-list" id="auditList">
-            <li><b>Participation is public.</b> Submission events reveal your address and direction. Zero-value and overflowing amounts are refunded, but the round threshold counts distinct submitting addresses and is not an anonymity guarantee.</li>
-            <li><b>Totals become public at close.</b> <code>makePubliclyDecryptable</code> is intentional: the protocol needs the aggregate to size one AMM trade. Individuals stay hidden inside the aggregate.</li>
-            <li><b>Surplus side is public after settle.</b> If everyone swaps the same direction, the net trade is visible. Netting is what shrinks it.</li>
-            <li><b>Settlement timing has MEV risk.</b> The operator sees public totals and currently submits through the public MetaMask RPC. Flashbots/private transaction submission is not wired into this app.</li>
-            <li><b>Demo tokens are 1:1.</b> vUSD/vETH trade at parity in the seeded pool, so swap output ≈ net. Real price impact is out of demo scope.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <!-- ==================== OPERATOR ==================== -->
-    <section class="tab-panel hidden" id="panel-operator">
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>Deployment</h2>
-          <p class="muted">Deploys c-vUSD, c-vETH (ERC-7984 wrappers) and the VeilBatchSwap rounder through your MetaMask. The batcher swaps the net residual through Uniswap v4 (Universal Router + Permit2) against the demo pool.</p>
-          <div id="deployInfo" class="detail-box"><span class="muted">No batch stack deployed yet.</span></div>
-          <div class="grid grid-2 gap-s">
-            <label class="field"><span>Min round duration (s)</span><input id="cfgMinRound" type="number" value="60" min="1" /></label>
-            <label class="field"><span>Min distinct submitter addresses</span><input id="cfgMinUsers" type="number" value="2" min="2" /></label>
-          </div>
-          <div class="row-actions">
-            <button class="btn btn-primary" id="deployBtn">Deploy batch stack</button>
-            <button class="btn" id="loadConfigBtn">Reload config</button>
-          </div>
-          <div class="status" id="deployStatus"></div>
-        </div>
-
-        <div class="card">
-          <h2>Keeper controls</h2>
-          <p class="muted">Round closing and transaction execution are permissionless. The configured settlement operator verifies the Zama Gateway proof and commits a non-zero minimum output for every net swap; anyone can submit the later execution transaction.</p>
-          <div class="row-actions">
-            <button class="btn" id="closeRoundBtn">Close round</button>
-            <button class="btn btn-primary" id="settleRoundBtn">Fetch decryption &amp; settle</button>
-          </div>
-          <label class="check"><input type="checkbox" id="autoKeeper" /> Auto-keeper: close &amp; settle every 15 s while this tab is open</label>
-          <div class="status" id="keeperStatus"></div>
-          <div class="explain-box" id="keeperExplain"></div>
-        </div>
-      </div>
-
-      <div class="grid grid-2">
-        <div class="card">
-          <h2>Batcher treasury (on-chain)</h2>
-          <p class="muted">What the VeilBatchSwap contract currently custodies — underlying tokens awaiting settlement, confidential float, and the swap reserve used by the mock leg.</p>
-          <table class="data-table" id="treasuryTable">
-            <thead><tr><th>Asset</th><th>Batcher balance</th></tr></thead>
-            <tbody><tr><td colspan="2" class="muted">Deploy the stack first.</td></tr></tbody>
-          </table>
-        </div>
-        <div class="card">
-          <h2>Protocol configuration</h2>
-          <table class="data-table" id="configTable">
-            <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
-            <tbody><tr><td colspan="2" class="muted">Deploy the stack first.</td></tr></tbody>
-          </table>
-          <div class="row-actions">
-            <button class="btn" id="refreshTreasuryBtn">Refresh on-chain state</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ==================== ENGINE LOG ==================== -->
-    <section class="card engine-log-card" id="engineLogCard">
-      <div class="engine-log-head">
-        <h2>Engine log</h2>
-        <div class="engine-log-tools">
-          <span class="pill" id="engineLogCount">0 events</span>
-          <button class="btn btn-small" id="clearEngineLog">Clear</button>
-        </div>
-      </div>
-      <p class="muted">Every SDK call, RPC round-trip and transaction this page makes, newest first. This is the same log the RAILGUN engine writes — nothing is hidden.</p>
-      <div class="engine-log" id="engineLogList"></div>
-    </section>
+    <p class="note">
+      Funding and withdrawals are public transactions (wallet, token, amount).
+      Swap orders are fully encrypted — direction, amount and payouts never
+      appear on-chain in plaintext. Batching blurs order patterns; it is not
+      an anonymity guarantee.
+    </p>
   </main>
-
-  <div class="toast-stack" id="toastStack"></div>
   <script type="module" src="/src/batch.js"></script>
 </body>
 </html>

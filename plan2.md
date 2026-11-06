@@ -382,3 +382,38 @@ always complete. `MissingSwapMinimum` deadlock (minOut=0 + net>0) eliminated.
 
 **State after fixes:** batch `0x7A679859…` round 3 open; user compensated
 (30 vUSD, 9.748138 vETH); keeper daemon running with bot + claims + finalize.
+
+## 15. Privacy hardening v3 + minimal UI (2026-11-06)
+
+User-directed privacy target, implemented in full:
+
+1. **Funding separate from trading** — users fund a confidential vault balance
+   once (public leg, honest labeling); orders draw on the funded balance.
+2. **Encrypted direction + amount, one shared entry point** — `submitOrder`
+   takes an encrypted euint64 amount and euint8 direction from a single
+   client-side input. The order event carries only (round, user). Both
+   c-tokens live in the batch vault, so the entry path reveals no side.
+   Underfunded orders are silently zeroed (OZ pattern — no revert oracle).
+3. **Encrypted round totals** — closeRound runs greedy pairwise netting
+   inside FHE (`m = min(remaining_i, remaining_j)` over opposite-direction
+   pairs; fhEVM has no encrypted÷encrypted division, so pro-rata is avoided:
+   deficit payouts = matched exactly; surplus payouts = matched +
+   residual × swapOutput / net with division by the PUBLIC net only). Only
+   net + surplus side are publicly decryptable; totals/matched/orders never.
+4. **Confidential payouts** — `creditOrder` (permissionless) credits the
+   user's vault balance; no plain ERC-20 in the settlement flow. `exit`
+   unwraps to plain tokens as an explicitly public leg.
+5. **Honest disclosures** — relayer, timing, pair, net Uniswap trade and
+   orderer ADDRESSES remain public; the UI states batching is not an
+   anonymity guarantee.
+
+Live: batch v3 `0x136e2A0F4a48d5f5cFC3821934B86a1B0dA286c0` (block 12076649),
+wrappers reused. Hardhat 9/9 (new suite). E2E proven on Sepolia: fund →
+encrypted order → bot counter-order → encrypted close → net=2M/surplus=A
+decrypt → swap → confidential credit (vault 5.78 c-vETH) → exit → 5.0 vETH.
+Keeper: bot funds once (marker file) then submits random-direction encrypted
+orders; tick guard fixed to allow the bot on round 1.
+
+UI rebuilt minimal: balances (plain + 🔒 vault), direction toggle, amount,
+one Private swap button (auto-funds), two withdraw buttons, status line,
+collapsed engine log. Honest-privacy note on the page.

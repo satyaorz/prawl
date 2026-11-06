@@ -2,21 +2,21 @@ import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { ethers, fhevm } from "hardhat";
 import { FhevmType } from "@fhevm/hardhat-plugin";
 import { expect } from "chai";
-import { AbiCoder, parseUnits } from "ethers";
+import { parseUnits } from "ethers";
 
 import { ERC20Mock, MockBatchSwap, VeilConfidentialWrapper } from "../types";
 
 type Signers = { deployer: HardhatEthersSigner; alice: HardhatEthersSigner; bob: HardhatEthersSigner; reserve: HardhatEthersSigner };
 
-const DIRECTION_A_TO_B = 1;
-const DIRECTION_B_TO_A = 2;
+const DIR_A_TO_B = 1;
+const DIR_B_TO_A = 2;
 const WAD = parseUnits("1", 18);
 
 async function decryptUser(handle: unknown, contract: string, user: HardhatEthersSigner): Promise<bigint> {
   return fhevm.userDecryptEuint(FhevmType.euint64, handle as string, contract, user);
 }
 
-describe("VeilBatchSwap", function () {
+describe("VeilBatchSwap v3 (confidential orders)", function () {
   let signers: Signers;
   let tokenA: ERC20Mock, tokenB: ERC20Mock;
   let cA: VeilConfidentialWrapper, cB: VeilConfidentialWrapper;
@@ -53,7 +53,7 @@ describe("VeilBatchSwap", function () {
     )) as MockBatchSwap;
     batchAddress = await batch.getAddress();
 
-    // Fund the mock swap reserve with tokenB and approve the batch contract.
+    // 1:1 mock swap reserve.
     await (await tokenB.mint(await signers.reserve.getAddress(), WAD * 1_000_000_000_000n)).wait();
     await (await tokenB.connect(signers.reserve).approve(batchAddress, WAD * 1_000_000_000_000n)).wait();
     await (await tokenA.mint(await signers.reserve.getAddress(), WAD * 1_000_000_000_000n)).wait();
@@ -61,245 +61,173 @@ describe("VeilBatchSwap", function () {
   });
 
   async function wrap(user: HardhatEthersSigner, token: ERC20Mock, cToken: VeilConfidentialWrapper, amount: bigint) {
-    // c-tokens are worth `rate()` underlying each; mint enough so balance == amount.
     const rate = await cToken.rate();
     await (await token.mint(user.address, amount * rate)).wait();
     await (await token.connect(user).approve(await cToken.getAddress(), amount * rate)).wait();
     await (await cToken.connect(user).wrap(user.address, amount * rate)).wait();
   }
 
-  async function deposit(user: HardhatEthersSigner, cToken: VeilConfidentialWrapper, direction: number, amount: bigint) {
-    await depositRaw(user, cToken, direction, amount, `0x${direction.toString(16).padStart(2, "0")}`);
-  }
-
-  async function depositRaw(user: HardhatEthersSigner, cToken: VeilConfidentialWrapper, direction: number, amount: bigint, data: string) {
+  /** Fund the confidential vault balance (public funding leg, data 0x00). */
+  async function fund(user: HardhatEthersSigner, cToken: VeilConfidentialWrapper, amount: bigint) {
     const enc = await fhevm.createEncryptedInput(await cToken.getAddress(), user.address).add64(amount).encrypt();
     await (await cToken.connect(user)[
       "confidentialTransferAndCall(address,bytes32,bytes,bytes)"
-    ](batchAddress, enc.handles[0], enc.inputProof, data as `0x${string}`)).wait();
+    ](batchAddress, enc.handles[0], enc.inputProof, "0x00")).wait();
   }
 
-  async function settleTwoPhase(
-    roundPre: { aToB: bigint; bToA: bigint },
-    expectedNet: bigint,
-    minSwapOutput = expectedNet === 0n ? 0n : (expectedNet * 95n) / 100n,
-  ) {
-    const dec = await fhevm.publicDecrypt([roundPre.aToB, roundPre.bToA]);
-    const roundId = (await batch.currentRound()) - 1n;
-    await (await batch.prepareSettle(roundId, dec.abiEncodedClearValues, dec.decryptionProof, minSwapOutput)).wait();
-    if (expectedNet === 0n) {
+  /** Submit an order with ENCRYPTED direction and amount (one input, one proof). */
+  async function order(user: HardhatEthersSigner, direction: number, amount: bigint) {
+    const enc = await fhevm.createEncryptedInput(batchAddress, user.address).add64(amount).add8(direction).encrypt();
+    await (await batch.connect(user).submitOrder(enc.handles[0], enc.inputProof, enc.handles[1], enc.inputProof)).wait();
+  }
+
+  async function fundedBalance(user: HardhatEthersSigner, asset: number): Promise<bigint> {
+    const handle = await batch.fundedBalance(user.address, asset);
+    if (handle === 0n) return 0n;
+    return decryptUser(handle, batchAddress, user);
+  }
+
+  /** Close, decrypt ONLY (net, surplus), prepare, execute, credit both. */
+  async function settleAndCredit() {
+    const roundId = await batch.currentRound(); // the round being closed
+    await (await batch.closeRound()).wait();
+    const round = await batch.rounds(roundId);
+    const dec = await fhevm.publicDecrypt([round.netEnc, round.surplusEnc]);
+    const net = dec.clearValues[round.netEnc];
+    const surplus = dec.clearValues[round.surplusEnc];
+    await (await batch.prepareSettle(roundId, dec.abiEncodedClearValues, dec.decryptionProof)).wait();
+    if (net > 0n) {
+      const prepared = await batch.rounds(roundId);
+      const dec2 = await fhevm.publicDecrypt([prepared.unwrapHandle]);
+      const cleartext = dec2.clearValues[prepared.unwrapHandle];
+      await (await batch.executeSettle(roundId, cleartext, dec2.decryptionProof)).wait();
+    } else {
       await (await batch.executeSettle(roundId, 0n, "0x")).wait();
-      return;
     }
-    const prepared = await batch.rounds(roundId);
-    const dec2 = await fhevm.publicDecrypt([prepared.unwrapHandle]);
-    const cleartext = dec2.clearValues[prepared.unwrapHandle];
-    await (
-      await batch.executeSettle(roundId, cleartext, dec2.decryptionProof)
-    ).wait();
+    void surplus;
+    for (const u of [signers.alice, signers.bob]) {
+      await (await batch.creditOrder(roundId, u.address)).wait();
+    }
+    return roundId;
   }
 
-  it("refuses deposits with a wrong or missing direction byte", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    const before = await decryptUser(await cA.confidentialBalanceOf(signers.alice.address), cAAddress, signers.alice);
-    await depositRaw(signers.alice, cA, DIRECTION_B_TO_A, WAD, "0x");
-    const after = await decryptUser(await cA.confidentialBalanceOf(signers.alice.address), cAAddress, signers.alice);
-    expect(after).to.equal(before); // refunded, nothing accepted
+  it("funding credits an encrypted balance the user can decrypt", async function () {
+    await wrap(signers.alice, tokenA, cA, 10n * 10n ** 6n);
+    await fund(signers.alice, cA, 10n * 10n ** 6n);
+    expect(await fundedBalance(signers.alice, 0)).to.equal(10n * 10n ** 6n);
+    expect(await fundedBalance(signers.alice, 1)).to.equal(0n);
   });
 
-  it("refunds zero-amount deposits without changing confidential balances", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    const before = await decryptUser(await cA.confidentialBalanceOf(signers.alice.address), cAAddress, signers.alice);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, 0n);
-    const after = await decryptUser(await cA.confidentialBalanceOf(signers.alice.address), cAAddress, signers.alice);
-    expect(after).to.equal(before);
+  it("order events carry no direction or amount", async function () {
+    await wrap(signers.alice, tokenA, cA, 5n * 10n ** 6n);
+    await fund(signers.alice, cA, 5n * 10n ** 6n);
+    await (await batch.connect(signers.alice).submitOrder(
+      ...(await orderArgs(signers.alice, DIR_A_TO_B, 5n * 10n ** 6n)),
+    )).wait();
+    const events = await batch.queryFilter(batch.filters.OrderSubmitted());
+    expect(events.length).to.equal(1);
+    expect(events[0].fragment.inputs.map((i) => i.name).sort()).to.deep.equal(["round", "user"]);
   });
 
-  it("does not divide by zero when a round contains only zero-value attempts", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await wrap(signers.bob, tokenB, cB, WAD);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, 0n);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, 0n);
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-    const round = await batch.rounds(1);
-    await settleTwoPhase(round, 0n);
-    await expect(batch.connect(signers.alice).withdraw(1, DIRECTION_A_TO_B))
-      .to.be.revertedWithCustomError(batch, "NothingDeposited");
+  async function orderArgs(user: HardhatEthersSigner, direction: number, amount: bigint): Promise<[string, string, string, string]> {
+    const enc = await fhevm.createEncryptedInput(batchAddress, user.address).add64(amount).add8(direction).encrypt();
+    return [enc.handles[0], enc.inputProof, enc.handles[1], enc.inputProof];
+  }
+
+  it("encrypted direction debits the correct funded side", async function () {
+    await wrap(signers.alice, tokenA, cA, 5n * 10n ** 6n);
+    await fund(signers.alice, cA, 5n * 10n ** 6n);
+    await (await batch.connect(signers.alice).submitOrder(
+      ...(await orderArgs(signers.alice, DIR_A_TO_B, 3n * 10n ** 6n)),
+    )).wait();
+    expect(await fundedBalance(signers.alice, 0)).to.equal(2n * 10n ** 6n);
+    expect(await fundedBalance(signers.alice, 1)).to.equal(0n);
   });
 
-  it("accepts the uint64 wrapper-supply limit and rejects minting past it", async function () {
-    const max = (1n << 64n) - 1n;
-    await wrap(signers.alice, tokenA, cA, max);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, max);
-    const position = await decryptUser(await batch.userDeposits(1, DIRECTION_A_TO_B, signers.alice.address), batchAddress, signers.alice);
-    expect(position).to.equal(max);
+  it("underfunded orders are silently zeroed, balances preserved", async function () {
+    await wrap(signers.alice, tokenA, cA, 3n * 10n ** 6n);
+    await fund(signers.alice, cA, 3n * 10n ** 6n);
+    await (await batch.connect(signers.alice).submitOrder(
+      ...(await orderArgs(signers.alice, DIR_A_TO_B, 5n * 10n ** 6n)),
+    )).wait();
+    expect(await fundedBalance(signers.alice, 0)).to.equal(3n * 10n ** 6n);
+    // The zeroed order still participates but matches nothing.
+    await wrap(signers.bob, tokenB, cB, 4n * 10n ** 6n);
+    await fund(signers.bob, cB, 4n * 10n ** 6n);
+    await (await batch.connect(signers.bob).submitOrder(
+      ...(await orderArgs(signers.bob, DIR_B_TO_A, 4n * 10n ** 6n)),
+    )).wait();
+    const roundId = await settleAndCredit();
+    expect(await fundedBalance(signers.alice, 1)).to.equal(0n);
+    expect(await fundedBalance(signers.bob, 0)).to.equal(4n * 10n ** 6n); // fully matched 1:1
+    void roundId;
+  });
+
+  it("two-sided round: matched 1:1, surplus share via public net, credited confidentially", async function () {
+    await wrap(signers.alice, tokenA, cA, 5n * 10n ** 6n);
+    await fund(signers.alice, cA, 5n * 10n ** 6n);
+    await wrap(signers.bob, tokenB, cB, 3n * 10n ** 6n);
+    await fund(signers.bob, cB, 3n * 10n ** 6n);
+    await order(signers.alice, DIR_A_TO_B, 5n * 10n ** 6n);
+    await order(signers.bob, DIR_B_TO_A, 3n * 10n ** 6n);
+
+    await settleAndCredit();
+
+    // 1:1 mock swap: alice (surplus, sold 5) gets 3 matched + 2 residual → 5 cB.
+    // bob (deficit, sold 3) gets 3 matched → 3 cA.
+    expect(await fundedBalance(signers.alice, 1)).to.equal(5n * 10n ** 6n);
+    expect(await fundedBalance(signers.alice, 0)).to.equal(0n);
+    expect(await fundedBalance(signers.bob, 0)).to.equal(3n * 10n ** 6n);
+    expect(await fundedBalance(signers.bob, 1)).to.equal(0n);
+  });
+
+  it("fully matched round pays both sides 1:1 with no swap leg", async function () {
+    await wrap(signers.alice, tokenA, cA, 4n * 10n ** 6n);
+    await fund(signers.alice, cA, 4n * 10n ** 6n);
+    await wrap(signers.bob, tokenB, cB, 4n * 10n ** 6n);
+    await fund(signers.bob, cB, 4n * 10n ** 6n);
+    await order(signers.alice, DIR_A_TO_B, 4n * 10n ** 6n);
+    await order(signers.bob, DIR_B_TO_A, 4n * 10n ** 6n);
+    await settleAndCredit();
+    expect(await fundedBalance(signers.alice, 1)).to.equal(4n * 10n ** 6n);
+    expect(await fundedBalance(signers.bob, 0)).to.equal(4n * 10n ** 6n);
+  });
+
+  it("creditOrder is permissionless but single-credit", async function () {
+    await wrap(signers.alice, tokenA, cA, 4n * 10n ** 6n);
+    await fund(signers.alice, cA, 4n * 10n ** 6n);
+    await wrap(signers.bob, tokenB, cB, 4n * 10n ** 6n);
+    await fund(signers.bob, cB, 4n * 10n ** 6n);
+    await order(signers.alice, DIR_A_TO_B, 4n * 10n ** 6n);
+    await order(signers.bob, DIR_B_TO_A, 4n * 10n ** 6n);
+    const roundId = await settleAndCredit();
+    await expect(batch.creditOrder(roundId, signers.alice.address)).to.be.revertedWithCustomError(batch, "AlreadyCredited");
+    expect(await fundedBalance(signers.alice, 1)).to.equal(4n * 10n ** 6n);
+  });
+
+  it("exit unwraps the funded balance to plain tokens (public leg by design)", async function () {
+    await wrap(signers.alice, tokenA, cA, 6n * 10n ** 6n);
+    await fund(signers.alice, cA, 6n * 10n ** 6n);
     const rate = await cA.rate();
-    await (await tokenA.mint(signers.alice.address, rate)).wait();
-    await (await tokenA.connect(signers.alice).approve(cAAddress, rate)).wait();
-    await expect(cA.connect(signers.alice).wrap(signers.alice.address, rate))
-      .to.be.revertedWithCustomError(cA, "ERC7984TotalSupplyOverflow");
-  });
-
-  it("settles a fully-matched round with zero Uniswap leg", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await wrap(signers.bob, tokenB, cB, WAD);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, WAD);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, WAD);
-
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-
-    const expectedNet = 0n; // fully matched — no AMM leg
-    const roundPre = await batch.rounds(1);
-    await settleTwoPhase(roundPre, expectedNet);
-
-    const round = await batch.rounds(1);
-    expect(round.matched).to.equal(WAD);
-    expect(round.netSwapped).to.equal(0n);
-    expect(round.aWasSurplus).to.equal(true);
-
-    // Alice withdraws c-tokenB; Bob withdraws c-tokenA.
-    await (await batch.connect(signers.alice).withdraw(1, DIRECTION_A_TO_B)).wait();
-    await (await batch.connect(signers.bob).withdraw(1, DIRECTION_B_TO_A)).wait();
-
-    const aliceOut = await decryptUser(await cB.confidentialBalanceOf(signers.alice.address), cBAddress, signers.alice);
-    const bobOut = await decryptUser(await cA.confidentialBalanceOf(signers.bob.address), cAAddress, signers.bob);
-    expect(aliceOut).to.equal(WAD);
-    expect(bobOut).to.equal(WAD);
-  });
-
-  it("nets a surplus round through the swap leg", async function () {
-    const aIn = WAD + WAD / 2n; // 150
-    const bIn = WAD; // 100
-    await wrap(signers.alice, tokenA, cA, aIn);
-    await wrap(signers.bob, tokenB, cB, bIn);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, aIn);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, bIn);
-
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-
-    const expectedNet = aIn - bIn; // 1:1 mock pool ⇒ output == input
-    const roundPre = await batch.rounds(1);
-    await settleTwoPhase(roundPre, expectedNet);
-
-    const round = await batch.rounds(1);
-    expect(round.matched).to.equal(bIn);
-    expect(round.netSwapped).to.equal(aIn - bIn);
-    expect(round.aWasSurplus).to.equal(true);
-    expect(round.swapOutput).to.equal(aIn - bIn); // 1:1 mock
-
-    await (await batch.connect(signers.alice).withdraw(1, DIRECTION_A_TO_B)).wait();
-    await (await batch.connect(signers.bob).withdraw(1, DIRECTION_B_TO_A)).wait();
-
-    // Alice: 150 × (100 matched + 50 swap) / 150 = 150 c-tokenB
-    const aliceOut = await decryptUser(await cB.confidentialBalanceOf(signers.alice.address), cBAddress, signers.alice);
-    expect(aliceOut).to.equal(aIn);
-    // Bob: 100 × 100 / 100 = 100 c-tokenA
-    const bobOut = await decryptUser(await cA.confidentialBalanceOf(signers.bob.address), cAAddress, signers.bob);
-    expect(bobOut).to.equal(bIn);
-  });
-
-  it("reverts settlement when the swap leg under-delivers (slippage guard)", async function () {
-    const aIn = WAD + WAD / 2n;
-    const bIn = WAD;
-    await wrap(signers.alice, tokenA, cA, aIn);
-    await wrap(signers.bob, tokenB, cB, bIn);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, aIn);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, bIn);
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-    const roundPre = await batch.rounds(1);
-    // The 1:1 mock delivers exactly aIn-bIn; demanding more must revert.
-    await expect(settleTwoPhase(roundPre, aIn - bIn, aIn - bIn + 1n)).to.be.revertedWithCustomError(
-      batch,
-      "SlippageExceeded",
-    );
-  });
-
-  it("allows only the configured settler to commit a swap minimum", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await wrap(signers.bob, tokenB, cB, WAD / 2n);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, WAD);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, WAD / 2n);
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-    const round = await batch.rounds(1);
-    const dec = await fhevm.publicDecrypt([round.aToB, round.bToA]);
-    await expect(batch.connect(signers.alice).prepareSettle(1, dec.abiEncodedClearValues, dec.decryptionProof, WAD / 3n))
-      .to.be.revertedWithCustomError(batch, "NotSettler");
-    await expect(batch.prepareSettle(1, dec.abiEncodedClearValues, dec.decryptionProof, 0n))
-      .to.be.revertedWithCustomError(batch, "MissingSwapMinimum");
-    await (await batch.prepareSettle(1, dec.abiEncodedClearValues, dec.decryptionProof, WAD / 3n)).wait();
-    expect((await batch.rounds(1)).minSwapOutput).to.equal(WAD / 3n);
-  });
-
-  it("blocks early close and under-threshold close", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, WAD);
-    await expect(batch.closeRound()).to.be.revertedWithCustomError(batch, "NotEnoughSubmitters");
-  });
-
-  it("lets anyone claim a payout in underlying tokens (withdrawForAndUnwrap)", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await wrap(signers.bob, tokenB, cB, WAD);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, WAD);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, WAD);
-
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-    const roundPre = await batch.rounds(1);
-    await settleTwoPhase(roundPre, 0n);
-
-    const aliceUnderlyingBefore = await tokenB.balanceOf(signers.alice.address);
-    const bobUnderlyingBefore = await tokenA.balanceOf(signers.bob.address);
-
-    // A third party (the deployer/keeper) claims FOR both depositors — the
-    // depositors sign nothing.
-    const tx = await (await batch.connect(signers.deployer).withdrawForAndUnwrap(1, DIRECTION_A_TO_B, signers.alice.address)).wait();
-    await (await batch.connect(signers.deployer).withdrawForAndUnwrap(1, DIRECTION_B_TO_A, signers.bob.address)).wait();
-
-    // Each claim queued an async unwrap request paying the USER underlying.
-    const requested = tx.logs
-      .map((l) => { try { return cB.interface.parseLog({ topics: [...l.topics], data: l.data }); } catch { return null; } })
-      .find((e) => e?.name === "UnwrapRequested");
-    expect(requested, "UnwrapRequested event expected").to.not.be.undefined;
-    const handle = (requested as unknown as { args: { amount: string } }).args.amount;
-    expect(await cB.unwrapRequester(handle)).to.equal(signers.alice.address);
-
-    // Anyone finalizes the request with the gateway proof → underlying moves.
+    const before = await tokenA.balanceOf(signers.alice.address);
+    const enc = await fhevm.createEncryptedInput(batchAddress, signers.alice.address).add64(2n * 10n ** 6n).encrypt();
+    await (await batch.connect(signers.alice).exit(0, enc.handles[0], enc.inputProof)).wait();
+    // async unwrap: finalize the pending request
+    const wAbi = ["event UnwrapRequested(address indexed receiver, bytes32 amount)"];
+    const w = new ethers.Contract(cAAddress, wAbi, signers.alice);
+    const reqs = await w.queryFilter(w.filters.UnwrapRequested());
+    expect(reqs.length).to.equal(1);
+    const handle = (reqs[0].args as unknown as { amount: string }).amount;
     const dec = await fhevm.publicDecrypt([handle]);
-    await (await cB.connect(signers.bob).finalizeUnwrap(handle, dec.clearValues[handle], dec.decryptionProof)).wait();
-
-    const rate = await cB.rate();
-    expect(await tokenB.balanceOf(signers.alice.address)).to.equal(aliceUnderlyingBefore + WAD * rate);
-    expect(await cB.confidentialBalanceOf(signers.alice.address)).to.equal(0n); // no c-tokens paid
-
-    // Second claim for the same depositor must fail.
-    await expect(batch.connect(signers.deployer).withdrawForAndUnwrap(1, DIRECTION_A_TO_B, signers.alice.address))
-      .to.be.revertedWithCustomError(batch, "AlreadyWithdrawn");
-    void bobUnderlyingBefore;
+    await (await cA.finalizeUnwrap(handle, dec.clearValues[handle], dec.decryptionProof)).wait();
+    expect(await tokenA.balanceOf(signers.alice.address)).to.equal(before + 2n * 10n ** 6n * rate);
+    expect(await fundedBalance(signers.alice, 0)).to.equal(4n * 10n ** 6n);
   });
 
-  it("blocks double withdrawal", async function () {
-    await wrap(signers.alice, tokenA, cA, WAD);
-    await wrap(signers.bob, tokenB, cB, WAD);
-    await deposit(signers.alice, cA, DIRECTION_A_TO_B, WAD);
-    await deposit(signers.bob, cB, DIRECTION_B_TO_A, WAD);
-    await ethers.provider.send("evm_increaseTime", [5]);
-    await ethers.provider.send("evm_mine", []);
-    await (await batch.closeRound()).wait();
-    const expectedNet = 0n;
-    const roundPre = await batch.rounds(1);
-    await settleTwoPhase(roundPre, expectedNet);
-    await (await batch.connect(signers.alice).withdraw(1, DIRECTION_A_TO_B)).wait();
-    await expect(batch.connect(signers.alice).withdraw(1, DIRECTION_A_TO_B)).to.be.revertedWithCustomError(batch, "AlreadyWithdrawn");
+  it("one order per user per round", async function () {
+    await wrap(signers.alice, tokenA, cA, 5n * 10n ** 6n);
+    await fund(signers.alice, cA, 5n * 10n ** 6n);
+    await order(signers.alice, DIR_A_TO_B, 1n * 10n ** 6n);
+    await expect(order(signers.alice, DIR_A_TO_B, 1n * 10n ** 6n)).to.be.revertedWithCustomError(batch, "OrderAlreadySubmitted");
   });
 });
