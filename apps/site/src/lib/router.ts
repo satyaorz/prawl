@@ -15,7 +15,7 @@ export type Route = { name: "home" } | { name: "docs"; chapter: string };
 
 /** The deployed wallet. Overridable at build time: VITE_WALLET_URL. */
 export const WALLET_URL: string =
-  (import.meta.env.VITE_WALLET_URL as string | undefined) ?? "https://prowl-wallet.vercel.app";
+  (import.meta.env.VITE_WALLET_URL as string | undefined) ?? "https://prawl-wallet.centralindia.cloudapp.azure.com";
 
 /** The APK shipped from this site's own /apk/prowl.apk. */
 export const APK_URL = "/apk/prowl.apk";
