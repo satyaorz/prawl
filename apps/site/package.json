@@ -1,0 +1,26 @@
+{
+  "name": "@prawl/site",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json",
+    "apk": "cd ../../offline/app && ANDROID_HOME=${ANDROID_HOME:-$HOME/Android/Sdk} ./gradlew assembleDebug && cp app/build/outputs/apk/prawl/debug/app-prawl-debug.apk ../../apps/site/public/apk/prowl.apk"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tailwindcss": "^4.3.4",
+    "typescript": "5.9.3",
+    "vite": "^8.3.6"
+  }
+}

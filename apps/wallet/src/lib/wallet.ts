@@ -195,6 +195,21 @@ export const walletState = {
   },
 };
 
+/**
+ * Dev only (removed from production builds by the `import.meta.env.DEV` guard):
+ * force a wallet state so the marketing site can photograph the real screens
+ * without a live Tor circuit and a funded wallet. It never touches keys.
+ *   await devSetState({ phase: "ready", balances: [...] })
+ */
+export function devSetState(patch: Partial<WalletState>): void {
+  if (!import.meta.env.DEV) return;
+  update(patch);
+}
+
+// Dev only: reachable from the page (and from the site's screenshot script),
+// because a dynamic import() of this module is a second instance with its own state.
+if (import.meta.env.DEV) (window as unknown as { __prowlDevSetState?: typeof devSetState }).__prowlDevSetState = devSetState;
+
 void store.get<string>(CREDENTIAL_KEY).then((id) => update({ hasPasskey: !!id }));
 
 /**
