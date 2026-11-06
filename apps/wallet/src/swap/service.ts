@@ -44,6 +44,12 @@ const oracleAbi = parseAbi(["function latestLotPrice() view returns (uint64 lotA
 const EMPTY_HANDLE = `0x${"00".repeat(32)}`;
 const RATE = 10n ** 12n;
 const MAX_U64 = (1n << 64n) - 1n;
+/**
+ * Public RPC nodes answer from slightly different blocks: the oracle's timestamp (the block it was read at) can be a
+ * block or two ahead of the latest block time read from another node. Seconds of such skew are not an invalid price;
+ * the contract re-checks against its own block time when the order executes.
+ */
+const CLOCK_SKEW_SECONDS = 120n;
 
 export interface SwapBalances {
   public: readonly [bigint, bigint];
@@ -203,7 +209,7 @@ export class SwapService {
       try {
         const quote = decodeFunctionResult({ abi: oracleAbi, functionName: "latestLotPrice", data: await this.#call(this.config.oracle, encodeFunctionData({ abi: oracleAbi, functionName: "latestLotPrice" })) });
         lotA = quote[0]; lotB = quote[1];
-        if (lotA === 0n || lotB === 0n || quote[2] === 0n || quote[2] > chainTime) throw new Error("Invalid swap price");
+        if (lotA === 0n || lotB === 0n || quote[2] === 0n || quote[2] > chainTime + CLOCK_SKEW_SECONDS) throw new Error("Invalid swap price");
         validUntil = quote[2] + maxAge;
         maxLots = MAX_U64 / 6n / (lotA > lotB ? lotA : lotB);
         if (validUntil < chainTime + duration || maxLots === 0n) throw new Error("Swap price is stale or unavailable");

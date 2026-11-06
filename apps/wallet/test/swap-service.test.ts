@@ -48,6 +48,8 @@ interface ChainState {
   net?: bigint;
   /** Whether an exit's unwrap request is still pending. */
   exitPending?: boolean;
+  /** No price is snapshotted for the round yet, so the oracle is read; its timestamp is this many seconds after the latest block time. */
+  oracleAhead?: bigint;
 }
 
 const flags = (rounds: [boolean, boolean, boolean], net = 0n) => [handle(0), handle(0), handle(0), handle(0), ...rounds, net, 0, 0n, net > 0n ? handle(7) : handle(0), 0n] as const;
@@ -77,7 +79,8 @@ function client(state: ChainState | boolean = {}): AnonRpcClient {
       if (sel === toFunctionSelector("rounds(uint256)")) return encodeFunctionResult({ abi, functionName: "rounds", result: flags(s.rounds ?? [true, false, false], s.net ?? 0n) });
       if (sel === toFunctionSelector("unwrapRequester(bytes32)")) return encodeFunctionResult({ abi, functionName: "unwrapRequester", result: (s.exitPending ?? true) ? account : address(0) });
       if (sel === toFunctionSelector("maxPriceAge()")) return encodeFunctionResult({ abi, functionName: "maxPriceAge", result: 1000n });
-      if (sel === toFunctionSelector("roundPrices(uint256)")) return encodeFunctionResult({ abi, functionName: "roundPrices", result: [2n, 5n, 100n, stale ? 900n : 1500n] });
+      if (sel === toFunctionSelector("roundPrices(uint256)")) return encodeFunctionResult({ abi, functionName: "roundPrices", result: s.oracleAhead !== undefined ? [0n, 0n, 0n, 0n] : [2n, 5n, 100n, stale ? 900n : 1500n] });
+      if (sel === toFunctionSelector("latestLotPrice()")) return encodeFunctionResult({ abi, functionName: "latestLotPrice", result: [10000n, 99n, (s.blockTime ?? 1000n) + (s.oracleAhead ?? 0n)] });
       throw new Error(`unexpected call ${sel}`);
     },
   } as unknown as AnonRpcClient;
@@ -124,6 +127,18 @@ describe("swap service", () => {
     expect(mocks.encrypt).not.toHaveBeenCalled();
     expect(sign.send).not.toHaveBeenCalled();
     service.close();
+  });
+
+  it("accepts an oracle timestamp a few seconds ahead of the latest block time (nodes answer from different blocks), but not a wild one", async () => {
+    const { SwapService } = await import("../src/swap/service");
+    const near = await SwapService.open(client({ oracleAhead: 24n }), account, config, signer());
+    const ok = await near.balances({ decrypt: false });
+    expect(ok.priceError).toBeUndefined();
+    expect([ok.lotA, ok.lotB]).toEqual([10000n, 99n]);
+    near.close();
+    const far = await SwapService.open(client({ oracleAhead: 100_000n }), account, config, signer());
+    expect((await far.balances({ decrypt: false })).priceError).toBe("Invalid swap price");
+    far.close();
   });
 
   it("reports the order's public lifecycle without decrypting it", async () => {
