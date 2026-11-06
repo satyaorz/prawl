@@ -30,6 +30,7 @@ import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -144,7 +145,8 @@ class WalletWebView(
         return try {
             val env = Js.parse(text)
             id = env.str("id").toLong()
-            val result: JsonElement = Js.parse(dispatcher.dispatch(env.str("method"), env.obj("args").toString()))
+            // A result may be an object or an array (coins() is a bare array), so not Js.parse (objects only).
+            val result: JsonElement = Json.parseToJsonElement(dispatcher.dispatch(env.str("method"), env.obj("args").toString()))
             buildJsonObject { put("id", id); put("ok", true); put("result", result) }.toString()
         } catch (e: BridgeException) {
             buildJsonObject { put("id", id); put("ok", false); put("error", buildJsonObject { put("code", e.code); put("message", e.message ?: e.code) }) }.toString()

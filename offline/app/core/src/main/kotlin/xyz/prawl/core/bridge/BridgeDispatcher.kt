@@ -152,7 +152,8 @@ class BridgeDispatcher(
         return if (priv) Handoff.loadPrivate(CoinHeader(m.header)) else Handoff.load(m.header)
     }
 
-    private fun coins(): JsonObject {
+    /** A bare JSON array: the website's `BridgeCoin[]` contract (`coins.map(...)`); a wrapping object crashes the page. */
+    private fun coins(): JsonArray {
         val now = host.nowS()
         val live = host.notes().filter { !it.spent }
         val arr = live.groupBy { it.header.coinId }.map { (id, ns) ->
@@ -164,7 +165,7 @@ class BridgeDispatcher(
                 put("notes", JsonArray(ns.filter { !it.pendingDeposit }.map { n -> buildJsonObject { put("noteId", n.noteId); put("valueWei", n.value.toString()) } }))
             }
         }
-        return buildJsonObject { put("coins", JsonArray(arr)) }
+        return JsonArray(arr)
     }
 
     private fun shieldAsk(a: JsonObject): JsonObject {

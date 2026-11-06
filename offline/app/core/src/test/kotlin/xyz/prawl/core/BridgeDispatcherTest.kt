@@ -106,6 +106,7 @@ class BridgeDispatcherTest {
         val h = Host(); val d = BridgeDispatcher(h)
         val m = mint(d)
         val text = d.dispatch("coins", "{}")
+        assertTrue("coins() is a bare array, as the website's BridgeCoin[] expects: $text", text.startsWith("[") && text.endsWith("]"))
         assertTrue(text, text.contains("awaiting_deposit"))
         for (secret in listOf("alias", "certs", "\"k0\"", "k0x", "sig", "noteKey", "privateKey", "path"))
             assertFalse("coins() must not expose '$secret': $text", text.contains(secret))
