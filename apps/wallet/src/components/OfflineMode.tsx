@@ -3,6 +3,7 @@ import { useWallet } from "../lib/use-wallet";
 import { ActivityList } from "./ActivityCard";
 import { OfflineCard } from "./OfflineCard";
 import { PhoneBridgePanel } from "./PhoneBridgePanel";
+import { ReclaimAccounts } from "./ReclaimAccounts";
 import { Icon } from "./ui";
 
 const STEPS: ReadonlyArray<readonly [string, string]> = [
@@ -52,6 +53,8 @@ export function OfflineMode({ onOpened }: { onOpened: () => void }) {
       {unlocked && <PhoneBridgePanel onPayload={(link, opts) => setIncoming({ link, n: Date.now(), ...(opts?.own ? { own: true } : {}) })} />}
 
       <OfflineCard onOpened={onOpened} incoming={incoming} />
+
+      {unlocked && <ReclaimAccounts />}
 
       {unlocked && (
         <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">

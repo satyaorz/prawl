@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
 import { useWallet } from "../lib/use-wallet";
-import { buildShieldTarget } from "../lib/wallet";
+import { buildShieldTarget, nextReclaimAddress } from "../lib/wallet";
 import {
   BridgeDeclined,
   cashOutToAddress,
@@ -105,7 +105,10 @@ export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string, opts
                   throw new Error("Enter an amount in ETH");
                 }
                 if (!w.evmAddress) throw new Error("unlock the wallet first");
-                const r = await mintOnPhone(b, { depositor: w.evmAddress, valueWei: wei, mode: priv ? "private" : "public" });
+                // A private coin's refund goes to a FRESH address derived from the passkey, never the main account. A public coin is
+                // funded by the main account, so that account is its depositor.
+                const depositor = priv ? (await nextReclaimAddress()).address : w.evmAddress;
+                const r = await mintOnPhone(b, { depositor, valueWei: wei, mode: priv ? "private" : "public" });
                 return r;
               }, { own: true })
             }
