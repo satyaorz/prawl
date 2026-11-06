@@ -1,0 +1,31 @@
+{
+  "name": "veil-batch-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "deploy:sepolia": "hardhat deploy --network sepolia",
+    "test": "hardhat test"
+  },
+  "dependencies": {
+    "@fhevm/solidity": "^0.10.0",
+    "@openzeppelin/confidential-contracts": "github:OpenZeppelin/openzeppelin-confidential-contracts#62b5e75725846121fb9587aca165f9c9ba9ce2f6",
+    "@openzeppelin/contracts": "^5.4.0",
+    "@uniswap/permit2": "github:Uniswap/permit2",
+    "@uniswap/universal-router": "^2.1.0",
+    "@uniswap/v4-core": "^1.0.2",
+    "@uniswap/v4-periphery": "^1.0.3",
+    "dotenv": "^17.2.3",
+    "encrypted-types": "^0.0.4"
+  },
+  "devDependencies": {
+    "@fhevm/hardhat-plugin": "0.4.0",
+    "@nomicfoundation/hardhat-chai-matchers": "^2.1.2",
+    "@nomicfoundation/hardhat-ethers": "^3.0.0",
+    "ethers": "^6.13.0",
+    "hardhat": "^2.26.0",
+    "hardhat-deploy": "^0.14.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.1.0"
+  }
+}
