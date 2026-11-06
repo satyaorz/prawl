@@ -171,6 +171,12 @@ export const CHAPTERS: Chapter[] = [
       },
       {
         t: "note",
+        kind: "warn",
+        title: "Sending publicly",
+        text: "The Send screen also has a Public tab: it sends ETH from your public account to any 0x address. That is an ordinary transaction, so it links the two addresses on chain.",
+      },
+      {
+        t: "note",
         kind: "info",
         title: "Why a new sender each time",
         text: "Reusing one sender would build a history: everything it ever paid would sit under one address. A fresh sender per operation means a payment leaves no trail, only a fee paid inside the pool.",
@@ -202,6 +208,45 @@ export const CHAPTERS: Chapter[] = [
         kind: "ok",
         title: "A quieter path",
         text: "If the goal is simply to have the money somewhere public and quiet, cash out into a fresh address that has never touched your wallet, and let some time pass after shielding.",
+      },
+    ],
+  },
+
+  {
+    slug: "private-swap",
+    title: "Private swap",
+    group: "Using the wallet",
+    summary: "Swap WETH for the PRAWL test token on Uniswap v4, in an encrypted batch.",
+    blocks: [
+      {
+        t: "lead",
+        text: "A private swap trades WETH for PRAWL, a test token, on a Uniswap v4 pool. Your order is encrypted and waits in a batch with other people's orders; only the batch's net trade reaches Uniswap. It runs on Sepolia only.",
+      },
+      {
+        t: "steps",
+        items: [
+          { title: "Open Swap", text: "On the main screen, tap Swap. Keep Fresh private account selected: it is a new account derived from your passkey, with no transaction linking it to your main address." },
+          { title: "Fund a swap account", text: "Enter an amount of ETH and tap Fund new swap account. It moves that amount (plus a little for gas) out of your private balance. This takes about two minutes, because a proof is built first." },
+          { title: "Open the swap dashboard", text: "The first time, it downloads Zama's encryption keys over Tor, which can take a minute." },
+          { title: "Swap privately", text: "Enter an amount and tap Swap privately. Amounts are whole lots (a lot is a fixed small size shown on screen) and are rounded down. Prowl wraps, funds the vault and places your encrypted order." },
+          { title: "Wait for the batch", text: "A batch settles once at least two accounts have ordered. Keep the sheet open: your wallet closes the batch, trades the net on Uniswap and credits your payout by itself. If the batch does not fill in time, your order is refunded." },
+          { title: "Withdraw or shield back", text: "Withdraw the payout to the swap account, and use Shield back to return leftover WETH to your private balance." },
+        ],
+      },
+      {
+        t: "table",
+        head: ["Hidden", "Not hidden"],
+        rows: [
+          ["Each order's direction and size", "That a swap account wrapped, funded and exited, and those amounts"],
+          ["How much of a batch was matched", "Which accounts took part in a batch"],
+          ["Each payout and vault balance", "The batch's net trade on Uniswap, and its price"],
+        ],
+      },
+      {
+        t: "note",
+        kind: "warn",
+        title: "Testnet, and not anonymity",
+        text: "With few participants the net trade can reveal individual orders, and one extra account is enough to meet the minimum of two. Treat it as order-intent privacy on a test network. PRAWL is an ordinary token that Prowl cannot shield yet, so it stays in the swap account.",
       },
     ],
   },
@@ -264,7 +309,7 @@ export const CHAPTERS: Chapter[] = [
       {
         t: "steps",
         items: [
-          { title: "Download the APK", text: "Use Download APK on the home page. It is the debug build of the product app, signed with a debug key — fine for testing, not for release." },
+          { title: "Download the APK", text: "Use Download APK on the home page. It takes you to the latest release on GitHub, built from the repository by CI. It is the debug build of the product app, signed with the project's test key — fine for testing, not for release." },
           { title: "Allow this source", text: "Android asks once whether to install from this browser or file manager. Allow it, then confirm the install." },
           { title: "Open the app", text: "The app needs Android 12 or newer. It runs the same wallet UI in a WebView and adds the offline pieces." },
           { title: "Pair with the site", text: "Links from the website open the app directly. Passkeys inside the app rely on the site's assetlinks file listing the app's signing certificate." },
