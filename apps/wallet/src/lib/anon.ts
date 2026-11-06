@@ -123,6 +123,10 @@ export const HTTP_HOSTS = [
   "raw.githubusercontent.com",
   "ipfs-lb.com",
   "public.pimlico.io",
+  // FHE gateway and its public-key store; swap requests are still routed
+  // through Anon-RPC, with the wallet account's own circuit.
+  "relayer.testnet.zama.org",
+  "zama-mpc-testnet-public-efd88e2b.s3.eu-west-1.amazonaws.com",
 ];
 
 export const anon = new AnonRpcClient({

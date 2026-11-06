@@ -79,11 +79,13 @@ export async function sendCalls(
   privateKey: Hex,
   calls: readonly Call[],
   onStatus?: (s: string) => void,
+  checkAuthorized?: () => void,
 ): Promise<SentTx[]> {
   const account = privateKeyToAccount(privateKey);
   const id = client.identities.account(account.address);
   const out: SentTx[] = [];
   for (const [i, call] of calls.entries()) {
+    checkAuthorized?.();
     const label = calls.length > 1 ? ` ${i + 1}/${calls.length}` : "";
     onStatus?.(`Preparing transaction${label}…`);
     const txReq = { from: account.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
@@ -101,6 +103,7 @@ export async function sendCalls(
     const maxFeePerGas = baseFee * 2n + tip;
     const balance = hexBig(unwrap(balR, "balance"));
     if (call.value + gas * maxFeePerGas > balance) throw new InsufficientFundsError(balance, call.value, gas * maxFeePerGas);
+    checkAuthorized?.();
     const raw = await account.signTransaction({
       type: "eip1559",
       chainId,
@@ -113,6 +116,7 @@ export async function sendCalls(
       maxFeePerGas,
     });
     onStatus?.(`Sending transaction${label} over Tor…`);
+    checkAuthorized?.();
     let hash: Hex;
     try {
       hash = (await client.write(id, chainId, "eth_sendRawTransaction", [raw])) as Hex;

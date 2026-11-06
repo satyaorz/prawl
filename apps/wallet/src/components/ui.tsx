@@ -6,6 +6,7 @@ const ICONS = {
   send: "M7 17 17 7m0 0H8m9 0v9",
   shield: "M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Zm-3 9 2 2 4-4",
   withdraw: "M12 20V8m0 0-4 4m4-4 4 4M5 4h14",
+  swap: "M4 8h15m0 0-3-3m3 3-3 3M20 16H5m0 0 3-3m-3 3 3 3",
   refresh: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7",
   lock: "M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z",
   copy: "M9 9h10v11H9zM5 15V4h10",

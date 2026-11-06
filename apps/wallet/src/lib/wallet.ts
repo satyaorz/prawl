@@ -7,8 +7,8 @@
 import { SEPOLIA } from "@prawl/anon-rpc";
 import { createPasskey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
 import type { Balance, Hex } from "@prawl/railgun";
-import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
-import { keccak256, toHex } from "viem";
+import { generatePrivateKey, privateKeyToAccount, privateKeyToAddress } from "viem/accounts";
+import { getAddress, keccak256, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
@@ -18,6 +18,9 @@ import { activateCall, coinStatus, commitCall, depositCall, erc20Balance, loadPr
 import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type RefreshPayload, type ShieldRequest } from "../offline/payload";
 import { shieldRequestFromCall } from "../offline/shield";
 import { tellPhone } from "../offline/bridge";
+import { parseSwapDeployment } from "../swap/deployment";
+import { SwapService } from "../swap/service";
+import { validateDecryptAuthorization } from "../swap/fhe-authorization";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
 export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
@@ -73,6 +76,60 @@ let activityLog: ActivityLog | undefined;
  * must not touch the screen or another wallet's history after the change.
  */
 let epoch = 0;
+let swapService: SwapService | undefined;
+let swapOpening: Promise<SwapService> | undefined;
+
+/** Close the FHE worker and forget its decryption session on wallet changes. */
+function closeSwapSession(): void {
+  swapService?.close();
+  swapService = undefined;
+  const opening = swapOpening;
+  swapOpening = undefined;
+  if (opening) void opening.then((service) => service.close(), () => undefined);
+}
+
+/** A deployment is supplied at build time; the old mock-token pool is incompatible. */
+export function swapConfigured(): boolean {
+  return !!import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT;
+}
+
+export async function openSwapSession(): Promise<SwapService> {
+  if (!keys || !state.evmAddress || !state.wrappedBaseToken) throw new Error("Unlock and open the wallet first");
+  if (swapService) return swapService;
+  if (swapOpening) return swapOpening;
+  const raw = import.meta.env.VITE_PRAWL_SWAP_DEPLOYMENT as string | undefined;
+  if (!raw) throw new Error("No WETH/custom-token swap deployment is configured");
+  let manifest: unknown;
+  try { manifest = JSON.parse(raw); } catch { throw new Error("Invalid swap deployment configuration"); }
+  const config = parseSwapDeployment(manifest, state.wrappedBaseToken);
+  if (config.chainId !== state.chainId) throw new Error("Swap deployment is on a different network");
+  const myEpoch = epoch;
+  const ensureOpen = () => {
+    if (!keys || myEpoch !== epoch) throw new Error("Wallet was locked or changed");
+    return keys;
+  };
+  const opening = SwapService.open(anon, getAddress(state.evmAddress), config, {
+    async signDecrypt(request, contracts) {
+      const key = ensureOpen().evmAccount;
+      const typedData = validateDecryptAuthorization(request, contracts);
+      const signature = await privateKeyToAccount(key).signTypedData(typedData);
+      ensureOpen();
+      return signature;
+    },
+    async send(calls, onStatus) {
+      const key = ensureOpen().evmAccount;
+      const receipts = await sendCalls(anon, config.chainId, key, calls, onStatus, ensureOpen);
+      ensureOpen();
+      return receipts;
+    },
+  }).then((service) => {
+    if (myEpoch !== epoch || !keys) { service.close(); throw new Error("Wallet was locked or changed"); }
+    swapService = service;
+    return service;
+  });
+  swapOpening = opening;
+  try { return await opening; } finally { if (swapOpening === opening) swapOpening = undefined; }
+}
 
 /** Set the action result only if the wallet it belongs to is still the open one. */
 function updateAction(forEpoch: number, action: NonNullable<WalletState["action"]>): void {
@@ -150,6 +207,7 @@ interface StartOptions {
 }
 async function start(root: Uint8Array, opts: StartOptions): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   keys = await deriveWalletKeys(root);
   root.fill(0);
   await openRailgun(opts);
@@ -305,6 +363,7 @@ export function unlockWallet(): Promise<void> {
  */
 export async function rescanWallet(): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   stopAutoSync();
   update({ phase: "opening", balances: undefined, poiQueue: undefined, poiError: undefined, error: undefined });
   try {
@@ -317,6 +376,7 @@ export async function rescanWallet(): Promise<void> {
 
 export async function lockWallet(): Promise<void> {
   epoch += 1;
+  closeSwapSession();
   stopAutoSync();
   keys = undefined;
   activityLog = undefined;

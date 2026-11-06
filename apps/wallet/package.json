@@ -16,6 +16,7 @@
     "@prawl/anon-rpc": "workspace:*",
     "@prawl/keys": "workspace:*",
     "@prawl/railgun": "workspace:*",
+    "@zama-fhe/relayer-sdk": "0.4.0",
     "jsqr": "1.4.0",
     "qrcode": "1.5.4",
     "react": "^19.3.1",
