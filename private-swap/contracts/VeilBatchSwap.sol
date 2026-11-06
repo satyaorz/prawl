@@ -51,7 +51,7 @@ import {ILotPriceOracle} from "./interfaces/ILotPriceOracle.sol";
 contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
     using SafeERC20 for IERC20;
 
-    uint256 public constant VERSION = 5;
+    uint256 public constant VERSION = 6;
 
     uint8 public constant DIR_A_TO_B = 1; // sell c-tokenA, receive c-tokenB
     uint8 public constant DIR_B_TO_A = 2;
@@ -292,6 +292,10 @@ contract VeilBatchSwap is ZamaEthereumConfig, IERC7984Receiver {
         FHE.allowThis(dir);
 
         if (!_isOrderer[currentRound][msg.sender]) {
+            // A round's clock starts with its FIRST order, not when the previous round ended. Otherwise a round
+            // that sat empty for longer than refundDelay would be expirable the moment someone ordered, and
+            // anyone could refund (and so break) the first orderer's batch at once.
+            if (_orderers[currentRound].length == 0) lastUpdateTime = block.timestamp;
             _orderers[currentRound].push(msg.sender);
             _isOrderer[currentRound][msg.sender] = true;
             ++distinctSubmitters;

@@ -307,7 +307,7 @@ async function main() {
       REFUND_DELAY,
       state.oracle.address,
       MAX_PRICE_AGE,
-    ], "VeilBatchSwap v5");
+    ], "VeilBatchSwap v6");
     save();
   } else log(`resuming with VeilBatchSwap ${state.batch.address}`);
 
@@ -333,7 +333,7 @@ async function main() {
     throw new Error(`${label} returned no data after retries`);
   };
   const version = await readWithRetry("batch VERSION()", () => batch.VERSION());
-  if (version !== 5n) throw new Error(`unexpected batch version ${version}`);
+  if (version !== 6n) throw new Error(`unexpected batch version ${version}`);
   if ((await readWithRetry("batch cTokenA()", () => batch.cTokenA())).toLowerCase() !== wrapperA.toLowerCase()) throw new Error("batch cTokenA mismatch");
   if ((await readWithRetry("batch cTokenB()", () => batch.cTokenB())).toLowerCase() !== wrapperB.toLowerCase()) throw new Error("batch cTokenB mismatch");
   const onchainKey = await readWithRetry("batch poolKey()", () => batch.poolKey());

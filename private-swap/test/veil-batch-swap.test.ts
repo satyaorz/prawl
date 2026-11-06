@@ -377,6 +377,23 @@ describe("VeilBatchSwap v3 (confidential orders)", function () {
     expect((await batch.rounds(1)).prepared).to.equal(false);
   });
 
+  it("starts a round's clock at its first order, so an idle round cannot be expired the moment someone orders", async function () {
+    // The round sits empty for far longer than refundDelay (3600 s), then the oracle is refreshed and someone orders.
+    await ethers.provider.send("evm_increaseTime", [7200]);
+    await ethers.provider.send("evm_mine", []);
+    await (await oracle.setPrice(1, 1, (await ethers.provider.getBlock("latest"))!.timestamp)).wait();
+    const amount = 5n * 10n ** 6n;
+    await wrap(signers.alice, tokenA, cA, amount);
+    await fund(signers.alice, cA, amount);
+    await order(signers.alice, DIR_A_TO_B, amount);
+    // Before the fix this was already allowed (lastUpdateTime was the deployment time) and refunded the order at once.
+    await expect(batch.expireRound(1, 0, "0x")).to.be.revertedWithCustomError(batch, "RefundTooEarly");
+    await ethers.provider.send("evm_increaseTime", [3601]);
+    await ethers.provider.send("evm_mine", []);
+    await (await batch.expireRound(1, 0, "0x")).wait();
+    expect(await batch.refundable(1)).to.equal(true);
+  });
+
   it("expires an unfilled open round and refunds without a keeper", async function () {
     const amount = 5n * 10n ** 6n;
     await wrap(signers.alice, tokenA, cA, amount);

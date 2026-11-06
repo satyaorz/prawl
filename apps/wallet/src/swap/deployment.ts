@@ -87,7 +87,7 @@ export async function verifySwapDeployment(client: AnonRpcClient, config: SwapDe
   const [version, wrapperA, wrapperB, oracle, router, permit2, key] = await Promise.all([
     batchRead("VERSION"), batchRead("cTokenA"), batchRead("cTokenB"), batchRead("priceOracle"), batchRead("router"), batchRead("permit2"), batchRead("poolKey"),
   ]);
-  if (version !== 5n || String(wrapperA).toLowerCase() !== config.wrapperA.toLowerCase() || String(wrapperB).toLowerCase() !== config.wrapperB.toLowerCase() ||
+  if (version !== 6n || String(wrapperA).toLowerCase() !== config.wrapperA.toLowerCase() || String(wrapperB).toLowerCase() !== config.wrapperB.toLowerCase() ||
       String(oracle).toLowerCase() !== config.oracle.toLowerCase() || String(router).toLowerCase() !== config.router.toLowerCase() || String(permit2).toLowerCase() !== config.permit2.toLowerCase()) {
     throw new Error("Swap contract wiring mismatch");
   }
