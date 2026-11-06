@@ -34,6 +34,8 @@ copy v3/escrow_v3 contracts-v3 '/src/***' '/test/***' '/script/***' '/tools/*.py
   '/lib/nitro-validator/***' '/foundry.toml' '/run_all.sh'
 rsync -a "$SRC/v3/SPEC.md" "$DST/SPEC-v3.md"
 rsync -a "$SRC/v3/DEPLOYMENTS.md" "$DST/DEPLOYMENTS.md"
+rsync -a "$SRC/v3/HANDOFF.md" "$DST/HANDOFF.md"
+mkdir -p "$DST/tools" && rsync -a "$SRC/v3/handoff.py" "$SRC/v3/handoff_sim.py" "$DST/tools/"
 # Earlier prototypes and simulations behind the four routes.
 copy "$A/contracts" prototypes/otk-escrow '/src/***' '/test/***' '/foundry.toml'
 copy "$A/android" prototypes/otk-android '/*.kt'
