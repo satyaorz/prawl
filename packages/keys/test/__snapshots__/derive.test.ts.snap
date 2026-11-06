@@ -1,0 +1,7 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`deriveWalletKeys > pins the derivation (changing labels or salt would lose users' funds) 1`] = `"0xef4b8d931dff162ba94b91adf69e7cc7c6136171e2b54fb269e5f599587a2ece"`;
+
+exports[`deriveWalletKeys > pins the derivation (changing labels or salt would lose users' funds) 2`] = `"0xabcd7b67e60755c74fa476c89d7a3dd72b10215ebfd66a803da3f77394635615"`;
+
+exports[`deriveWalletKeys > pins the derivation (changing labels or salt would lose users' funds) 3`] = `"0x5a02370e65a97206679da5ed24f78f6b441043912ce661795a59c95e40a2dffa"`;
