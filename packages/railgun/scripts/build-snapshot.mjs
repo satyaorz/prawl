@@ -6,7 +6,7 @@
 // field and checks the result before writing. Public chain data only.
 // Usage: node packages/railgun/scripts/build-snapshot.mjs [chainId] [rpcUrl]
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,4 +52,5 @@ chain.free();
 writeFileSync(`${out}.tmp`, snapshot);
 renameSync(`${out}.tmp`, out);
 writeFileSync(`${out}.gz`, gzipSync(snapshot, { level: 9 }));
+rmSync(`${out}.unchecked`, { force: true });
 console.log(`[${s()}] wrote ${out}: block ${snapshotBlock(snapshot)}, ${(snapshot.length / 1e6).toFixed(2)} MB (${(readFileSync(`${out}.gz`).length / 1e6).toFixed(2)} MB gzip)`);
