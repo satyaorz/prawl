@@ -7,6 +7,9 @@
 // A processed file is renamed to *.done. Commands in <dir>/control.txt:
 //   reload        reload the page (new build) and unlock with the same passkey
 //   sweep 0x…     send all public ETH (minus gas) to that address
+//   shield 0.015  shield that much public ETH into the private balance
+//   target 0.002  build the shield-target for a note of that value; its link goes to <dir>/shield-target.txt
+//   status        log balances (public and private)
 //   exit          stop (the passkey, and anything left in the wallet, is gone)
 // The virtual passkey lives only in this browser session.
 // Usage: CHROME=... node scripts/live-offline.mjs <url> <dir>
@@ -62,6 +65,32 @@ try {
         while (!/synced in/.test(await card.innerText())) await sleep(2000);
         log("reloaded and unlocked");
       }
+      if (cmd === "status") {
+        log(`status: ${(await card.innerText()).replace(/\n/g, " | ").slice(0, 400)} || public ${await publicEth()} ETH`);
+      }
+      const shield = /^shield ([\d.]+)$/.exec(cmd);
+      if (shield) {
+        const form = page.locator("section", { hasText: "Add funds privately" });
+        await form.getByPlaceholder("0.01").fill(shield[1]);
+        await form.getByRole("button", { name: "Shield ETH" }).click();
+        for (let i = 0; i < 120; i++) {
+          const t = await form.innerText();
+          if (/Shielded\.|reverted|Shield failed|Status unknown/.test(t)) break;
+          await sleep(2000);
+        }
+        log(`shield: ${(await form.innerText()).replace(/\n/g, " | ").slice(-260)}`);
+      }
+      const target = /^target ([\d.]+)$/.exec(cmd);
+      if (target) {
+        if (!(await offline.getByPlaceholder("note value, e.g. 0.003").isVisible())) await offline.getByRole("button", { name: /Cash out a phone coin/ }).click();
+        await offline.getByPlaceholder("note value, e.g. 0.003").fill(target[1]);
+        await offline.getByRole("button", { name: "Show QR" }).click();
+        await offline.getByRole("button", { name: "Copy link" }).waitFor({ timeout: 60_000 });
+        await offline.getByRole("button", { name: "Copy link" }).click();
+        const link = await page.evaluate(() => navigator.clipboard.readText());
+        writeFileSync(path.join(dir, "shield-target.txt"), link + "\n");
+        log(`target: ${link.length} chars written to shield-target.txt`);
+      }
       const sweep = /^sweep (0x[0-9a-fA-F]{40})$/.exec(cmd);
       if (sweep) {
         const form = page.locator("section", { hasText: "Add funds privately" });
@@ -99,15 +128,17 @@ try {
       for (let i = 0; i < 60 && /checking over Tor/.test(await offline.innerText()); i++) await sleep(1000);
       log(`${f}: card: ${(await offline.innerText()).replace(/\n/g, " | ").slice(0, 700)}`);
       if (f.startsWith("go-")) {
-        const button = panel.getByRole("button", { name: /^(Load .* ETH|Cash out)$/ });
+        const button = panel.getByRole("button", { name: /^(Load .* ETH|Load .* ETH privately|Cash out|Cash out to private balance)$/ });
         if (!(await button.isEnabled())) {
           log(`${f}: action button disabled`);
           continue;
         }
+        const own = panel.getByRole("checkbox");
+        if (await own.count()) await own.check(); // a go- link is one the operator vouches for
         await button.click();
         for (let i = 0; i < 180; i++) {
           const t = await offline.innerText();
-          if (/Loaded\.|Paid |reverted|failed|Not sent|Not loaded/.test(t)) break;
+          if (/Loaded|Paid |Cashed out|reverted|failed|Not sent|Not loaded|Not enough|Status unknown/.test(t)) break;
           await sleep(2000);
         }
         await sleep(3000);
