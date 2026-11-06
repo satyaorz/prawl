@@ -116,7 +116,8 @@ change.
 
 | | |
 |---|---|
-| Batch (`VeilBatchSwap` v5) | `0x7D18B237fd0555C5f046EA9bbb1cBCf7b175C741` |
+| Batch (`VeilBatchSwap` v6, current) | `0x82937779eA2969a694Be9970e30971f3483C1811` |
+| Earlier batch (v5, superseded) | `0x7D18B237fd0555C5f046EA9bbb1cBCf7b175C741` |
 | PRAWL token (tokenA, currency0) | `0xce7d494Ca57BAc8bC3bE5964C5fA8D7da4338Fb3` |
 | WETH (tokenB, currency1) | `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14` |
 | c-PRAWL wrapper | `0x2B4f777Eda45293AAAb1ac9beAE250A4dCC1cfcc` |
@@ -125,13 +126,32 @@ change.
 | Pool id (fee 3000, spacing 60, no hook) | `0xc3e2a961ffb3b1e017f6d6061aa561c6adbe72a4966d93b65241d703cf73a5aa` |
 | PoolManager / UniversalRouter / Permit2 | Uniswap's Sepolia deployments (addresses in `scripts/deploy.mjs`) |
 
-Evidence (all on Sepolia): deploy `0x4777779d…a332` (batch), pool initialise `0xc7fb0930…f1a8`,
-liquidity seed `0xe4e68f90…94d2` (full range). One live round: close `0x97243ad0…0fd7`,
-publish-the-net `0xb26832b0…4686`, **trade the net on Uniswap `0xa9647e53…11d6`**, credits
-`0x89cfda5a…fd80` and `0x11671bf7…6b62`, exit finalized `0xde923270…b5a6`. In that round the
-deployer sold 2 lots of A for B and the counterparty sold 1 lot of B for A; one lot matched at the
-quoted price and one lot traded on the pool. Decrypting the vaults afterwards showed the deployer
-with 199 B units (100 matched + 99 from the pool) and the counterparty with exactly 1 lot of A.
+Evidence on Sepolia, **v6, run through the Prowl wallet UI over Tor** (a fresh passkey-derived account funded
+from the private balance; the only scripted part is a second participant). Everything after the order was
+done by the wallet itself, with no keeper running:
+
+| Step | Transaction |
+|---|---|
+| v6 batch deployed | `0x44f4159f8957dc7c04bf121996f1ffa3a80670ace5f5ef385a519f797b67469e` |
+| wallet's encrypted order (fresh account) | `0xada88b2fc1b397ce36827b81a081f5bd04ccf961b9f4299cffa0094694f466d2` |
+| counterparty's encrypted order (scripted) | `0x2e18f6363bfbf023c1856fda70077182bef426e79b04f8dd191b6881cacebe8b` |
+| round closed (by the wallet) | `0x037d8603bc7cb904d084a0234dfdbbcccbab57961d03bd7aeeecdd44727fd61a` |
+| net published (1 lot) | `0xea06e8865ea7d44b378fc0d80302a349b156183c0cb0f33b07e9c1a77827f984` |
+| **net traded on Uniswap v4** (one `PoolManager` Swap event in this tx) | `0xd74086bc05847ad820f708ca31fae35c60ee91f90a17fd8d7562a2f4d310db6c` |
+| wallet's payout credited | `0xbd52a4e8eb2dcc2787abcfcce852f5bea512a27fb41ddcbc0f3e288ecbd83661` |
+| counterparty's payout credited (keeper, afterwards) | `0x8b1bf81852fc36524d7d03720ab5e9126dbbdb449d1c4dd0f5d25e77f4bb77a8` |
+| wallet's exit requested | `0x997d3f4cb5c5276750fc90963086ba2b50b8cf35572b3864f543df924ebd8140` |
+| wallet's exit released (by the wallet) | `0x1fe13e2c4b7cdbca1e47e94135b18e2f87463b1c69789f378c47ff61c2e6a6b8` |
+
+In that round the wallet sold 2 lots of WETH and the counterparty sold 1 lot of the custom token: one lot
+matched at the quoted price and one lot (the residual) traded on the pool. The deployment, pool seed and
+pool id are in the table above (the pool and wrappers are shared by v5 and v6).
+
+Earlier evidence from v5, driven by scripts: a round settled and credited, and an exit finalized (settle tx
+`0xa9647e53cb0d00f34cea663fec480984de98cfac0ffbb396e04ea033bd6511d6`). Decrypting the vaults afterwards
+showed the deployer with 199 B units (100 matched + 99 from the pool) and the counterparty with exactly 1
+lot of A. v6 changed one thing in the contract: a round's clock starts at its first order (v5 let anyone
+refund the first order of a round that had sat empty for over an hour).
 
 ## What is hidden and what is not
 
