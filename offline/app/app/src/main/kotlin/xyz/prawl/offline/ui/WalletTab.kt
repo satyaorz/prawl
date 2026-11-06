@@ -161,7 +161,7 @@ class WalletWebView(
     companion object {
         const val TAG = "PRAWL_WV"
 
-        /** `window.prawlOffline`: eight promise-returning methods over the origin-scoped message channel. Frozen, not enumerable. */
+        /** `window.prawlOffline`: nine promise-returning methods over the origin-scoped message channel. Frozen, not enumerable. */
         const val BRIDGE_JS = """
 (function () {
   if (window.prawlOffline || typeof prawlNative === 'undefined') return;
@@ -180,7 +180,7 @@ class WalletWebView(
     });
   }
   var api = {};
-  ['mint', 'coins', 'cashOut', 'refresh', 'shieldAsk', 'acceptShieldTarget', 'markDeposited', 'markRefreshed'].forEach(function (n) {
+  ['mint', 'coins', 'cashOut', 'refresh', 'shieldAsk', 'acceptShieldTarget', 'markDeposited', 'markRefreshed', 'setAccount'].forEach(function (n) {
     api[n] = function (a) { return call(n, a); };
   });
   Object.freeze(api);

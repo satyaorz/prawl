@@ -126,6 +126,7 @@ class OfflineCashActivity : ComponentActivity() {
             }
             override fun changed() = g.changed()
             override fun nowS() = System.currentTimeMillis() / 1000
+            override fun walletAddressSeen(addr40: String) = g.setWalletHint(addr40)
         }
         val r = SiteConfig.resolve(BuildConfig.HANDOFF_SITE, BuildConfig.DEBUG, prefs.getString("debugSite", null))
         siteProblem = r.problem

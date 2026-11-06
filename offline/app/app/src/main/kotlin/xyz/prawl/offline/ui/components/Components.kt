@@ -149,10 +149,14 @@ fun CheckList(lines: List<VerifyLine>) = Column(verticalArrangement = Arrangemen
 @Composable
 fun Field(value: String, onChange: (String) -> Unit, label: String, mono: Boolean = false, number: Boolean = false,
           error: String? = null, modifier: Modifier = Modifier, singleLine: Boolean = true) {
+    // Addresses and hex are 42+ characters: wrap them (never clip) so the user can always read the whole value, last characters included.
+    val wrap = mono && !number && singleLine
     Column {
         OutlinedTextField(
-            value = value, onValueChange = onChange, label = { Text(label, style = Tw.secondary) },
-            singleLine = singleLine, isError = error != null,
+            value = value,
+            onValueChange = { onChange(if (wrap) it.filter { c -> c != '\n' && c != '\r' } else it) },
+            label = { Text(label, style = Tw.secondary) },
+            singleLine = singleLine && !wrap, maxLines = if (!singleLine) Int.MAX_VALUE else if (wrap) 3 else 1, isError = error != null,
             textStyle = if (mono) Tw.mono else Tw.body.copy(color = Tw.zinc100),
             keyboardOptions = if (number) KeyboardOptions(keyboardType = KeyboardType.Decimal) else KeyboardOptions.Default,
             shape = RoundedCornerShape(Tw.buttonRadius),

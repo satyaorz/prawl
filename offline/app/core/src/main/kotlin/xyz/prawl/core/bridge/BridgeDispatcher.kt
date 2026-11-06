@@ -39,6 +39,11 @@ interface BridgeHost {
     fun confirm(c: BridgeConfirm): Boolean
     fun changed()
     fun nowS(): Long
+    /**
+     * The Wallet tab's own public address (40 lowercase hex, validated), offered to the native Load form as a ONE-TAP default.
+     * Memory only, never persisted: it is a convenience, not an authority (the form still shows the full address and the user submits).
+     */
+    fun walletAddressSeen(addr40: String) {}
 }
 
 /**
@@ -61,7 +66,7 @@ class BridgeDispatcher(
     private val rnd = SecureRandom()
 
     companion object {
-        val METHODS = setOf("mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed")
+        val METHODS = setOf("mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed", "setAccount")
         const val MAX_ARGS_CHARS = 65_536
         private val DEC = Regex("^(0|[1-9][0-9]{0,77})$")
         private val HEX64 = Regex("^[0-9a-f]{64}$")
@@ -83,6 +88,7 @@ class BridgeDispatcher(
                 "cashOut" -> cashOut(args)
                 "refresh" -> refresh(args)
                 "markDeposited" -> markDeposited(args)
+                "setAccount" -> setAccount(args)
                 else -> markRefreshed(args)
             }.toString()
         } catch (e: BridgeException) { throw e }
@@ -150,6 +156,13 @@ class BridgeDispatcher(
             pendingDeposit = true, privateLoad = priv)
         host.changed()
         return if (priv) Handoff.loadPrivate(CoinHeader(m.header)) else Handoff.load(m.header)
+    }
+
+    /** `setAccount({address})`: the wallet's public address, only to pre-fill the native Load form. Signs and spends nothing. */
+    private fun setAccount(a: JsonObject): JsonObject {
+        val addr40 = address(a.str("address"), "address")
+        host.walletAddressSeen(addr40)
+        return buildJsonObject { put("ok", true) }
     }
 
     /** A bare JSON array: the website's `BridgeCoin[]` contract (`coins.map(...)`); a wrapping object crashes the page. */

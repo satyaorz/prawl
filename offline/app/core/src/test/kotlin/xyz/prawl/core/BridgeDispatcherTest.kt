@@ -51,6 +51,8 @@ class BridgeDispatcherTest {
         override fun confirm(c: BridgeConfirm): Boolean { confirms.add(c); return answer }
         override fun changed() { changes++ }
         override fun nowS() = now
+        val seenAccounts = ArrayList<String>()
+        override fun walletAddressSeen(addr40: String) { seenAccounts.add(addr40) }
     }
 
     private val DEP = "0x03a62B04aBe69f382bd7582f492be735B1dDb47B"
@@ -114,6 +116,18 @@ class BridgeDispatcherTest {
         val after = d.dispatch("coins", "{}")
         assertTrue(after, after.contains("\"spendable\""))
         assertTrue("the note id is offered so the page can name a note", after.contains("noteId"))
+    }
+
+    @Test fun setAccountOffersTheWalletAddressAndNothingElse() {
+        val h = Host(); val d = BridgeDispatcher(h)
+        val checksummed = xyz.prawl.core.util.Eth.checksum("8da42059d8e04d8e5e9a6b6e1b4f2f0c8c398ffc")
+        call(d, "setAccount", """{"address":"${checksummed}"}""")
+        assertEquals(listOf("8da42059d8e04d8e5e9a6b6e1b4f2f0c8c398ffc"), h.seenAccounts)
+        assertTrue("it spends and signs nothing, so it never asks the user", h.confirms.isEmpty())
+        fails("invalid_args") { call(d, "setAccount", """{"address":"0x1234"}""") }
+        fails("invalid_args") { call(d, "setAccount", """{"address":"not an address"}""") }
+        fails("invalid_args") { call(d, "setAccount", """{}""") }
+        assertEquals("junk never reaches the form", 1, h.seenAccounts.size)
     }
 
     @Test fun markDepositedAndRefreshedValidate() {

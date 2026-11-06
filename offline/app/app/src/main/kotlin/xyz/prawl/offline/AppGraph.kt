@@ -147,4 +147,12 @@ class AppGraph(val app: Application) {
     /** Bumped after anything changes the wallet; screens re-read on change. */
     val version: StateFlow<Int> = _version
     fun changed() { _version.value = _version.value + 1 }
+
+    /**
+     * The Wallet tab's public address (40 lowercase hex), told to us by the page after unlock. Memory only, never saved: a convenience
+     * default for the Load form, not an authority. Cleared when the process ends.
+     */
+    @Volatile var walletHint40: String? = null
+        private set
+    fun setWalletHint(addr40: String) { if (walletHint40 != addr40) { walletHint40 = addr40; changed() } }
 }
