@@ -118,7 +118,7 @@ function ShieldTarget({ ask }: { ask?: { value: string; escrow: `0x${string}`; n
  * Offline cash (phone ↔ website, HANDOFF v1). The phones hold and pay the
  * cash; the website only loads coins into the escrow and cashes them out.
  */
-export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
+export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; incoming?: { link: string; n: number } } = {}) {
   const w = useWallet();
   const [payload, setPayload] = useState<OfflinePayload>();
   const [text, setText] = useState("");
@@ -151,6 +151,11 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  // A payload handed over by the phone bridge opens like a scanned code.
+  useEffect(() => {
+    if (incoming) take(incoming.link);
+  }, [incoming, take]);
 
   const opened = useRef(onOpened);
   opened.current = onOpened;

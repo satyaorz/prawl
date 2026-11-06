@@ -17,6 +17,7 @@ import { publicBalance, sendCalls, sendUserOp, UnconfirmedError, type SentTx } f
 import { activateCall, coinStatus, commitCall, depositCall, erc20Balance, loadProblems, privateLoadProblems, redeemCall, redeemOutcome, redeemToShieldCall, refreshCall, revertReason, simulateRedeem } from "../offline/escrow";
 import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type RefreshPayload, type ShieldRequest } from "../offline/payload";
 import { shieldRequestFromCall } from "../offline/shield";
+import { tellPhone } from "../offline/bridge";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
 export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
@@ -547,6 +548,7 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [depositCall(p)], status);
     await remember(opLog, myEpoch, "offline-load", p.value, p.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
+    if (ok) void tellPhone((b) => b.markDeposited({ coinId: p.coinId, txHash: txs.at(-1)!.hash }));
     updateAction(myEpoch, { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
@@ -588,6 +590,7 @@ export async function offlineRedeem(p: RedeemPayload | RedeemShieldPayload | Ref
     const to = toShield ? "your private balance" : p.redemption.payout;
     // A refresh is only done when the new coin exists in the escrow: the phone marks it spendable on this word.
     const newCoinLive = p.t === "refresh" && outcome?.kind === "paid" ? (await coinStatus(anon, p.refresh.newCoinId, p.escrow).catch(() => undefined))?.deposited === true : false;
+    if (p.t === "refresh" && newCoinLive && mined) void tellPhone((b) => b.markRefreshed({ coinId: p.header.coinId, newCoinId: p.refresh.newCoinId, txHash: mined.hash }));
     await remember(opLog, myEpoch, "offline-redeem", amount, toShield ? state.railgunAddress : isRefresh ? undefined : p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
     const text =
       !outcome
@@ -684,6 +687,7 @@ export async function offlineLoadPrivate(p: LoadPrivatePayload): Promise<void> {
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [activateCall(p)], status);
     await remember(opLog, myEpoch, "offline-load", fundWei, p.params.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
+    if (ok) void tellPhone((b) => b.markDeposited({ coinId: p.params.coinId, txHash: txs.at(-1)!.hash }));
     updateAction(myEpoch, {
       kind,
       status: ok ? "Loaded privately. Tap \"Deposited\" on the phone." : "Activation reverted",

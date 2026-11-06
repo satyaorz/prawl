@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { useWallet } from "../lib/use-wallet";
 import { ActivityList } from "./ActivityCard";
 import { OfflineCard } from "./OfflineCard";
+import { PhoneBridgePanel } from "./PhoneBridgePanel";
 import { Icon } from "./ui";
 
 const STEPS: ReadonlyArray<readonly [string, string]> = [
@@ -17,6 +19,8 @@ const STEPS: ReadonlyArray<readonly [string, string]> = [
 export function OfflineMode({ onOpened }: { onOpened: () => void }) {
   const w = useWallet();
   const unlocked = !!w.railgunAddress;
+  // A payload the phone bridge returned: the card below opens it like a scanned code.
+  const [incoming, setIncoming] = useState<{ link: string; n: number }>();
   return (
     <div className="flex flex-col gap-4 px-5 pb-6">
       {unlocked && (
@@ -45,7 +49,9 @@ export function OfflineMode({ onOpened }: { onOpened: () => void }) {
         </>
       )}
 
-      <OfflineCard onOpened={onOpened} />
+      {unlocked && <PhoneBridgePanel onPayload={(link) => setIncoming({ link, n: Date.now() })} />}
+
+      <OfflineCard onOpened={onOpened} incoming={incoming} />
 
       {unlocked && (
         <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
