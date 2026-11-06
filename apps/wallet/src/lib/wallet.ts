@@ -382,6 +382,11 @@ export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: 
   );
 }
 
+/** Forget a finished action's result (e.g. when a new offline payload is opened). A running action stays. */
+export function clearFinishedAction(): void {
+  if (state.action?.done) update({ action: undefined });
+}
+
 /**
  * Offline cash, load: deposit a phone-minted coin into the escrow from this
  * wallet's public account (the coin commits to it as depositor). Checked and

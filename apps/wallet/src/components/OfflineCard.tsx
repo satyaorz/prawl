@@ -3,7 +3,7 @@ import QRCode from "qrcode";
 import { formatEther } from "viem";
 import { anon } from "../lib/anon";
 import { useWallet } from "../lib/use-wallet";
-import { offlineLoad, offlineRedeem } from "../lib/wallet";
+import { clearFinishedAction, offlineLoad, offlineRedeem } from "../lib/wallet";
 import { coinStatus, type CoinStatus } from "../offline/escrow";
 import { configProblems, depositorUri, payloadFromText, payoutValue, type OfflinePayload } from "../offline/payload";
 import { QrScanner } from "./QrScanner";
@@ -35,6 +35,7 @@ export function OfflineCard() {
   const take = useCallback((t: string) => {
     setError(undefined);
     setStatus(undefined);
+    clearFinishedAction();
     try {
       setPayload(payloadFromText(t));
       setText("");
