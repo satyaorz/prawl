@@ -251,6 +251,28 @@ class OfflineWallet(
         notes.put(Note(j))
     }
 
+    /**
+     * Undoes a "deposited" mark the chain does not back (the page or the user marked a coin that was never funded): the coin is awaiting
+     * deposit again, with a fresh clock for the unfunded clean-up. Does nothing to a spent or already-awaiting note.
+     */
+    fun markUndeposited(alias: String) = synchronized(lock) {
+        val n = notes.note(alias) ?: return@synchronized
+        if (n.spent || n.pendingDeposit) return@synchronized
+        notes.put(Note(n.json.without("depositedAt").without("depositTx").with("pendingDeposit", true).with("createdAt", nowS())))
+        log("UNDEPOSITED ${n.label}: the chain has no deposit for it, back to awaiting deposit")
+    }
+
+    /**
+     * Discards coins that were minted here and never funded for [maxAgeS] (default a day): their keys are deleted. A deposit sent to one later
+     * could then only be reclaimed by its depositor after expiry, which the Load screen warns about. Returns how many were discarded.
+     */
+    fun discardStaleUndeposited(nowS: Long, maxAgeS: Long): Int = synchronized(lock) {
+        val stale = notes.notes().filter { n -> !n.spent && n.pendingDeposit && n.createdAt?.let { nowS - it > maxAgeS } == true && n.json.optStr("depositTx") == null }
+        stale.forEach { discardUndeposited(it.alias) }
+        if (stale.isNotEmpty()) log("DISCARDED ${stale.size} unfunded coin(s) older than ${maxAgeS / 3600} h")
+        stale.size
+    }
+
     /** Cancels a coin that was never deposited: deletes the genesis key and the note. */
     fun discardUndeposited(alias: String) = synchronized(lock) {
         val n = notes.note(alias) ?: return@synchronized
@@ -797,6 +819,18 @@ class OfflineWallet(
     /** Refreshes signed but not yet confirmed, newest first. */
     fun pendingRefreshes(): List<PendingRefresh> =
         notes.recordNames("refresh").mapNotNull { n -> notes.record("refresh", n)?.let { PendingRefresh(it) } }.sortedByDescending { it.at }
+
+    /**
+     * Drops a pending refresh that can never land, because the old coin it refreshes was never deposited (the chain has nothing to
+     * re-assign). Only call this when that is PROVEN: a real signed refresh is the money and must be kept. Deletes the new coin's unused key.
+     */
+    fun abandonRefresh(coinId: String) = synchronized(lock) {
+        val id = coinId.lowercase().removePrefix("0x")
+        val rec = notes.record("refresh", id) ?: return@synchronized
+        runCatching { keys.delete(rec.str("alias")) }
+        notes.deleteRecord("refresh", id)
+        log("ABANDONED refresh of coin 0x${rec.str("oldCoinId").take(16)}…: the old coin was never deposited")
+    }
 
     /**
      * The user confirmed the refresh landed (or the light-client check proved it): the new coin's genesis note is created

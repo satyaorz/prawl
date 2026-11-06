@@ -96,6 +96,13 @@ class Note(val json: JsonObject) {
     val createdAt: Long? get() = json.optStr("createdAt")?.toLongOrNull()
     val label: String get() = header.label
     val isGenesis: Boolean get() = depth == 0
+    /** When this phone's wallet was told the deposit was made (unix s), if it was. */
+    val depositedAt: Long? get() = json.optStr("depositedAt")?.toLongOrNull()
+    /**
+     * A coin this phone deposited itself (a genesis note, never paid on from elsewhere) whose deposit it has not verified: it counts as
+     * spendable only once a light-client proof for it is stored. Notes received from another phone were verified when they arrived.
+     */
+    val awaitsOwnProof: Boolean get() = !spent && !pendingDeposit && isGenesis
     /** Minted for commit-then-fund (escrow v3.1 private load); [tipWei] is the relayer tip the unshield must also cover. */
     val privateLoad: Boolean get() = json.bool("privateLoad")
     val tipWei: BigInteger get() = json.optStr("tipWei")?.let { BigInteger(it) } ?: BigInteger.ZERO

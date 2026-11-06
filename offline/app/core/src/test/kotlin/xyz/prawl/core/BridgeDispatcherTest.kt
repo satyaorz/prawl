@@ -53,6 +53,8 @@ class BridgeDispatcherTest {
         override fun nowS() = now
         val seenAccounts = ArrayList<String>()
         override fun walletAddressSeen(addr40: String) { seenAccounts.add(addr40) }
+        var proven: (String) -> Boolean = { true }
+        override fun depositProven(coinIdHex: String) = proven(coinIdHex)
     }
 
     private val DEP = "0x03a62B04aBe69f382bd7582f492be735B1dDb47B"
@@ -128,6 +130,19 @@ class BridgeDispatcherTest {
         fails("invalid_args") { call(d, "setAccount", """{"address":"not an address"}""") }
         fails("invalid_args") { call(d, "setAccount", """{}""") }
         assertEquals("junk never reaches the form", 1, h.seenAccounts.size)
+    }
+
+    @Test fun aCoinThePageMarkedDepositedIsConfirmingUntilTheDepositIsProven() {
+        val h = Host(); val d = BridgeDispatcher(h)
+        val id = coinOf(mint(d))
+        h.proven = { false }
+        assertTrue(d.dispatch("coins", "{}").contains("awaiting_deposit"))
+        call(d, "markDeposited", """{"coinId":"$id"}""")           // the page says so: not enough
+        val unproven = d.dispatch("coins", "{}")
+        assertTrue(unproven, unproven.contains("\"confirming\"")); assertFalse(unproven, unproven.contains("\"spendable\""))
+        h.proven = { it == id.removePrefix("0x") || it == id }     // a stored proof now exists
+        val proven = d.dispatch("coins", "{}")
+        assertTrue(proven, proven.contains("\"spendable\""))
     }
 
     @Test fun markDepositedAndRefreshedValidate() {

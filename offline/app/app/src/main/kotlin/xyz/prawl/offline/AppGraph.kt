@@ -1,5 +1,8 @@
 package xyz.prawl.offline
 
+import xyz.prawl.core.deposit.DepositWatcher
+import xyz.prawl.core.deposit.ProofOutcome
+import xyz.prawl.offline.ui.screens.proveCoinOnChain
 import android.app.Application
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -150,6 +153,21 @@ class AppGraph(val app: Application) {
         depositProofFor = lightClient::proofFor, lcAdvertisement = lightClient::advertisement,
         v31Escrows = Escrows.V31 + extraV31,
     ))
+
+    /** This phone holds a light-client proof of the coin's deposit (the coin is then really spendable offline). */
+    fun depositProven(coinIdHex: String): Boolean = runCatching { lightClient.store.proof(coinIdHex) != null }.getOrDefault(false)
+
+    /** Background honesty about this phone's own coins: proves deposits, reverts wrong marks, cleans unfunded coins and dead refreshes. */
+    val depositWatcher: DepositWatcher by lazy {
+        DepositWatcher(wallet(), { notes.notes() }, ::depositProven, { n ->
+            val r = proveCoinOnChain(this, n.header)
+            when {
+                r.ok -> ProofOutcome.Proven
+                r.value != null && r.value.all { it == 0.toByte() } -> ProofOutcome.Empty
+                else -> ProofOutcome.Unavailable(r.error ?: "check failed")
+            }
+        }, { System.currentTimeMillis() / 1000 })
+    }
 
     private val _version = MutableStateFlow(0)
     /** Bumped after anything changes the wallet; screens re-read on change. */
