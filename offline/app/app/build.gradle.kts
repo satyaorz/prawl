@@ -1,3 +1,6 @@
+import java.security.KeyStore
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -24,9 +27,9 @@ if (!debugKeystore.exists()) {
     ).inheritIO().start().waitFor()
     check(rc == 0 && debugKeystore.exists()) { "could not create ${debugKeystore.path} (keytool exit code $rc): create it by hand, see keystore/README.md" }
 }
-val debugCertSha256: String = java.security.KeyStore.getInstance(debugKeystore, "android".toCharArray())
+val debugCertSha256: String = KeyStore.getInstance(debugKeystore, "android".toCharArray())
     .getCertificate("debug").encoded
-    .let { java.security.MessageDigest.getInstance("SHA-256").digest(it) }
+    .let { MessageDigest.getInstance("SHA-256").digest(it) }
     .joinToString("") { "%02x".format(it) }
 // The production signing certificate's SHA-256 (64 lowercase hex): -Pprawl.release.certSha256=... The default is a PLACEHOLDER that matches
 // no real certificate, so an unconfigured release build trusts no key at all (fail safe) instead of the debug certificate.
