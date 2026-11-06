@@ -54,6 +54,7 @@ try {
 
   let lastBalance = -1;
   for (;;) {
+    try {
     const ctl = path.join(dir, "control.txt");
     if (existsSync(ctl)) {
       const cmd = readFileSync(ctl, "utf8").trim();
@@ -155,6 +156,11 @@ try {
       }
     }
     await sleep(5000);
+      } catch (e) {
+      // One failed command must not close the browser: its in-memory passkey holds the wallet's money.
+      log("command failed, still running:", String(e.message).split("\n")[0]);
+      await sleep(5000);
+    }
   }
   log("LIVE OFFLINE TEST DONE");
 } catch (e) {
