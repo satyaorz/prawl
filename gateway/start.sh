@@ -2,8 +2,9 @@
 # Start our own tor-js gateway (unchanged v0.4.4 binary) for local development.
 #
 # - All state lives in .local/gateway (key, Tor directory cache, logs).
-# - Advertises 127.0.0.1 only. The binary has no bind-address option, so the
-#   UDP listener binds every interface: stop it with gateway/stop.sh when done.
+# - Advertises 127.0.0.1 only, unless PRAWL_GATEWAY_ADVERTISE=<ip> names the address another
+#   device (a phone on the same Wi-Fi) should use. The binary has no bind-address option,
+#   so the UDP listener binds every interface: stop it with gateway/stop.sh when done.
 # - Waits for the first directory sync, then copies the snapshot to
 #   .local/tor/bootstrap.zip.zst, which the wallet serves at /tor/bootstrap.zip.zst,
 #   and writes the gateway address to .local/gateway/kps-address.
@@ -12,6 +13,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN=${TORJS_GATEWAY_BIN:-$ROOT/.local/bin/tor-js-gateway}
 G=$ROOT/.local/gateway
 PORT=${PRAWL_GATEWAY_PORT:-25931}
+ADV=${PRAWL_GATEWAY_ADVERTISE:-127.0.0.1}
+[[ $ADV =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "PRAWL_GATEWAY_ADVERTISE must be an IPv4 address"; exit 1; }
 
 [ -x "$BIN" ] || { echo "gateway binary not found at $BIN (run gateway/build.sh)"; exit 1; }
 mkdir -p "$G/data" "$G/home" "$G/logs" "$ROOT/.local/tor"
@@ -30,7 +33,7 @@ cat > "$G/config.json5" <<JSON
   "keccak_poll_interval": 86400,
   "keccak_manual_sync_min_interval": 1800,
   "demo": false,
-  "advertised_addresses": ["127.0.0.1"],
+  "advertised_addresses": ["$ADV"],
   "tunnel_max": 8192,
   "tunnel_per_ip": 16,
   "tunnel_idle_timeout": 300,
@@ -54,5 +57,5 @@ for _ in $(seq 1 240); do
   sleep 0.5
 done
 cp "$G/data/bootstrap.zip.zst" "$ROOT/.local/tor/bootstrap.zip.zst"
-grep -oE "127\.0\.0\.1:$PORT:[A-Za-z0-9_-]+" "$LOG" | tail -1 > "$G/kps-address"
+grep -oE "${ADV//./\\.}:$PORT:[A-Za-z0-9_-]+" "$LOG" | tail -1 > "$G/kps-address"
 echo "gateway: $(cat "$G/kps-address")"
