@@ -55,6 +55,7 @@ const BATCH_ABI = [
   "function prepareSettle(uint256, bytes, bytes)",
   "function executeSettle(uint256, uint64, bytes)",
   "function creditOrder(uint256, address)",
+  "function exit(uint8, bytes32, bytes)",
   "function refundOrder(uint256, address)",
   "function fundedBalance(address, uint8) view returns (bytes32)",
   "function orderStatus(uint256, address) view returns (bool submitted, bool credited, bool refunded)",
@@ -100,7 +101,8 @@ async function main() {
   return { batch, wA, wB, oracle, instance, round, lotA, lotB };
 }
 
-const startBlock = (await provider.getBlockNumber()) - 5;
+// A resumed run must also see the earlier OrderSubmitted events: LIVE_FROM_BLOCK (e.g. the deployment block).
+const startBlock = Number(process.env.LIVE_FROM_BLOCK ?? (await provider.getBlockNumber()) - 5);
 const ctx = await main();
 
 /** Encrypt 3 values in one client-side input for `user`, bound to `contract`. */
@@ -254,7 +256,7 @@ async function settle() {
   const deadline = Date.now() + 20 * 60_000;
   await waitForRound();
   for (;;) {
-    await keeper.pass();
+    await keeper.pass().catch((e) => log(`pass: ${String(e?.shortMessage ?? e?.message ?? e).slice(0, 120)}`));
     const [d, c] = await Promise.all([batch.orderStatus(submitted.round, wallet.address), batch.orderStatus(submitted.round, counterparty.address)]);
     if (d.credited && c.credited) break;
     if (Date.now() > deadline) throw new Error("round did not settle within 20 minutes");
@@ -276,7 +278,7 @@ async function settle() {
       const enc = await instance.createEncryptedInput(manifest.batch, counterparty.address).add64(received).encrypt();
       await waitTx(await batch.connect(counterparty).exit(0, enc.handles[0], enc.inputProof), "exit counterparty A balance");
       for (let i = 0; i < 40; ++i) {
-        await keeper.pass();
+        await keeper.pass().catch((e) => log(`pass: ${String(e?.shortMessage ?? e?.message ?? e).slice(0, 120)}`));
         const after = await token.balanceOf(counterparty.address);
         if (after > before) { log(`exit finalized: counterparty received ${after - before} (wei of tokenA)`); break; }
         await new Promise((r) => setTimeout(r, 8000));

@@ -106,17 +106,32 @@ export class Keeper {
     const CHUNK = 2000;
     while (this.cursor <= head) {
       const to = Math.min(head, this.cursor + CHUNK - 1);
-      const orders = await this.batch.queryFilter(this.batch.filters.OrderSubmitted(), this.cursor, to);
+      let orders;
+      try {
+        orders = await this.batch.queryFilter(this.batch.filters.OrderSubmitted(), this.cursor, to);
+      } catch (e) {
+        // A public RPC is load-balanced: the node asked for logs can be a block behind the one that
+        // reported the head ("block range extends beyond current head"). The cursor has not moved,
+        // so the next pass simply asks again.
+        this.log(`scan: node not caught up yet (${String(e?.shortMessage ?? e?.message ?? e).slice(0, 80)})`);
+        return;
+      }
+      const exits = [];
+      try {
+        for (const [i, w] of this.wrappers.entries()) {
+          for (const e of await w.queryFilter(w.filters.UnwrapRequested(), this.cursor, to)) exits.push([ethers.hexlify(e.args[1]), i]);
+        }
+      } catch (e) {
+        this.log(`scan: node not caught up yet (${String(e?.shortMessage ?? e?.message ?? e).slice(0, 80)})`);
+        return;
+      }
+      // Only now are both queries known good: record them and move the cursor.
       for (const e of orders) {
         const r = e.args[0].toString();
         if (!this.orderers.has(r)) this.orderers.set(r, new Set());
         this.orderers.get(r).add(ethers.getAddress(e.args[1]));
       }
-      for (const [i, w] of this.wrappers.entries()) {
-        for (const e of await w.queryFilter(w.filters.UnwrapRequested(), this.cursor, to)) {
-          this.exitHandles.set(ethers.hexlify(e.args[1]), i);
-        }
-      }
+      for (const [handle, i] of exits) this.exitHandles.set(handle, i);
       this.cursor = to + 1;
     }
   }
