@@ -8,11 +8,19 @@ import type { AnonRpcClient } from "@prawl/anon-rpc";
 import type { Call, Hex } from "@prawl/railgun";
 import { privateKeyToAccount } from "viem/accounts";
 
+export interface ReceiptLog {
+  address: Hex;
+  topics: Hex[];
+  data: Hex;
+}
+
 export interface SentTx {
   hash: Hex;
   status: "success" | "reverted";
   blockNumber: bigint;
   gasUsed: bigint;
+  /** Logs of the mined transaction, for callers whose outcome is not just the status (e.g. a redeem that returns false). */
+  logs?: ReceiptLog[];
 }
 
 const hexBig = (v: unknown): bigint => BigInt(v as string);
@@ -99,9 +107,17 @@ export async function waitForReceipt(client: AnonRpcClient, chainId: number, has
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const r = (await client.read(id, chainId, "eth_getTransactionReceipt", [hash]).catch(() => null)) as
-      | { status: string; blockNumber: string; gasUsed: string }
+      | { status: string; blockNumber: string; gasUsed: string; logs?: ReceiptLog[] }
       | null;
-    if (r) return { hash, status: r.status === "0x1" ? "success" : "reverted", blockNumber: hexBig(r.blockNumber), gasUsed: hexBig(r.gasUsed) };
+    if (r) {
+      return {
+        hash,
+        status: r.status === "0x1" ? "success" : "reverted",
+        blockNumber: hexBig(r.blockNumber),
+        gasUsed: hexBig(r.gasUsed),
+        logs: (r.logs ?? []).map((l) => ({ address: l.address, topics: l.topics, data: l.data })),
+      };
+    }
     await new Promise((res) => setTimeout(res, 4000));
   }
   throw new Error(`no receipt for ${hash} after ${timeoutMs / 1000} s`);

@@ -31,11 +31,13 @@ export function OfflineCard() {
   const [showDepositor, setShowDepositor] = useState(false);
   const [qr, setQr] = useState<string>();
   const [status, setStatus] = useState<CoinStatus | { error: string }>();
+  const [ownCoin, setOwnCoin] = useState(false);
 
   const take = useCallback((t: string) => {
     setError(undefined);
     setStatus(undefined);
     clearFinishedAction();
+    setOwnCoin(false);
     try {
       setPayload(payloadFromText(t));
       setText("");
@@ -178,11 +180,19 @@ export function OfflineCard() {
           {problems.map((p) => (
             <p key={p} className="mt-2 text-xs text-red-400">Refused: {p}</p>
           ))}
+          {payload.t === "load" && unlocked && !mismatch && (
+            <label className="mt-3 flex items-start gap-2 text-xs text-amber-300">
+              <input type="checkbox" className="mt-0.5" checked={ownCoin} onChange={(e) => setOwnCoin(e.target.checked)} />
+              <span>
+                My own phone minted this coin just now. Whoever made a load link holds the coin's key: loading a link someone sent you hands them the money.
+              </span>
+            </label>
+          )}
           {!unlocked ? (
             <p className="mt-3 text-xs text-amber-400">Unlock your wallet to {payload.t === "load" ? "load this coin" : "send this cash-out"}.</p>
           ) : (
             <button
-              disabled={running || problems.length > 0 || !!mismatch}
+              disabled={running || problems.length > 0 || !!mismatch || (payload.t === "load" && !ownCoin)}
               onClick={() => void (payload.t === "load" ? offlineLoad(payload) : offlineRedeem(payload))}
               className="mt-3 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-medium text-zinc-950 disabled:opacity-50"
             >

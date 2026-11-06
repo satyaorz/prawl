@@ -6,7 +6,7 @@
  */
 import type { AnonRpcClient, Identity } from "@prawl/anon-rpc";
 import type { Call } from "@prawl/railgun";
-import { BaseError, decodeErrorResult, decodeFunctionResult, encodeFunctionData, parseAbi, type Hex } from "viem";
+import { BaseError, decodeErrorResult, decodeEventLog, decodeFunctionResult, encodeFunctionData, parseAbi, type Hex } from "viem";
 import { ESCROW_V3, OFFLINE_CHAIN_ID, configProblems, type LoadPayload, type RedeemPayload } from "./payload";
 
 export const ESCROW_ABI = parseAbi([
@@ -20,6 +20,10 @@ export const ESCROW_ABI = parseAbi([
   "function coins(bytes32 coinId) view returns (uint128 paid, bool frozen, bool closed)",
   "function maxLifetime() view returns (uint256)",
   "function grace() view returns (uint256)",
+  "event Redeemed(bytes32 indexed coinId, address indexed payout, bytes32 indexed noteId, uint256 outputIndex, uint256 amount, bytes32 msgHash, uint256 totalPaid)",
+  "event RedeemBlocked(bytes32 indexed coinId, bytes32 indexed keyHash, uint256 depth)",
+  "event CoinFrozen(bytes32 indexed coinId, bytes32 indexed keyHash)",
+  "event PaymentDeferred(address indexed to, uint256 amount)",
   "error BadValue()",
   "error BadExpiry()",
   "error CoinExists()",
@@ -107,6 +111,44 @@ export function redeemCall(p: RedeemPayload): Call {
     data: encodeFunctionData({ abi: ESCROW_ABI, functionName: "redeem", args: [p.header, p.path, p.redemption] }),
     value: 0n,
   };
+}
+
+/**
+ * What a mined redeem actually did. A redeem can succeed as a transaction yet
+ * pay nothing: it returns false (RedeemBlocked) when the path holds a double
+ * spend, freezing the coin; or it pays into `owed` (PaymentDeferred) when the
+ * payout address refuses ETH. Only a Redeemed event for this coin and payout
+ * with no deferral counts as paid.
+ */
+export type RedeemOutcome =
+  | { kind: "paid"; amount: bigint }
+  | { kind: "deferred"; amount: bigint }
+  | { kind: "blocked"; frozen: boolean }
+  | { kind: "unknown" };
+
+export function redeemOutcome(logs: ReadonlyArray<{ address: Hex; topics: Hex[]; data: Hex }>, p: RedeemPayload): RedeemOutcome {
+  let paid: bigint | undefined;
+  let deferred: bigint | undefined;
+  let blocked = false;
+  let frozen = false;
+  for (const l of logs) {
+    if (l.address.toLowerCase() !== ESCROW_V3.toLowerCase()) continue;
+    let ev;
+    try {
+      ev = decodeEventLog({ abi: ESCROW_ABI, data: l.data, topics: l.topics as [Hex, ...Hex[]] });
+    } catch {
+      continue;
+    }
+    const a = ev.args as Record<string, unknown>;
+    if (ev.eventName === "Redeemed" && a.coinId === p.header.coinId && String(a.payout).toLowerCase() === p.redemption.payout.toLowerCase()) paid = a.amount as bigint;
+    if (ev.eventName === "PaymentDeferred" && String(a.to).toLowerCase() === p.redemption.payout.toLowerCase()) deferred = a.amount as bigint;
+    if (ev.eventName === "RedeemBlocked" && a.coinId === p.header.coinId) blocked = true;
+    if (ev.eventName === "CoinFrozen" && a.coinId === p.header.coinId) frozen = true;
+  }
+  if (blocked || (frozen && paid === undefined)) return { kind: "blocked", frozen };
+  if (paid !== undefined && deferred !== undefined) return { kind: "deferred", amount: deferred };
+  if (paid !== undefined) return { kind: "paid", amount: paid };
+  return { kind: "unknown" };
 }
 
 async function ethCall(client: AnonRpcClient, id: Identity, call: { to: Hex; data: Hex; from?: Hex; value?: bigint }): Promise<Hex> {

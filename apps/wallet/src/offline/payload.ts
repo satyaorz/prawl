@@ -137,7 +137,7 @@ export function parsePayload(raw: unknown): OfflinePayload {
   if (p.t === "redeem") {
     const h = obj(p.header, "header");
     const r = obj(p.redemption, "redemption");
-    return {
+    return checkIndexes({
       t: "redeem",
       chainId,
       escrow,
@@ -173,9 +173,18 @@ export function parsePayload(raw: unknown): OfflinePayload {
         r: b32(r.r, "redemption.r"),
         s: b32(r.s, "redemption.s"),
       },
-    };
+    });
   }
   throw new PayloadError(`unknown payload type ${String(p.t)}`);
+}
+
+/** Each spend and the redemption must point at one of their own outputs. */
+function checkIndexes(p: RedeemPayload): RedeemPayload {
+  p.path.forEach((s, i) => {
+    if (s.index >= BigInt(s.outputs.length)) throw new PayloadError(`path[${i}].index points past its outputs`);
+  });
+  if (p.redemption.index >= BigInt(p.redemption.outputs.length)) throw new PayloadError("redemption.index points past its outputs");
+  return p;
 }
 
 /**

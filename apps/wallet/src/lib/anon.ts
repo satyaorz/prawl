@@ -37,7 +37,8 @@ const buildGateway = env.VITE_PRAWL_GATEWAY || DEMO_GATEWAY;
 /**
  * A gateway sees the user's IP address (never what goes over Tor), so a link
  * can only propose one: the user must confirm it. `?gateway=default` forgets
- * the choice. The query is removed from the address bar either way.
+ * the choice, also after a confirmation. The query is removed from the
+ * address bar either way.
  */
 function chooseGateway(): string {
   if (typeof window === "undefined") return buildGateway;
@@ -45,7 +46,11 @@ function chooseGateway(): string {
     const url = new URL(window.location.href);
     const proposed = url.searchParams.get("gateway");
     if (proposed !== null) {
-      if (proposed === "" || proposed === "default") window.localStorage.removeItem(GATEWAY_KEY);
+      if (proposed === "" || proposed === "default") {
+        // Going back to the built-in gateway also changes who sees the user's IP: confirm it too.
+        if (window.localStorage.getItem(GATEWAY_KEY) && window.confirm(`Stop using your chosen gateway and connect through the built-in one (${buildGateway})?`))
+          window.localStorage.removeItem(GATEWAY_KEY);
+      }
       else if (
         GATEWAY_RE.test(proposed) &&
         window.confirm(

@@ -35,7 +35,7 @@ describe("sendCalls", () => {
   it("signs with the right nonce, chain and fees, broadcasts once, waits on the tx identity", async () => {
     const { client, sent, labels } = stub();
     const out = await sendCalls(client, 11155111, KEY, [{ to: "0x000000000000000000000000000000000000dEaD", data: "0x1234", value: 5n }]);
-    expect(out).toEqual([{ hash: `0x${"ab".repeat(32)}`, status: "success", blockNumber: 16n, gasUsed: 21000n }]);
+    expect(out).toEqual([{ hash: `0x${"ab".repeat(32)}`, status: "success", blockNumber: 16n, gasUsed: 21000n, logs: [] }]);
     expect(sent).toHaveLength(1);
     const tx = parseTransaction(sent[0] as TransactionSerialized);
     expect(tx).toMatchObject({ chainId: 11155111, nonce: 7, value: 5n, data: "0x1234", gas: 25200n, maxPriorityFeePerGas: 100000000n, maxFeePerGas: 2100000000n });

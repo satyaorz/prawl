@@ -14,7 +14,7 @@ import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
 import { railgun } from "../railgun/controller";
 import { publicBalance, sendCalls, sendUserOp, type SentTx } from "./tx";
-import { depositCall, loadProblems, redeemCall, revertReason, simulateRedeem } from "../offline/escrow";
+import { depositCall, loadProblems, redeemCall, redeemOutcome, revertReason, simulateRedeem } from "../offline/escrow";
 import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type RedeemPayload } from "../offline/payload";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
@@ -478,11 +478,21 @@ export async function offlineRedeem(p: RedeemPayload): Promise<void> {
     }
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [redeemCall(p)], status);
     const amount = payoutValue(p);
-    await remember("offline-redeem", amount, p.redemption.payout, txs);
-    const ok = txs.every((t) => t.status === "success");
-    update({
-      action: { kind, status: ok ? `Paid ${fmtEth(amount)} ETH to ${p.redemption.payout}.` : "The cash-out reverted", done: true, txs },
-    });
+    const mined = txs.at(-1);
+    // The receipt status is not enough: a mined redeem may have frozen the coin or only deferred the payment.
+    const outcome = mined?.status === "success" ? redeemOutcome(mined.logs ?? [], p) : undefined;
+    await remember("offline-redeem", amount, p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
+    const text =
+      !outcome
+        ? { status: "The cash-out reverted" }
+        : outcome.kind === "paid"
+          ? { status: `Paid ${fmtEth(outcome.amount)} ETH to ${p.redemption.payout}.` }
+          : outcome.kind === "deferred"
+            ? { status: "Not paid out yet", error: `The payout address did not accept ETH; ${fmtEth(outcome.amount)} ETH is owed to it in the escrow and it can withdraw it (withdrawOwed).` }
+            : outcome.kind === "blocked"
+              ? { status: "Not paid", error: `The escrow found a double spend on this coin's path and ${outcome.frozen ? "froze the coin" : "blocked this cash-out"}. Nothing was paid.` }
+              : { status: "Mined, but no payout was seen", error: "Check the coin's status before trying again." };
+    update({ action: { kind, ...text, done: true, txs } });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
     update({ action: { kind, status: "Cash-out failed", done: true, error: revertReason(e) } });
