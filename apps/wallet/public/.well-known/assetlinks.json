@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.get_login_creds",
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "xyz.prawl.offline",
+      "sha256_cert_fingerprints": [
+        "E6:E0:DA:AE:10:31:F7:0E:5A:26:7A:38:38:78:AC:56:4A:93:51:06:F7:56:00:31:0F:ED:A6:BF:1E:A9:2E:AF"
+      ]
+    }
+  }
+]

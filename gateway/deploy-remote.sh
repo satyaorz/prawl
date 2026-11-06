@@ -78,7 +78,9 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK is required: WebRTC lists the network interfaces over netlink to gather ICE candidates. Without it
+# the gateway answers the signalling but offers no address (log: "Candidate IP could not be found", os error 97).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 ReadWritePaths=/var/lib/prawl-gateway
 LimitNOFILE=65536
 
