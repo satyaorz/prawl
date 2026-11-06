@@ -45,6 +45,8 @@ export function SwapDashboard() {
   const [accounts, setAccounts] = useState<SwapAccount[]>([]);
   const [selected, setSelected] = useState<number>();
   const [fundAmount, setFundAmount] = useState("");
+  // A swap account whose funding did not complete: a retry reuses it instead of reserving another one.
+  const [unfunded, setUnfunded] = useState<SwapAccount>();
   const [acct, setAcct] = useState<{ ethWei: bigint; wethWei: bigint }>();
   const [service, setService] = useState<SwapService>();
   const [balances, setBalances] = useState<SwapBalances>();
@@ -152,10 +154,12 @@ export function SwapDashboard() {
     const most = maxPrivateAmountWei("unshield", spendable);
     if (wei + SWAP_ACCOUNT_GAS_WEI > most) { setError(`Your spendable private balance covers at most ${formatEther(most > SWAP_ACCOUNT_GAS_WEI ? most - SWAP_ACCOUNT_GAS_WEI : 0n)} ETH here (fees and the swap account's gas come out of it).`); return; }
     await guarded(async () => {
-      const account = await newSwapAccount();
+      const account = unfunded ?? await newSwapAccount();
+      setUnfunded(account);
       await loadAccounts();
       const ok = await fundSwapAccount(account.index, wei, setStatus);
-      if (!ok) throw new Error("Funding the swap account did not complete. Nothing is lost: check Activity, then retry.");
+      if (!ok) throw new Error("Funding the swap account did not complete (the reason is on the wallet's status line once you close this sheet). Nothing was lost: press the button again to retry with the same account.");
+      setUnfunded(undefined);
       setSelected(account.index);
       setFundAmount("");
       await loadAccounts();
@@ -169,23 +173,34 @@ export function SwapDashboard() {
   try { quantity = parseUnits(amount || "0", 6); } catch { /* rendered as unavailable */ }
   const lotIn = direction === 1 ? balances?.lotA : balances?.lotB;
   const lotOut = direction === 1 ? balances?.lotB : balances?.lotA;
-  const estimate = lotIn && lotOut && quantity > 0n && quantity % lotIn === 0n ? quantity / lotIn * lotOut : undefined;
+  // An order is a whole number of price lots, and the lot size follows the pool's price: round the amount DOWN
+  // to whole lots and say so, instead of making the user do lot arithmetic.
+  const lots = lotIn && lotIn > 0n ? quantity / lotIn : 0n;
+  const rounded = lotIn ? lots * lotIn : 0n;
+  const estimate = lotIn && lotOut && lots > 0n ? lots * lotOut : undefined;
   const floor = estimate === undefined ? undefined : estimate * SLIPPAGE_FLOOR_BPS / 10000n;
   const amountText = (value: bigint) => formatUnits(value, 6);
   const isWeth = labels[inputAsset] === "WETH";
 
   /** Wrap what is missing, fund the vault, then place the encrypted order: three transactions, one tap. */
-  async function swapPrivately(session: SwapService, value: bigint) {
-    if (floor === undefined) throw new Error("Enter a whole number of price lots.");
+  async function swapPrivately(session: SwapService, requested: bigint) {
     setStatus("Reading your confidential balances…");
     const now = await session.balances();
+    // Re-read the lot sizes now (the pool price may have moved since the quote above) and round down to whole lots.
+    const lotInNow = direction === 1 ? now.lotA : now.lotB;
+    const lotOutNow = direction === 1 ? now.lotB : now.lotA;
+    if (lotInNow === 0n || lotOutNow === 0n) throw new Error(now.priceError ?? "The swap price is unavailable right now.");
+    const value = requested / lotInNow * lotInNow;
+    if (value === 0n) throw new Error(`That is less than one lot. One lot is ${amountText(lotInNow)} ${labels[inputAsset]}.`);
+    const minimum = value / lotInNow * lotOutNow * SLIPPAGE_FLOOR_BPS / 10000n;
+    if (value !== requested) setStatus(`Using ${amountText(value)} ${labels[inputAsset]}: the largest whole number of lots (one lot is ${amountText(lotInNow)}).`);
     const inVault = now.vault[inputAsset];
     if (inVault < value) {
       const need = value - inVault;
       if (now.wrapped[inputAsset] < need) await session.wrap(inputAsset, need - now.wrapped[inputAsset], setStatus);
       await session.fund(inputAsset, need, setStatus);
     }
-    await session.order(direction, value, floor, setStatus);
+    await session.order(direction, value, minimum, setStatus);
   }
 
   return (
@@ -242,7 +257,7 @@ export function SwapDashboard() {
               <div className="space-y-2">
                 <p className="text-xs text-zinc-500">Spendable private WETH: <span className="font-mono">{wallet.balances ? formatEther(spendable) : "…"}</span></p>
                 <div className="flex gap-2">
-                  <input value={fundAmount} onChange={(e) => setFundAmount(e.target.value.trim())} inputMode="decimal" placeholder="0.001" aria-label="ETH to move to a new swap account" className="min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-900 p-2 font-mono text-sm" />
+                  <input value={fundAmount} onChange={(e) => setFundAmount(e.target.value.trim())} inputMode="decimal" placeholder="Amount in ETH" aria-label="ETH to move to a new swap account" className="min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-900 p-2 font-mono text-sm" />
                   <button disabled={busy || !fundAmount} onClick={() => void fundNew()} className="rounded-xl bg-zinc-100 px-3 text-xs font-semibold text-zinc-950 disabled:opacity-40">Fund new swap account</button>
                 </div>
                 <p className="text-xs text-zinc-500">Comes out of your private balance with the usual RAILGUN fee, plus {formatEther(SWAP_ACCOUNT_GAS_WEI)} ETH kept in the account for its own gas.</p>
@@ -290,6 +305,15 @@ export function SwapDashboard() {
           <label className="block text-xs text-zinc-400">Amount
             <input type="text" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.0" className="mt-1 w-full rounded-xl border border-zinc-700 bg-zinc-900 p-3 font-mono text-sm text-zinc-100" />
           </label>
+          {lotIn && quantity > 0n && (
+            <p className="text-xs text-zinc-500">
+              {lots === 0n
+                ? `Smaller than one lot (${amountText(lotIn)} ${labels[inputAsset]}).`
+                : rounded === quantity
+                  ? `${lots.toString()} lot${lots > 1n ? "s" : ""} of ${amountText(lotIn)} ${labels[inputAsset]}.`
+                  : `Rounded down to ${amountText(rounded)} ${labels[inputAsset]}: ${lots.toString()} lot${lots > 1n ? "s" : ""} of ${amountText(lotIn)}.`}
+            </p>
+          )}
           <p className="text-xs leading-relaxed text-zinc-400">Indicative output: {estimate === undefined ? "—" : `${amountText(estimate)} ${labels[outputAsset]}`}. The batch trade is refused (and your order refunded) unless it returns at least {Number(SLIPPAGE_FLOOR_BPS) / 100}% of the quoted price: {floor === undefined ? "—" : `${amountText(floor)} ${labels[outputAsset]}`}. Pool fee: {service.config.pool.fee / 10000}%.</p>
           <button disabled={busy || !!balances.priceError} onClick={() => void run(swapPrivately, "Encrypted order submitted. The wallet will close, settle and credit the round by itself.")} className={primary}>Swap privately</button>
 
@@ -311,8 +335,8 @@ export function SwapDashboard() {
               <button disabled={busy} onClick={() => void run((s, value) => s.fund(inputAsset, value, setStatus), "Confidential tokens sent to the swap vault.")} className={btn}>Fund swap vault</button>
               <button disabled={busy} onClick={() => void run((s, value) => s.exit(inputAsset, value, setStatus), "Exit requested. It is released to this account's public balance automatically in a minute or two.")} className={btn}>Exit vault to public</button>
               <button disabled={busy || !!balances.priceError} onClick={() => void run((s, value) => {
-                if (floor === undefined) throw new Error("Enter a whole number of price lots.");
-                return s.order(direction, value, floor, setStatus);
+                if (rounded === 0n || floor === undefined) throw new Error("Enter at least one whole lot.");
+                return s.order(direction, rounded, floor, setStatus);
               }, "Encrypted order submitted. Track the round before placing another order.")} className={`${btn} col-span-2`}>Submit private swap</button>
             </div>
           </details>

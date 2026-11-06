@@ -152,7 +152,7 @@ const STEPS = [
     log(`dashboard open: ${(await dlgText()).slice(0, 400)}`);
   }],
   ["swap", async () => {
-    await dialog.getByPlaceholder("0.0").fill(SWAP_AMOUNT);
+    await dialog.getByPlaceholder("0.0", { exact: true }).fill(SWAP_AMOUNT);
     await act("Swap privately", /Encrypted order submitted/, 20 * MIN);
     writeFileSync(path.join(dir, "ordered.txt"), new Date().toISOString() + "\n");
     log("order placed. Now run the counterparty: (cd private-swap && node scripts/counterparty-order.mjs 1)");
