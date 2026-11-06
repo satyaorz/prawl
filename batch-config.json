@@ -1,0 +1,26 @@
+{
+  "chainId": 11155111,
+  "deployed": true,
+  "protocolVersion": 2,
+  "batch": "0x7A6798596FAFE3bb4fFB6e867506C045DbB9407F",
+  "cTokenA": "0x361a17402c7bdc5Ac779e1DB9c1c81395472280a",
+  "cTokenB": "0x8F382Fb7221F655dc57796Ca95DF7586b576eaa1",
+  "tokenA": "0x430dCF0916f8a70C9368FAf9CE98Fa0f2Cd7E61D",
+  "tokenB": "0xbb10CF47311deC8c9C4085A2Bf637571882095fc",
+  "poolKey": {
+    "currency0": "0x430dcf0916f8a70c9368faf9ce98fa0f2cd7e61d",
+    "currency1": "0xbb10cf47311dec8c9c4085a2bf637571882095fc",
+    "fee": 3000,
+    "tickSpacing": 60,
+    "hooks": "0x0000000000000000000000000000000000000000"
+  },
+  "deployedBy": "0x2BcE9C65b99171B008D57D5cAE9da6749B0Ca9bA",
+  "settler": "0x2BcE9C65b99171B008D57D5cAE9da6749B0Ca9bA",
+  "deployedBlock": 12076172,
+  "deployedAt": "2026-11-06T11:08:39.755Z",
+  "minRoundSeconds": 30,
+  "minUsers": 2,
+  "minRoundDuration": 30,
+  "poolManager": "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
+  "poolId": "0xb4dd10273ec0c23ccd4375c06c741452cf8cb86d3c9dc868a161609fa89c7934"
+}
