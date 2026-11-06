@@ -1,0 +1,12 @@
+annotated-types==0.8.0
+cytoolz==1.2.0
+eth-hash==0.8.0
+eth-typing==6.0.0
+eth-utils==6.0.0
+py-ecc==8.0.0
+pycryptodome==4.3.0
+pydantic==2.14.3
+pydantic_core==2.50.4
+toolz==1.2.0
+typing-inspection==0.4.5
+typing_extensions==4.16.0

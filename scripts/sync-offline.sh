@@ -35,6 +35,10 @@ copy v3/escrow_v3 contracts-v3 '/src/***' '/test/***' '/script/***' '/tools/*.py
 rsync -a "$SRC/v3/SPEC.md" "$DST/SPEC-v3.md"
 rsync -a "$SRC/v3/DEPLOYMENTS.md" "$DST/DEPLOYMENTS.md"
 rsync -a "$SRC/v3/HANDOFF.md" "$DST/HANDOFF.md"
+# Light-client deposit proofs: Python reference, Java verifier (+ JNI shim source and prebuilt blst .so), Solidity layout test.
+copy v3/deposit_proofs deposit-proofs '/python/*.py' '/java/src/***' '/java/jni/***' '/java/native/***' '/java/*.sh' \
+  '/java/android_demo/src/***' '/java/android_demo/AndroidManifest.xml' '/java/android_demo/*.sh' \
+  '/solidity/src/***' '/solidity/test/***' '/solidity/foundry.toml' '/*.sh' '/requirements.txt'
 mkdir -p "$DST/tools" && rsync -a "$SRC/v3/handoff.py" "$SRC/v3/handoff_sim.py" "$DST/tools/"
 # Earlier prototypes and simulations behind the four routes.
 copy "$A/contracts" prototypes/otk-escrow '/src/***' '/test/***' '/foundry.toml'

@@ -27,6 +27,12 @@ The escrow stores `deposits[coinId] = keccak256(abi.encode(value, expiry, k0x, k
 
 The recipient recomputes `keccak256(abi.encode(value, expiry, k0x, k0y, depositor))` from the coin and compares it with the storage value.
 
+> **Amended 2026-11-06 for Gloas (ePBS).** Sepolia runs Gloas from epoch 353024 (fork version `0x90000076`), and the beacon block body no longer holds the execution payload.
+> - **Execution step:** the light-client header proves `execution_block_hash` (gindex 2856, the last executed payload). The proof therefore also carries the RLP execution header. The verifier checks `keccak(header) == execution_block_hash` and reads `stateRoot` and `number` from it.
+> - **Domain:** the signing domain uses the fork of `epoch(signature_slot − 1)`.
+> - **Participation:** at least 342 of 512 signers.
+> - **Reference:** `deposit_proofs/` (Python reference + `DepositProof.java` with blst via JNI). Measured on a Samsung S25 Ultra: 19.5 ms with the committee cached, 63 ms with 3 committee steps. On 2026-11-06 a real escrow deposit was proven and verified on the phone.
+
 **Trust:** Ethereum's sync-committee honest-majority assumption, which is standard for light clients, plus the recipient's sync-committee cache from its last online sync.
 
 ## 3. Notes and spends (splitting)
