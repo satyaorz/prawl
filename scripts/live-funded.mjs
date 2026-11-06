@@ -9,8 +9,14 @@
 // Usage: CHROME=... node scripts/live-funded.mjs <url> <workdir>
 //   <workdir>/address-a.txt   written: A's public account (fund it)
 //   <workdir>/return.txt      read when needed: 0x address for the final withdrawal
+//   <workdir>/control.txt     optional command, consumed when read:
+//       reload    reload every wallet page (picks up a new build) and unlock it again
+//       withdraw  withdraw everything spendable to the return address
+//       exit      close the browser (the in-memory passkeys are then gone)
+// On failure the browser stays open and keeps obeying control.txt for 12 h,
+// so a bug found mid-run can be fixed without losing the shielded funds.
 import { chromium } from "playwright";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const url = process.argv[2] ?? "http://localhost:4173/";
@@ -21,10 +27,23 @@ const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)} +$
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MIN = 60_000;
 
+const wallets = [];
+const controlFile = path.join(dir, "control.txt");
+async function control() {
+  if (!existsSync(controlFile)) return undefined;
+  const cmd = readFileSync(controlFile, "utf8").trim();
+  rmSync(controlFile, { force: true });
+  log(`control: ${cmd}`);
+  if (cmd === "reload") for (const w of wallets) await reload(w);
+  if (cmd === "withdraw") await withdrawAll(await returnAddress());
+  return cmd;
+}
+
 async function until(what, fn, timeoutMs, everyMs = 15_000) {
   const end = Date.now() + timeoutMs;
   let last;
   while (Date.now() < end) {
+    if ((await control()) === "exit") throw new Error("exit requested");
     const v = await fn();
     if (v.done) return v.value;
     if (v.note !== last) log(`${what}: ${v.note}`);
@@ -58,7 +77,51 @@ async function wallet(name) {
   };
   const w = { name, page, card, zk: await copy(0), evm: await copy(1) };
   log(`${name}: ${w.zk.slice(0, 18)}… public ${w.evm}`);
+  wallets.push(w);
   return w;
+}
+
+/** Reload the page (new build) and unlock with the same virtual passkey; the sealed checkpoint survives. */
+async function reload(w) {
+  await w.page.reload();
+  await w.page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 180_000 });
+  await w.page.getByRole("button", { name: "Unlock with passkey" }).click();
+  const end = Date.now() + 15 * MIN;
+  while (Date.now() < end && !/synced in/.test(await w.card.innerText())) await sleep(3000);
+  log(`${w.name} reloaded: ${await balanceLines(w)}`);
+}
+
+async function returnAddress() {
+  const f = path.join(dir, "return.txt");
+  const end = Date.now() + 120 * MIN;
+  while (Date.now() < end) {
+    const a = existsSync(f) ? readFileSync(f, "utf8").trim() : "";
+    if (/^0x[0-9a-fA-F]{40}$/.test(a)) return a;
+    await sleep(30_000);
+  }
+  throw new Error("no return address");
+}
+
+async function withdrawAll(ret) {
+  for (const w of wallets) {
+    const avail = await spendable(w);
+    const amt = Math.floor(avail * 0.8 * 1e6) / 1e6; // room for the 0.25% fee and paymaster gas
+    if (amt <= 0) continue;
+    const s = w.page.locator("section", { hasText: "Send privately" });
+    log(`${w.name} withdraws ${amt} ETH to ${ret}`);
+    await s.getByRole("button", { name: "Withdraw to public" }).click();
+    await s.locator("input").nth(0).fill(ret);
+    await s.locator("input").nth(1).fill(String(amt));
+    await s.getByRole("button", { name: "Withdraw", exact: true }).click();
+    const end = Date.now() + 30 * MIN;
+    let t = "";
+    while (Date.now() < end) {
+      t = await actionText(w, "Withdraw to public");
+      if (/Done\.|reverted|failed/.test(t)) break;
+      await sleep(5000);
+    }
+    log(`${w.name} withdraw result: ${t}`);
+  }
 }
 
 const num = (s) => (s ? Number(s) : 0);
@@ -106,7 +169,7 @@ try {
   const valid = await until("A PPOI", async () => {
     const v = await spendable(A);
     return { done: v > 0, value: v, note: await balanceLines(A) };
-  }, 180 * MIN, 60_000);
+  }, 360 * MIN, 60_000);
   log(`A spendable: ${valid} ETH`);
 
   const B = await wallet("B");
@@ -135,32 +198,20 @@ try {
   }, 120 * MIN, 60_000);
   log(`B spendable: ${bValid} ETH`);
 
-  const ret = await until("return address", async () => {
-    const f = path.join(dir, "return.txt");
-    const a = existsSync(f) ? readFileSync(f, "utf8").trim() : "";
-    return { done: /^0x[0-9a-fA-F]{40}$/.test(a), value: a, note: `waiting for ${f}` };
-  }, 120 * MIN, 30_000);
-
-  for (const w of [A, B]) {
-    const avail = await spendable(w);
-    const amt = Math.floor(avail * 0.8 * 1e6) / 1e6; // room for the 0.25% fee and paymaster gas
-    if (amt <= 0) continue;
-    const s = w.page.locator("section", { hasText: "Send privately" });
-    log(`${w.name} withdraws ${amt} ETH to ${ret}`);
-    await s.getByRole("button", { name: "Withdraw to public" }).click();
-    await s.locator("input").nth(0).fill(ret);
-    await s.locator("input").nth(1).fill(String(amt));
-    await s.getByRole("button", { name: "Withdraw", exact: true }).click();
-    const out = await until(`${w.name} withdraw`, async () => {
-      const t = await actionText(w, "Withdraw to public");
-      return { done: /Done\.|reverted|failed/.test(t), value: t, note: t.split(" | ").slice(-2).join(" ") };
-    }, 30 * MIN, 5000);
-    log(`${w.name} withdraw result: ${out}`);
-  }
+  await withdrawAll(await returnAddress());
   log("LIVE TEST DONE");
 } catch (e) {
   log("LIVE TEST FAILED:", e.message);
   process.exitCode = 1;
+  if (e.message !== "exit requested") {
+    log(`holding the browser open; write reload | withdraw | exit to ${controlFile}`);
+    const end = Date.now() + 12 * 60 * MIN;
+    while (Date.now() < end) {
+      const cmd = await control().catch((err) => log("control failed:", err.message));
+      if (cmd === "exit") break;
+      await sleep(10_000);
+    }
+  }
 } finally {
   await browser.close();
 }
