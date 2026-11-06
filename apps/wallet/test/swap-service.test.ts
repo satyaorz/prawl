@@ -129,6 +129,33 @@ describe("swap service", () => {
     service.close();
   });
 
+  it("asks the gateway again while it has not yet seen the access grant of a fresh balance, but not for other errors", async () => {
+    vi.useFakeTimers();
+    try {
+      const { SwapService } = await import("../src/swap/service");
+      const service = await SwapService.open(client(), account, config, signer());
+      mocks.decrypt.mockClear();
+      mocks.decrypt
+        .mockRejectedValueOnce(new Error("dapp contract 0x7D18 is not authorized to user decrypt handle 0xabc!"))
+        .mockRejectedValueOnce(new Error("dapp contract 0x7D18 is not authorized to user decrypt handle 0xabc!"));
+      const pending = service.balances();
+      await vi.advanceTimersByTimeAsync(20_000);
+      const balances = await pending;
+      expect(mocks.decrypt).toHaveBeenCalledTimes(3);
+      expect(balances.vault[0]).toBe(20n);
+      mocks.decrypt.mockClear();
+      mocks.decrypt.mockRejectedValueOnce(new Error("relayer unreachable"));
+      const failing = service.balances();
+      failing.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(failing).rejects.toThrow("relayer unreachable");
+      expect(mocks.decrypt).toHaveBeenCalledTimes(1);
+      service.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("accepts an oracle timestamp a few seconds ahead of the latest block time (nodes answer from different blocks), but not a wild one", async () => {
     const { SwapService } = await import("../src/swap/service");
     const near = await SwapService.open(client({ oracleAhead: 24n }), account, config, signer());

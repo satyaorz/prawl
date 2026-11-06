@@ -50,6 +50,8 @@ const MAX_U64 = (1n << 64n) - 1n;
  * the contract re-checks against its own block time when the order executes.
  */
 const CLOCK_SKEW_SECONDS = 120n;
+const DECRYPT_RETRIES = 10;
+const DECRYPT_RETRY_MS = 6000;
 
 export interface SwapBalances {
   public: readonly [bigint, bigint];
@@ -149,7 +151,20 @@ export class SwapService {
       this.#decryptUntil = Date.now() + 23 * 60 * 60 * 1000;
       this.#assertOpen();
     }
-    const values = await this.#fhe.decrypt(nonzero, this.#decryptSignature);
+    const signature = this.#decryptSignature;
+    // The gateway learns a transaction's access grants a little after it confirms, so reading a balance right
+    // after funding (or an order) is refused as "not authorized" for a while. Ask again, for up to ~1 minute.
+    let values: Awaited<ReturnType<FheController["decrypt"]>> | undefined;
+    for (let attempt = 0; values === undefined; attempt++) {
+      try {
+        values = await this.#fhe.decrypt(nonzero, signature);
+      } catch (error) {
+        const text = error instanceof Error ? error.message : String(error);
+        if (attempt >= DECRYPT_RETRIES || !/not authorized to user decrypt|not allowed to (user )?decrypt|ACL/i.test(text)) throw error;
+        await new Promise((resolve) => setTimeout(resolve, DECRYPT_RETRY_MS));
+        this.#assertOpen();
+      }
+    }
     this.#assertOpen();
     return handles.map(({ handle }) => {
       if (handle.toLowerCase() === EMPTY_HANDLE) return 0n;
