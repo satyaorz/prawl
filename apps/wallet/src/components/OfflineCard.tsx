@@ -5,7 +5,7 @@ import { anon } from "../lib/anon";
 import { useWallet } from "../lib/use-wallet";
 import { buildShieldTarget, clearFinishedAction, offlineLoad, offlineLoadPrivate, offlineRedeem } from "../lib/wallet";
 import { coinStatus, privateLoadProblems, type CoinStatus } from "../offline/escrow";
-import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, type LoadPrivatePayload, type OfflinePayload } from "../offline/payload";
+import { ESCROW_V31, configProblems, depositorUri, payloadFromText, payoutValue, shieldTargetLink, ShieldAsk, type LoadPrivatePayload, type OfflinePayload } from "../offline/payload";
 import { parseEther } from "viem";
 import { QrScanner } from "./QrScanner";
 
@@ -31,21 +31,29 @@ function takeFromLocation(): string | undefined {
 }
 
 /** Website → phone: the target a phone signs a cash-out into this wallet's private balance over (HANDOFF §6). */
-function ShieldTarget() {
+function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState("");
+  // A scanned shield-ask opens the panel with the phone's value filled in and builds the target at once.
+  useEffect(() => {
+    if (!ask) return;
+    setOpen(true);
+    setAmount(ask.value);
+    void build(ask.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ask]);
   const [link, setLink] = useState<string>();
   const [qr, setQr] = useState<string>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
-  async function build() {
+  async function build(value = amount) {
     setError(undefined);
     setLink(undefined);
     setQr(undefined);
     let wei: bigint;
     try {
-      wei = parseEther(amount);
+      wei = parseEther(value);
     } catch {
       return setError("Enter the note's value in ETH, exactly as the phone shows it");
     }
@@ -113,6 +121,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
   const [qr, setQr] = useState<string>();
   const [status, setStatus] = useState<CoinStatus | { error: string }>();
   const [ownCoin, setOwnCoin] = useState(AUTO_CONFIRM);
+  const [ask, setAsk] = useState<{ value: string; n: number }>();
   /** Read-only checks of a private load against the escrow (deposit address, reservation, expiry), run when it opens. */
   const [chainProblems, setChainProblems] = useState<string[]>();
 
@@ -126,6 +135,12 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
       setText("");
     } catch (e) {
       setPayload(undefined);
+      if (e instanceof ShieldAsk) {
+        // The phone asked for a shield target for its note: answer it in the panel below.
+        setAsk({ value: formatEther(e.valueWei), n: Date.now() });
+        setText("");
+        return;
+      }
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
@@ -220,7 +235,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
         </div>
       )}
 
-      {w.railgunAddress && <ShieldTarget />}
+      {w.railgunAddress && <ShieldTarget ask={ask} />}
 
       <div className="mt-3 flex gap-2">
         <input
@@ -252,7 +267,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
         <div className="mt-4 rounded-xl border border-zinc-800 p-4">
           <div className="flex items-baseline justify-between">
             <h3 className="text-sm font-medium">
-              {payload.t === "load" ? "Load a coin" : payload.t === "load-private" ? "Load a coin privately" : payload.t === "redeem-shield" ? "Cash out to your private balance" : "Cash out"}
+              {payload.t === "load" ? "Load a coin" : payload.t === "load-private" ? "Load a coin privately" : payload.t === "redeem-shield" ? "Cash out to your private balance" : payload.t === "refresh" ? "Refresh a coin" : "Cash out"}
             </h3>
             <button onClick={() => setPayload(undefined)} className="text-xs text-zinc-500 hover:text-zinc-300">
               Close
@@ -287,11 +302,15 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
               </>
             ) : (
               <>
-                <dt className="text-zinc-500">Pays</dt>
+                <dt className="text-zinc-500">{payload.t === "refresh" ? "Moves" : "Pays"}</dt>
                 <dd className="font-mono text-zinc-300">{formatEther(payoutValue(payload))} ETH</dd>
-                <dt className="text-zinc-500">To</dt>
+                <dt className="text-zinc-500">{payload.t === "refresh" ? "Into" : "To"}</dt>
                 <dd className="break-all font-mono text-zinc-300">
-                  {payload.t === "redeem-shield" ? "a RAILGUN shield (a private balance)" : payload.redemption.payout}
+                  {payload.t === "redeem-shield"
+                    ? "a RAILGUN shield (a private balance)"
+                    : payload.t === "refresh"
+                      ? `a new coin ${short(payload.refresh.newCoinId, 10, 6)}, expiring ${new Date(Number(payload.refresh.newExpiry) * 1000).toLocaleString()}`
+                      : payload.redemption.payout}
                 </dd>
                 <dt className="text-zinc-500">Path</dt>
                 <dd className="font-mono text-zinc-300">{payload.path.length} offline payment{payload.path.length === 1 ? "" : "s"}</dd>
@@ -335,7 +354,9 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
                     ? `Load ${formatEther(payload.params.maxValue)} ETH privately`
                     : payload.t === "redeem-shield"
                       ? "Cash out to private balance"
-                      : "Cash out"}
+                      : payload.t === "refresh"
+                        ? "Refresh coin"
+                        : "Cash out"}
             </button>
           )}
           {payload.t === "redeem" && (
@@ -344,6 +365,11 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
           {payload.t === "redeem-shield" && (
             <p className="mt-2 text-xs text-zinc-500">
               The phone signed this exact RAILGUN shield; this wallet only pays gas (about 1.4–1.6M, from your public account). RAILGUN keeps its 0.25% shield fee.
+            </p>
+          )}
+          {payload.t === "refresh" && (
+            <p className="mt-2 text-xs text-zinc-500">
+              No ETH moves: the escrow re-assigns this note's value to a new coin with a later expiry. It is final once signed, so tell the phone only after this shows "Refreshed". This wallet only pays gas.
             </p>
           )}
           {payload.t === "load-private" && (

@@ -17,6 +17,7 @@ import {
   type LoadPrivatePayload,
   type RedeemPayload,
   type RedeemShieldPayload,
+  type RefreshPayload,
   type ShieldRequest,
 } from "./payload";
 
@@ -39,6 +40,7 @@ export const ESCROW_ABI = parseAbi([
   "function depositParamsHash(DepositParams p) pure returns (bytes32)",
   "function redeemToShield(Header h, Spend[] path, Redemption rd, ShieldRequest sr) returns (bool)",
   "function shieldKeyHash(ShieldRequest sr) view returns (bytes32 keyHash, bytes32 shieldHash)",
+  "function refresh(Header h, Spend[] path, Redemption rd, bytes32 newCoinId, uint64 newExpiry, uint256 newK0x, uint256 newK0y) returns (bool)",
   "function redeem(Header h, Spend[] path, Redemption rd) returns (bool paid)",
   "function deposits(bytes32 coinId) view returns (bytes32)",
   "function coins(bytes32 coinId) view returns (uint128 paid, bool frozen, bool closed)",
@@ -48,6 +50,7 @@ export const ESCROW_ABI = parseAbi([
   "event RedeemBlocked(bytes32 indexed coinId, bytes32 indexed keyHash, uint256 depth)",
   "event CoinFrozen(bytes32 indexed coinId, bytes32 indexed keyHash)",
   "event PaymentDeferred(address indexed to, uint256 amount)",
+  "event Refreshed(bytes32 indexed coinId, bytes32 indexed newCoinId, uint256 amount)",
   "event RedeemedToShield(bytes32 indexed coinId, bytes32 indexed npk, bytes32 shieldHash, uint256 amount)",
   "event DepositActivated(bytes32 indexed coinId, address indexed depositAddress, uint256 received, uint256 tip, uint256 excess)",
   "error BadValue()",
@@ -77,6 +80,7 @@ export const ESCROW_ABI = parseAbi([
   "error UnexpectedEth()",
   "error ForwarderFailed()",
   "error ReservedCoinId()",
+  "error BadRefreshCoinId(bytes32 expected)",
 ]);
 
 /** What each escrow error means for the person holding the payload. */
@@ -108,6 +112,7 @@ const ERROR_TEXT: Record<string, string> = {
   UnexpectedEth: "ETH was sent where it is not accepted",
   ForwarderFailed: "moving the funds out of the deposit address failed",
   ReservedCoinId: "this coin id is reserved",
+  BadRefreshCoinId: "the new coin id is not the one the escrow derives from this refresh",
 };
 
 /** Readable reason from a revert (escrow custom errors by name), else the raw message. */
@@ -172,13 +177,14 @@ export type RedeemOutcome =
 
 export function redeemOutcome(
   logs: ReadonlyArray<{ address: Hex; topics: Hex[]; data: Hex }>,
-  p: RedeemPayload | RedeemShieldPayload,
+  p: RedeemPayload | RedeemShieldPayload | RefreshPayload,
 ): RedeemOutcome {
   let paid: bigint | undefined;
   let deferred: bigint | undefined;
   let blocked = false;
   let frozen = false;
   const toShield = p.t === "redeem-shield";
+  const isRefresh = p.t === "refresh";
   for (const l of logs) {
     if (l.address.toLowerCase() !== p.escrow.toLowerCase()) continue;
     let ev;
@@ -188,10 +194,12 @@ export function redeemOutcome(
       continue;
     }
     const a = ev.args as Record<string, unknown>;
-    if (!toShield && ev.eventName === "Redeemed" && a.coinId === p.header.coinId && String(a.payout).toLowerCase() === p.redemption.payout.toLowerCase()) paid = a.amount as bigint;
+    // A refresh is done when the escrow re-assigned the value to the new coin: Refreshed(old, new).
+    if (isRefresh && ev.eventName === "Refreshed" && a.coinId === p.header.coinId && a.newCoinId === p.refresh.newCoinId) paid = a.amount as bigint;
+    if (!toShield && !isRefresh && ev.eventName === "Redeemed" && a.coinId === p.header.coinId && String(a.payout).toLowerCase() === p.redemption.payout.toLowerCase()) paid = a.amount as bigint;
     // A cash-out into RAILGUN is paid when the escrow shielded it: for this coin and this request's npk.
     if (toShield && ev.eventName === "RedeemedToShield" && a.coinId === p.header.coinId && a.npk === p.shield.npk) paid = a.amount as bigint;
-    if (!toShield && ev.eventName === "PaymentDeferred" && String(a.to).toLowerCase() === p.redemption.payout.toLowerCase()) deferred = a.amount as bigint;
+    if (!toShield && !isRefresh && ev.eventName === "PaymentDeferred" && String(a.to).toLowerCase() === p.redemption.payout.toLowerCase()) deferred = a.amount as bigint;
     if (ev.eventName === "RedeemBlocked" && a.coinId === p.header.coinId) blocked = true;
     if (ev.eventName === "CoinFrozen" && a.coinId === p.header.coinId) frozen = true;
   }
@@ -216,6 +224,15 @@ export function shieldRequestArg(r: ShieldRequest) {
   return {
     preimage: { npk: r.npk, token: { tokenType: r.tokenType, tokenAddress: r.tokenAddress, tokenSubID: r.tokenSubID }, value: r.value },
     ciphertext: { encryptedBundle: r.encryptedBundle, shieldKey: r.shieldKey },
+  };
+}
+
+export function refreshCall(p: RefreshPayload): Call {
+  const f = p.refresh;
+  return {
+    to: p.escrow,
+    data: encodeFunctionData({ abi: ESCROW_ABI, functionName: "refresh", args: [p.header, p.path, p.redemption, f.newCoinId, f.newExpiry, f.newK0x, f.newK0y] }),
+    value: 0n,
   };
 }
 
@@ -294,7 +311,7 @@ export async function loadProblems(client: AnonRpcClient, p: LoadPayload, accoun
  * means the escrow would record a double spend and freeze instead of paying:
  * never send that.
  */
-export async function simulateRedeem(client: AnonRpcClient, p: RedeemPayload | RedeemShieldPayload, from: Hex): Promise<{ paid: boolean } | { error: string }> {
+export async function simulateRedeem(client: AnonRpcClient, p: RedeemPayload | RedeemShieldPayload | RefreshPayload, from: Hex): Promise<{ paid: boolean } | { error: string }> {
   const problems = configProblems(p);
   if (problems.length) return { error: problems.join("; ") };
   try {
@@ -302,6 +319,10 @@ export async function simulateRedeem(client: AnonRpcClient, p: RedeemPayload | R
     if (p.t === "redeem-shield") {
       const data = await ethCall(client, id, { ...redeemToShieldCall(p), from });
       return { paid: decodeFunctionResult({ abi: ESCROW_ABI, functionName: "redeemToShield", data }) };
+    }
+    if (p.t === "refresh") {
+      const data = await ethCall(client, id, { ...refreshCall(p), from });
+      return { paid: decodeFunctionResult({ abi: ESCROW_ABI, functionName: "refresh", data }) };
     }
     const data = await ethCall(client, id, { ...redeemCall(p), from });
     return { paid: decodeFunctionResult({ abi: ESCROW_ABI, functionName: "redeem", data }) };

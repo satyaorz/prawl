@@ -30,7 +30,7 @@ export function App() {
   const unlocked = !!w.railgunAddress;
   const [tab, setTab] = useState<Tab>("wallet");
   const on = (t: Tab) => (unlocked ? tab === t : t === "wallet" || t === "offline" || t === "network");
-  const panel = (t: Tab) => `flex flex-col gap-4 ${on(t) ? "" : "hidden"}`;
+  const panel = (t: Tab) => `flex flex-col gap-4 empty:hidden ${on(t) ? "" : "hidden"}`;
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-4 px-4 py-8 sm:py-10">

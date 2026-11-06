@@ -95,7 +95,20 @@ export interface RedeemShieldPayload extends Omit<RedeemPayload, "t"> {
   t: "redeem-shield";
   shield: ShieldRequest;
 }
-export type OfflinePayload = LoadPayload | RedeemPayload | LoadPrivatePayload | RedeemShieldPayload;
+/** Move a note's value into a NEW coin with a new expiry; no ETH moves (HANDOFF §12). */
+export interface RefreshPayload extends Omit<RedeemPayload, "t"> {
+  t: "refresh";
+  refresh: { newCoinId: Hex; newExpiry: bigint; newK0x: bigint; newK0y: bigint };
+}
+export type OfflinePayload = LoadPayload | RedeemPayload | LoadPrivatePayload | RedeemShieldPayload | RefreshPayload;
+
+/** A phone's "shield-ask": the note value it wants a shield target for (HANDOFF §11). */
+export class ShieldAsk extends Error {
+  override name = "ShieldAsk";
+  constructor(readonly valueWei: bigint) {
+    super("a shield request from the phone");
+  }
+}
 
 export class PayloadError extends Error {
   override name = "PayloadError";
@@ -219,7 +232,7 @@ export function parsePayload(raw: unknown): OfflinePayload {
       depositor: addr(p.depositor, "depositor"),
     };
   }
-  if (p.t === "redeem" || p.t === "redeem-shield") {
+  if (p.t === "redeem" || p.t === "redeem-shield" || p.t === "refresh") {
     const h = obj(p.header, "header");
     const r = obj(p.redemption, "redemption");
     const base = checkIndexes({
@@ -260,6 +273,14 @@ export function parsePayload(raw: unknown): OfflinePayload {
       },
     });
     if (p.t === "redeem") return base;
+    if (p.t === "refresh") {
+      const f = obj(p.refresh, "refresh");
+      return {
+        ...base,
+        t: "refresh",
+        refresh: { newCoinId: b32(f.newCoinId, "refresh.newCoinId"), newExpiry: uint(f.newExpiry, "refresh.newExpiry"), newK0x: word(f.newK0x, "refresh.newK0x"), newK0y: word(f.newK0y, "refresh.newK0y") },
+      };
+    }
     return { ...base, t: "redeem-shield", shield: shieldRequest(p.shield, "shield") };
   }
   throw new PayloadError(`unknown payload type ${String(p.t)}`);
@@ -281,11 +302,16 @@ function checkIndexes(p: RedeemPayload): RedeemPayload {
  */
 export function payloadFromText(text: string): OfflinePayload {
   const t = text.trim();
-  const m = /(?:#\/|prawl:\/\/)offline\/(load-private|load|redeem-shield|redeem|shield-target)\?(?:.*&)?d=([A-Za-z0-9_-]+)/.exec(t);
+  const m = /(?:#\/|prawl:\/\/)offline\/(load-private|load|redeem-shield|redeem|refresh|shield-target|shield-ask)\?(?:.*&)?d=([A-Za-z0-9_-]+)/.exec(t);
   const kind = m?.[1];
   const d = m?.[2] ?? (/^[A-Za-z0-9_-]{40,}$/.test(t) ? t : undefined);
   if (!d) throw new PayloadError("no offline-cash payload in this text");
   if (kind === "shield-target") throw new PayloadError("that is a request for the phone (a shield target), not something to open here");
+  if (kind === "shield-ask") {
+    const a = obj(decodeD(d), "shield-ask");
+    if (a.v !== 1 || a.t !== "shield-ask") throw new PayloadError("not a shield request from the phone");
+    throw new ShieldAsk(wei(a.value, "value"));
+  }
   const p = parsePayload(decodeD(d));
   if (kind && kind !== p.t) throw new PayloadError(`link says ${kind} but the payload is a ${p.t}`);
   return p;
@@ -296,14 +322,14 @@ export function configProblems(p: OfflinePayload): string[] {
   const out: string[] = [];
   if (p.chainId !== OFFLINE_CHAIN_ID) out.push(`it is for chain ${p.chainId}, this wallet uses Sepolia (${OFFLINE_CHAIN_ID})`);
   if (!KNOWN_ESCROWS.some((e) => sameAddr(e, p.escrow))) out.push(`it names escrow ${p.escrow}, which is not one of Prawl's (${KNOWN_ESCROWS.join(", ")})`);
-  else if ((p.t === "load-private" || p.t === "redeem-shield") && !sameAddr(p.escrow, ESCROW_V31)) {
+  else if ((p.t === "load-private" || p.t === "redeem-shield" || p.t === "refresh") && !sameAddr(p.escrow, ESCROW_V31)) {
     out.push(`${p.t} needs escrow v3.1 (${ESCROW_V31}); this names ${p.escrow}`);
   }
   return out;
 }
 
 /** The amount a redemption pays out: the redeemed output's value. */
-export function payoutValue(p: RedeemPayload | RedeemShieldPayload): bigint {
+export function payoutValue(p: RedeemPayload | RedeemShieldPayload | RefreshPayload): bigint {
   const o = p.redemption.outputs[Number(p.redemption.index)];
   if (!o) throw new PayloadError("redemption index points past its outputs");
   return o.value;

@@ -14,8 +14,8 @@ import { store } from "./store";
 import { ActivityLog, type Activity, type ActivityKind } from "./activity";
 import { railgun } from "../railgun/controller";
 import { publicBalance, sendCalls, sendUserOp, UnconfirmedError, type SentTx } from "./tx";
-import { activateCall, commitCall, depositCall, erc20Balance, loadProblems, privateLoadProblems, redeemCall, redeemOutcome, redeemToShieldCall, revertReason, simulateRedeem } from "../offline/escrow";
-import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type ShieldRequest } from "../offline/payload";
+import { activateCall, coinStatus, commitCall, depositCall, erc20Balance, loadProblems, privateLoadProblems, redeemCall, redeemOutcome, redeemToShieldCall, refreshCall, revertReason, simulateRedeem } from "../offline/escrow";
+import { OFFLINE_CHAIN_ID, payoutValue, type LoadPayload, type LoadPrivatePayload, type RedeemPayload, type RedeemShieldPayload, type RefreshPayload, type ShieldRequest } from "../offline/payload";
 import { shieldRequestFromCall } from "../offline/shield";
 
 /** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
@@ -560,9 +560,10 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
  * gas. Simulated first: a redemption that would freeze the coin (false) or
  * revert is never sent.
  */
-export async function offlineRedeem(p: RedeemPayload | RedeemShieldPayload): Promise<void> {
+export async function offlineRedeem(p: RedeemPayload | RedeemShieldPayload | RefreshPayload): Promise<void> {
   const kind = "offline-redeem";
   const toShield = p.t === "redeem-shield";
+  const isRefresh = p.t === "refresh";
   const opLog = activityLog;
   const myEpoch = epoch;
   const status = (s: string) => updateAction(myEpoch, { kind, status: s });
@@ -578,20 +579,26 @@ export async function offlineRedeem(p: RedeemPayload | RedeemShieldPayload): Pro
       updateAction(myEpoch, { kind, status: "Not sent", done: true, error: "the escrow would not pay this: it records a double spend and freezes the coin instead" });
       return;
     }
-    const call = p.t === "redeem-shield" ? redeemToShieldCall(p) : redeemCall(p);
+    const call = p.t === "redeem-shield" ? redeemToShieldCall(p) : p.t === "refresh" ? refreshCall(p) : redeemCall(p);
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [call], status);
     const amount = payoutValue(p);
     const mined = txs.at(-1);
     // The receipt status is not enough: a mined redeem may have frozen the coin or only deferred the payment.
     const outcome = mined?.status === "success" ? redeemOutcome(mined.logs ?? [], p) : undefined;
     const to = toShield ? "your private balance" : p.redemption.payout;
-    await remember(opLog, myEpoch, "offline-redeem", amount, toShield ? state.railgunAddress : p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
+    // A refresh is only done when the new coin exists in the escrow: the phone marks it spendable on this word.
+    const newCoinLive = p.t === "refresh" && outcome?.kind === "paid" ? (await coinStatus(anon, p.refresh.newCoinId, p.escrow).catch(() => undefined))?.deposited === true : false;
+    await remember(opLog, myEpoch, "offline-redeem", amount, toShield ? state.railgunAddress : isRefresh ? undefined : p.redemption.payout, txs.map((t) => ({ ...t, status: outcome?.kind === "paid" ? t.status : "reverted" as const })));
     const text =
       !outcome
         ? { status: "The cash-out reverted" }
         : outcome.kind === "paid"
           ? {
-              status: toShield
+              status: p.t === "refresh"
+                ? newCoinLive
+                  ? `Refreshed: ${fmtEth(outcome.amount)} ETH now sits in a new coin until ${new Date(Number(p.refresh.newExpiry) * 1000).toLocaleString()}. Tell the phone it is done.`
+                  : `The refresh was mined, but the new coin is not visible yet: check again before telling the phone.`
+              : toShield
                 ? `Cashed out ${fmtEth(outcome.amount)} ETH into your private balance (RAILGUN keeps its 0.25% shield fee). It shows as pending until the PPOI check clears.`
                 : `Paid ${fmtEth(outcome.amount)} ETH to ${to}.`,
             }

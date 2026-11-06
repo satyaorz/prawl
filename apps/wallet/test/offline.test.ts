@@ -3,7 +3,7 @@ import { decodeFunctionData, encodeAbiParameters, encodeErrorResult, encodeEvent
 import loadFixture from "./fixtures/offline/load-deposited.json";
 import redeemFixture from "./fixtures/offline/redeem-already-paid.json";
 import { ESCROW_ABI, depositCall, redeemCall, redeemOutcome, revertReason } from "../src/offline/escrow";
-import { ESCROW_V3, ESCROW_V31, PayloadError, configProblems, decodeD, depositorUri, encodeD, parsePayload, payloadFromText, payoutValue, type RedeemPayload } from "../src/offline/payload";
+import { ESCROW_V3, ESCROW_V31, PayloadError, ShieldAsk, configProblems, decodeD, depositorUri, encodeD, parsePayload, payloadFromText, payoutValue, type RedeemPayload } from "../src/offline/payload";
 
 describe("offline handoff payloads (real phone vectors)", () => {
   it("decodes a load link and builds the exact deposit call", () => {
@@ -156,5 +156,55 @@ describe("escrow v3.1 handoff kinds", () => {
     const other = mk("RedeemedToShield", { coinId: p.header.coinId, npk: `0x${"7f".repeat(32)}` }, encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [`0x${"05".repeat(32)}`, 1000n]));
     expect(redeemOutcome([other], p)).toEqual({ kind: "unknown" });
     expect(redeemOutcome([], p)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("refresh and shield-ask", () => {
+  const base = redeemFixture.payload as unknown as Record<string, unknown> & { redemption: Record<string, unknown> };
+  const refresh = {
+    ...base, t: "refresh", escrow: ESCROW_V31,
+    redemption: { ...base.redemption, payout: "0x00000000000000000000000000000000000000d4" },
+    refresh: { newCoinId: `0x52465348${"ab".repeat(28)}`, newExpiry: 1_796_000_000, newK0x: `0x${"11".repeat(32)}`, newK0y: `0x${"22".repeat(32)}` },
+  };
+
+  it("parses a refresh, requires v3.1, and refuses a bad new coin id word", async () => {
+    const p = payloadFromText(`https://x.example/#/offline/refresh?d=${encodeD(refresh)}`);
+    expect(p.t).toBe("refresh");
+    if (p.t !== "refresh") return;
+    expect(p.refresh.newExpiry).toBe(1_796_000_000n);
+    expect(configProblems(p)).toEqual([]);
+    expect(configProblems(parsePayload({ ...refresh, escrow: ESCROW_V3 })).join(" ")).toMatch(/needs escrow v3.1/);
+    expect(() => parsePayload({ ...refresh, refresh: { ...refresh.refresh, newCoinId: "0x12" } })).toThrow(/newCoinId/);
+    const { refreshCall } = await import("../src/offline/escrow");
+    const d = decodeFunctionData({ abi: ESCROW_ABI, data: refreshCall(p).data });
+    expect(d.functionName).toBe("refresh");
+    expect((d.args as unknown as unknown[])[3]).toBe(refresh.refresh.newCoinId);
+    expect((d.args as unknown as unknown[])[4]).toBe(1_796_000_000n);
+  });
+
+  it("decides a refresh from Refreshed for the old and the new coin id", async () => {
+    const { redeemOutcome } = await import("../src/offline/escrow");
+    const p = parsePayload(refresh);
+    if (p.t !== "refresh") throw new Error("type");
+    const mk = (newCoinId: string) => ({
+      address: ESCROW_V31 as Hex,
+      topics: encodeEventTopics({ abi: ESCROW_ABI, eventName: "Refreshed", args: { coinId: p.header.coinId, newCoinId: newCoinId as Hex } }) as Hex[],
+      data: encodeAbiParameters([{ type: "uint256" }], [3000n]),
+    });
+    expect(redeemOutcome([mk(p.refresh.newCoinId)], p)).toEqual({ kind: "paid", amount: 3000n });
+    expect(redeemOutcome([mk(`0x52465348${"cd".repeat(28)}`)], p)).toEqual({ kind: "unknown" });
+    expect(redeemOutcome([], p)).toEqual({ kind: "unknown" });
+  });
+
+  it("turns a phone's shield-ask into the value to build a target for", () => {
+    const ask = encodeD({ v: 1, t: "shield-ask", chainId: 11155111, escrow: ESCROW_V31, value: "2000000000000000" });
+    try {
+      payloadFromText(`prawl://offline/shield-ask?d=${ask}`);
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ShieldAsk);
+      expect((e as ShieldAsk).valueWei).toBe(2_000_000_000_000_000n);
+    }
+    expect(() => payloadFromText(`prawl://offline/shield-ask?d=${encodeD({ v: 2, t: "shield-ask", value: "1" })}`)).toThrow(/not a shield request/);
   });
 });
