@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS everywhere, except the Nimbus Sepolia beacon API, which is served over plain HTTP. Its data (light-client
+     bootstrap/updates/finality updates) is verified by BLS and Merkle proofs; a first bootstrap checkpoint must also
+     be confirmed by an independent HTTPS beacon node, so a network attacker can only deny service. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">unstable.sepolia.beacon-api.nimbus.team</domain>
+    </domain-config>
+</network-security-config>

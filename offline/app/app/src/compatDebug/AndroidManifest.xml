@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="xyz.prawl.offline.harness.HarnessActivity"
+            android:exported="true"
+            android:label="Prawl harness"
+            android:theme="@android:style/Theme.DeviceDefault" />
+        <!-- The coordinator's scripts start xyz.prawl.otktest/xyz.prawl.otktest.Wallet3Activity: route it to the harness mode. -->
+        <activity-alias
+            android:name="xyz.prawl.otktest.Wallet3Activity"
+            android:targetActivity="xyz.prawl.offline.harness.HarnessActivity"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark only. Compose draws everything; this only avoids a white flash before the first frame. -->
+    <style name="Theme.Prawl" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/zinc950</item>
+        <item name="android:statusBarColor">@color/zinc950</item>
+        <item name="android:navigationBarColor">@color/zinc950</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

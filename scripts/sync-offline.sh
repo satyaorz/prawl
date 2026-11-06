@@ -40,6 +40,25 @@ copy v3/deposit_proofs deposit-proofs '/python/*.py' '/java/src/***' '/java/jni/
   '/java/android_demo/src/***' '/java/android_demo/AndroidManifest.xml' '/java/android_demo/*.sh' \
   '/solidity/src/***' '/solidity/test/***' '/solidity/foundry.toml' '/*.sh' '/requirements.txt'
 mkdir -p "$DST/tools" && rsync -a "$SRC/v3/handoff.py" "$SRC/v3/handoff_sim.py" "$DST/tools/"
+# The Prawl Offline Android app (Kotlin/Compose, :core protocol library). Source, tests, Gradle wrapper and the
+# prebuilt blst libraries only. Never keystore/, local.properties, build output or APKs.
+copy v3/app app '/build.gradle.kts' '/settings.gradle.kts' '/gradle.properties' '/gradlew' '/gradlew.bat' \
+  '/gradle/***' '/app/build.gradle.kts' '/app/src/***' '/app/proguard*' '/core/build.gradle.kts' '/core/src/***' \
+  '/RESULTS.md'
+mkdir -p "$DST/app/keystore"
+cat > "$DST/app/keystore/README.md" <<'KS'
+# Debug keystore (not tracked)
+The debug APK signing key is local only. Create it once:
+
+    keytool -genkeypair -keystore app/keystore/prawl-debug.keystore -storepass android -keypass android \
+      -alias debug -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Prawl OTK test"
+
+The recipient policy pins the genuine app by (package, signing-certificate SHA-256) in `ALLOWED_APPS`.
+A freshly created key has a different digest: print it with
+`keytool -list -v -keystore app/keystore/prawl-debug.keystore -storepass android | grep SHA256`
+and put it in `ALLOWED_APPS` before testing between two builds.
+KS
+
 # ZK proof of Android attestation (Noir/UltraHonk): circuit sources, tools, EVM verifier, Android prover build.
 # Never Prover.toml/target/inputs/bench/deps (witnesses derive from the user's phones' attestation chains).
 copy zk_attestation zk-attestation '/circuits/*/Nargo.toml' '/circuits/*/src/***' '/tools/*.py' \
