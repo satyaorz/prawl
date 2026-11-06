@@ -1,4 +1,4 @@
-# Prawl
+# Prowl
 
 A privacy-first Ethereum wallet for the browser.
 
@@ -15,7 +15,7 @@ A privacy-first Ethereum wallet for the browser.
 | Settle | New shields wait for the PPOI check (2–4 minutes measured on Sepolia; up to an hour on mainnet). The wallet refreshes every minute and shows each note's PPOI state. |
 | Pay privately | Private send to a `0zk` address as an ERC-4337 UserOperation from a fresh one-time EIP-7702 sender. The RAILGUN paymaster takes gas from the private balance, so the sender has no ETH and no history. Queued PPOI proofs are submitted on the following syncs. |
 | Exit | Withdraw to a public address as native ETH (or WETH), with warnings when that would link you (own account, right after a shield). Gas comes from the private balance; the wallet checks it fits before proving. |
-| Offline cash | The Prawl Android app pays phone to phone with no network (hardware one-time keys). Here: **load** a phone-minted coin, from the public account or **privately** (commit, RAILGUN unshield to the coin's deposit address, activate); **cash out** to a public address or **into the private balance** (a shield target the phone signs over); **refresh** a coin before it expires. Links and QR codes (`#/offline/{load,load-private,redeem,redeem-shield,refresh}?d=…`), escrow v3 and v3.1 on Sepolia; everything is simulated before sending and judged paid only from the escrow's events. |
+| Offline cash | The Prowl Android app pays phone to phone with no network (hardware one-time keys). Here: **load** a phone-minted coin, from the public account or **privately** (commit, RAILGUN unshield to the coin's deposit address, activate); **cash out** to a public address or **into the private balance** (a shield target the phone signs over); **refresh** a coin before it expires. Links and QR codes (`#/offline/{load,load-private,redeem,redeem-shield,refresh}?d=…`), escrow v3 and v3.1 on Sepolia; everything is simulated before sending and judged paid only from the escrow's events. |
 | Activity | A local history of shields, sends, withdrawals and offline loads, encrypted on the device with the passkey-derived key. Hashes copy; there are no explorer links, which would reveal your IP and which transaction is yours. |
 | Restore | On a new device, the passkey returns the wallet's creation time; the scan starts from the snapshot and replays only from then. **Full rescan** is the escape hatch. |
 

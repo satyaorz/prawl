@@ -35,7 +35,7 @@ contract AttestHarness {
         return AA.keyDescription(leaf, AA.parse(leaf));
     }
 
-    /// (a)+(b): the full leaf check against a cached attestation key, with the Prawl OTK policy
+    /// (a)+(b): the full leaf check against a cached attestation key, with the Prowl OTK policy
     function leafCheck(bytes memory leaf, bytes32 akx, bytes32 aky, bytes32 pkgHash, bytes32 signer)
         external
         view

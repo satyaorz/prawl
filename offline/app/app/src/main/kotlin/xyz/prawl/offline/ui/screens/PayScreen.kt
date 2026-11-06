@@ -73,7 +73,7 @@ class PayViewModel(app: Application) : AndroidViewModel(app) {
     val phase = MutableStateFlow<PayPhase>(PayPhase.Scan)
 
     fun scanned(text: String) {
-        phase.value = try { PayPhase.Amount(PayQr.parse(text)) } catch (e: Exception) { PayPhase.Failed(null, "Not a Prawl receive code: ${e.message}") }
+        phase.value = try { PayPhase.Amount(PayQr.parse(text)) } catch (e: Exception) { PayPhase.Failed(null, "Not a Prowl receive code: ${e.message}") }
     }
 
     fun preview(amountWei: BigInteger?): Note? = amountWei?.let { runCatching { g.wallet().selectNote(it) }.getOrNull() }

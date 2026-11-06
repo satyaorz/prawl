@@ -142,7 +142,7 @@ object Handoff {
         val tail = when {
             s.startsWith("prawl://offline/") -> s.removePrefix("prawl://offline/")
             s.contains("#/offline/") -> s.substringAfter("#/offline/")
-            else -> throw IllegalArgumentException("not a Prawl offline link")
+            else -> throw IllegalArgumentException("not a Prowl offline link")
         }
         val kind = tail.substringBefore('?').trim('/')
         val query = tail.substringAfter('?', "")

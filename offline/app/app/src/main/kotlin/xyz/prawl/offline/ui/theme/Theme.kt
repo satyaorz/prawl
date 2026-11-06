@@ -10,7 +10,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** Tailwind tokens of the Prawl web wallet (dark only). */
+/** Tailwind tokens of the Prowl web wallet (dark only). */
 object Tw {
     val zinc950 = Color(0xFF09090B)
     val zinc900 = Color(0xFF18181B)

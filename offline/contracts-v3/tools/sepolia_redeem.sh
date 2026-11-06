@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Redeem a phone-signed Prawl v3 redemption bundle on-chain.
+# Redeem a phone-signed Prowl v3 redemption bundle on-chain.
 #   tools/sepolia_redeem.sh <redeem3_*.json> --rpc <url> [--simulate-only] [--depositor 0x..]
 # Re-verifies the whole bundle in Python (tools/bundles_to_foundry.walk: every signature, strict DER, conservation,
 # output->key binding, REDEEM target), builds redeem(Header, Spend[], Redemption) calldata with `cast calldata`,

@@ -94,7 +94,7 @@ class ReceiveViewModel(app: Application) : AndroidViewModel(app) {
                 val qr: PayQr
                 val l: BluetoothTransport.Listener
                 if (transport == PayQr.RFCOMM) {
-                    l = g.bluetooth.RfcommListener(uuid, "Prawl")
+                    l = g.bluetooth.RfcommListener(uuid, "Prowl")
                     qr = PayQr(name, kh, secret, PayQr.RFCOMM, uuid, btName = g.bluetooth.localName(), amountWei = amountWei)
                 } else {
                     val ll = g.bluetooth.L2capListener(uuid)
@@ -165,7 +165,7 @@ fun ReceiveScreen(nav: Nav) {
     val perms = if (transport == PayQr.RFCOMM) Perms.BT_PAYEE_CLASSIC else Perms.BT_PAYEE_BLE
     Page("Receive", nav::back) {
         PermissionGate(perms, "Bluetooth needed to receive",
-            "The payer's phone connects to yours over Bluetooth, nearby and offline. Prawl uses it only while this screen " +
+            "The payer's phone connects to yours over Bluetooth, nearby and offline. Prowl uses it only while this screen " +
                 "is open, never for location, and shows your phone only under a random one-time code.") {
             if (!g.bluetooth.enabled) PCard { StatusLine(Status.ERROR, "Bluetooth is off. Turn it on to receive.") }
             ReceiveContent(phase, transport, amount, { transport = it; g.settings.transport = it }, { amount = it },

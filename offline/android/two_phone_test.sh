@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Two-phone Prawl one-time-key coin test.
+# Two-phone Prowl one-time-key coin test.
 #   Phone A (default Samsung S25 Ultra) = Alice, and later Dave
 #   Phone B (default OnePlus)           = Bob and Charlie
 # The laptop only (a) carries files between phones, like Bluetooth/QR would, and

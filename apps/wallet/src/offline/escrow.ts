@@ -1,5 +1,5 @@
 /**
- * Prawl offline-cash escrow v3 on Sepolia: read state, simulate, and build
+ * Prowl offline-cash escrow v3 on Sepolia: read state, simulate, and build
  * the calls the website sends (load = deposit, cash out = redeem). Every read
  * goes over Anon-RPC: calls that name the wallet's account on its own
  * identity, coin lookups on a shared public scope.

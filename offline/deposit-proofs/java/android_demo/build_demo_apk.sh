@@ -19,7 +19,7 @@ for abi in arm64-v8a x86_64; do mkdir -p build/apkroot/lib/$abi && cp $NATIVE/$a
 (cd build/apkroot && zip -q -0 -r ../unsigned.apk lib)          # stored (uncompressed) .so
 "$BT/zipalign" -f -P 16 4 build/unsigned.apk build/aligned.apk   # 16 KiB page-align .so (Android 15+ devices)
 [ -f build_demo.keystore ] || keytool -genkeypair -keystore build_demo.keystore -storepass android -keypass android \
-  -alias debug -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Prawl deposit proof demo" >/dev/null 2>&1
+  -alias debug -keyalg RSA -keysize 2048 -validity 3650 -dname "CN=Prowl deposit proof demo" >/dev/null 2>&1
 "$BT/apksigner" sign --ks build_demo.keystore --ks-pass pass:android --key-pass pass:android --out build/deposit-proof-demo.apk build/aligned.apk
 "$BT/zipalign" -c -P 16 -v 4 build/deposit-proof-demo.apk | grep -E 'lib/|Verification' || true
 "$BT/apksigner" verify build/deposit-proof-demo.apk && echo "signed OK"

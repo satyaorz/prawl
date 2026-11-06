@@ -50,7 +50,7 @@ def payout(name: str) -> str:
 
 _ca_key = ec.derive_private_key(int.from_bytes(hashlib.sha256(b"prawl-v3 synthetic CA").digest(), "big") % P.P256_N,
                                 ec.SECP256R1())
-_ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SYNTHETIC Prawl v3 software-key CA")])
+_ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "SYNTHETIC Prowl v3 software-key CA")])
 _ca_cert = (x509.CertificateBuilder().subject_name(_ca_name).issuer_name(_ca_name).public_key(_ca_key.public_key())
             .serial_number(1).not_valid_before(dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc))
             .not_valid_after(dt.datetime(2028, 1, 1, tzinfo=dt.timezone.utc))

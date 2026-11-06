@@ -34,7 +34,7 @@ export function App() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Logo className="h-7 w-7" />
-                <span className="text-base font-semibold tracking-tight">Prawl</span>
+                <span className="text-base font-semibold tracking-tight">Prowl</span>
               </div>
               <span
                 className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1 text-xs text-zinc-300"

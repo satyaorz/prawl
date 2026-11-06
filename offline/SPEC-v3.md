@@ -1,4 +1,4 @@
-# Prawl offline coins: protocol v3 (draft, 2026-11-06)
+# Prowl offline coins: protocol v3 (draft, 2026-11-06)
 
 v3 makes two changes to v2:
 1. **Deposit proofs.** A recipient checks offline that a coin is backed by a real on-chain deposit, using an Ethereum light-client proof. This replaces the laptop-built snapshot.

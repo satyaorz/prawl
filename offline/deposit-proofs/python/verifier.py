@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prawl v3 deposit-proof verifier (offline reference).
+"""Prowl v3 deposit-proof verifier (offline reference).
 
     verify_deposit_proof(cache, proof, address, storage_key, expected_value=None)
 
@@ -199,7 +199,7 @@ def verify_deposit_proof(cache: dict, proof: dict, address: bytes, storage_key: 
 def main(argv):
     import argparse
     from dp_core import mapping_slot
-    ap = argparse.ArgumentParser(description="Verify a Prawl v3 DepositProof offline.")
+    ap = argparse.ArgumentParser(description="Verify a Prowl v3 DepositProof offline.")
     ap.add_argument("--cache", required=True)
     ap.add_argument("--proof", required=True)
     ap.add_argument("--address", help="defaults to the address in the proof (then it is NOT an independent check)")

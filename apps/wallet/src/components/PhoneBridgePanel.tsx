@@ -16,7 +16,7 @@ import { ESCROW_V31, OFFLINE_CHAIN_ID } from "../offline/payload";
 import { Icon, short } from "./ui";
 
 /**
- * Shown only inside the Prawl Android app, where `window.prawlOffline` exists: the phone's coins and
+ * Shown only inside the Prowl Android app, where `window.prawlOffline` exists: the phone's coins and
  * the three things you do with them, without scanning anything. What the phone returns opens in the
  * card below like a scanned code, so the same checks and the same simulate-then-send apply. Cash-out
  * and refresh wait for the user's approval on the phone itself.
@@ -72,7 +72,7 @@ export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string, opts
         </span>
         <div>
           <h2 className="text-sm font-semibold">This phone</h2>
-          <p className="text-xs text-zinc-400">Connected to the Prawl app: no scanning needed.</p>
+          <p className="text-xs text-zinc-400">Connected to the Prowl app: no scanning needed.</p>
         </div>
       </div>
 

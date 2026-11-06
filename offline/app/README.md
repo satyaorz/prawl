@@ -1,6 +1,6 @@
-# Prawl Android app
+# Prowl Android app
 
-One app with two tabs: **Wallet** (the Prawl website in a WebView, so the on-chain private wallet is the same on the phone and in a browser) and
+One app with two tabs: **Wallet** (the Prowl website in a WebView, so the on-chain private wallet is the same on the phone and in a browser) and
 **Offline cash** (native screens: coins whose one-time key lives in the phone's secure hardware, paid over Bluetooth with no network).
 The website talks to the native side through `window.prawlOffline` (see `../INTERFACE.md` and `../HANDOFF.md`).
 

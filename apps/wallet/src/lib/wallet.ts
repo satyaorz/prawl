@@ -287,7 +287,7 @@ export function createWallet(): Promise<void> {
   });
 }
 
-/** Unlock with the remembered passkey, or (recovery on a new device) let the user pick any Prawl passkey. */
+/** Unlock with the remembered passkey, or (recovery on a new device) let the user pick any Prowl passkey. */
 export function unlockWallet(): Promise<void> {
   return guarded(async () => {
     const remembered = await store.get<string>(CREDENTIAL_KEY);

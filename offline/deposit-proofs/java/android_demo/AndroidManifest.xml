@@ -5,7 +5,7 @@
     android:versionName="1.0">
     <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
     <!-- extractNativeLibs=false: the .so is loaded straight from the (stored, 16 KiB-aligned) APK entry. -->
-    <application android:label="Prawl deposit proof demo" android:debuggable="true" android:extractNativeLibs="false">
+    <application android:label="Prowl deposit proof demo" android:debuggable="true" android:extractNativeLibs="false">
         <activity android:name="xyz.prawl.otktest.DepositProofActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

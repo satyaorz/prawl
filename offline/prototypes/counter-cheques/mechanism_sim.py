@@ -1,5 +1,5 @@
 """
-mechanism_sim.py -- adversarial strategy search against the combined Prawl incentive mechanism.
+mechanism_sim.py -- adversarial strategy search against the combined Prowl incentive mechanism.
 
 Economic abstraction (crypto is assumed sound: forks are detected and attributed; slot reuse is
 extractable; see formal_limits.md Thm 5).  One attacker coalition = one culprit bond P plus free Sybils

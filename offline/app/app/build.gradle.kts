@@ -30,7 +30,7 @@ if (!debugKeystore.exists()) {
     val keytool = File(System.getProperty("java.home"), "bin/keytool").takeIf { it.canExecute() } ?: File("keytool")
     val rc = ProcessBuilder(
         keytool.path, "-genkeypair", "-keystore", debugKeystore.path, "-storepass", "android", "-keypass", "android",
-        "-alias", "debug", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Prawl OTK test",
+        "-alias", "debug", "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000", "-dname", "CN=Prowl OTK test",
     ).inheritIO().start().waitFor()
     check(rc == 0 && debugKeystore.exists()) { "could not create ${debugKeystore.path} (keytool exit code $rc): create it by hand, see keystore/README.md" }
 }

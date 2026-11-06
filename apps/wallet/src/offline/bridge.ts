@@ -1,5 +1,5 @@
 /**
- * The native bridge of the Prawl Android app (`window.prawlOffline`), when this
+ * The native bridge of the Prowl Android app (`window.prawlOffline`), when this
  * page runs inside it. Same payloads as the QR and link handoffs (HANDOFF v1.1 /
  * v1.2), so everything a bridge returns goes through the same parser and the
  * same simulate-then-send checks as a scanned code. Without the bridge the page
@@ -46,7 +46,7 @@ export interface PrawlOfflineBridge {
 
 const METHODS = ["mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed"] as const;
 
-/** The bridge, if this page runs inside the Prawl app and it offers every method. */
+/** The bridge, if this page runs inside the Prowl app and it offers every method. */
 export function getBridge(host: { prawlOffline?: unknown } | undefined = typeof window === "undefined" ? undefined : (window as unknown as { prawlOffline?: unknown })): PrawlOfflineBridge | undefined {
   const b = host?.prawlOffline as Record<string, unknown> | undefined;
   if (!b || typeof b !== "object") return undefined;

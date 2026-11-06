@@ -406,7 +406,7 @@ class OfflineWallet(
             log("REFUSED: $err"); return PayOutcome.Refused(err)
         }
         val sig: ByteArray = try {
-            keys.sign(note.alias, msg, approver, ApprovalPrompt("Prawl: approve payment", "Pay ${Eth.eth(amount)} ETH offline",
+            keys.sign(note.alias, msg, approver, ApprovalPrompt("Prowl: approve payment", "Pay ${Eth.eth(amount)} ETH offline",
                 "Pays ${Eth.eth(amount)} ETH to the one-time key ${toKey.take(16)}…\nSigns this note over once. The secure hardware will not sign it again."))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
@@ -575,7 +575,7 @@ class OfflineWallet(
         val sig = try {
             // the FULL destination is in the prompt: a truncated address is what a look-alike address exploits (audit F-03)
             keys.sign(alias, Protocol.spendMessage(h, depth, note.noteId, outs), approver,
-                ApprovalPrompt("Prawl: approve cash out", "Redeem ${Eth.eth(note.value)} ETH",
+                ApprovalPrompt("Prowl: approve cash out", "Redeem ${Eth.eth(note.value)} ETH",
                     "Pays out to this address. Check every character:\n${Eth.checksum(payout40)}"))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
@@ -694,7 +694,7 @@ class OfflineWallet(
         val npkFull = "0x" + req.npk.toString(16).padStart(64, '0')
         val sig = try {
             keys.sign(alias, Protocol.spendMessage(h, note.depth, note.noteId, outs), approver,
-                ApprovalPrompt("Prawl: approve private cash out", "Shield ${Eth.eth(note.value)} ETH into a private balance",
+                ApprovalPrompt("Prowl: approve private cash out", "Shield ${Eth.eth(note.value)} ETH into a private balance",
                     "Into the RAILGUN account with this key. Check every character:\n$npkFull"))
         } catch (t: Throwable) {
             val m = (t.message ?: t.toString()).lineSequence().first()
@@ -776,7 +776,7 @@ class OfflineWallet(
             val newCoinId = Refresh.coinId(Refresh.messageHash(msg), 0)
             check(Refresh.isReserved(newCoinId))
             val sig = try {
-                keys.sign(alias, msg, approver, ApprovalPrompt("Prawl: approve refresh", "Move ${Eth.eth(note.value)} ETH into a new coin (${expiresInS / 86400} days)",
+                keys.sign(alias, msg, approver, ApprovalPrompt("Prowl: approve refresh", "Move ${Eth.eth(note.value)} ETH into a new coin (${expiresInS / 86400} days)",
                     "The new coin's reclaim address. Check every character:\n${Eth.checksum(dep40)}"))
             } catch (t: Throwable) {
                 val m = (t.message ?: t.toString()).lineSequence().first()

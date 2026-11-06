@@ -147,7 +147,7 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
 
         if (!priv) PCard(title = "Pay out to") {
             Field(payout, { payout = it }, "Payout address (0x…)", mono = true, error = if (payout.isNotBlank() && !addr.ok) addr.note else null)
-            if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prawl website.") {
+            if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prowl website.") {
                 QrScanner(onResult = { t -> scanning = false; Eth.parseEip681(t)?.let { payout = Eth.checksum(it.addr40) } ?: run { error = "Not an Ethereum address code" } })
             } else SecondaryButton("Scan wallet address", { scanning = true })
         } else PCard(title = "Private balance (RAILGUN)", subtitle = "The wallet builds a shield request for exactly the note's value. Scan or paste it here.") {
@@ -163,7 +163,7 @@ fun CashOutScreen(nav: Nav, payoutIn: String?, shieldIn: String? = null) {
             }
             Field(shieldText, { shieldText = it; error = null }, "Shield target link from the wallet", mono = true, singleLine = false,
                 error = target?.exceptionOrNull()?.let { "Not a shield target: ${it.message}" })
-            if (scanningShield) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the shield-target code shown by the Prawl website.") {
+            if (scanningShield) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the shield-target code shown by the Prowl website.") {
                 QrScanner(onResult = { t -> scanningShield = false; shieldText = t })
             } else SecondaryButton("Scan shield target", { scanningShield = true })
             if (request != null) {

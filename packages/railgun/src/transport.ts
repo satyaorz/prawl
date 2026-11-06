@@ -6,7 +6,7 @@
  *    (https://<rpcHost>/<chainId>) and answer it here by sending each call
  *    as an Anon-RPC read: on the wallet's own account identity when the call
  *    names the account address, else on a public RAILGUN scope (commitment
- *    logs, contract reads that name nobody). Writes are refused: Prawl sends
+ *    logs, contract reads that name nobody). Writes are refused: Prowl sends
  *    transactions and UserOperations itself.
  *  - Subsquid history, the PPOI node, and circuit artifacts, and
  *  - the bundler, all handled by @prawl/anon-rpc's createRailgunFetch.

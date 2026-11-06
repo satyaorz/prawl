@@ -46,7 +46,7 @@ class DeviceSelfTest(private val context: Context, private val vault: AndroidKey
             keygenMs = (System.nanoTime() - t0) / 1_000_000
             att = checker.verify(chain)
             val m1 = "PRAWL-SELFTEST|1|${Bytes.hex(ByteArray(8).also { java.security.SecureRandom().nextBytes(it) })}".toByteArray()
-            val prompt = ApprovalPrompt("Prawl self-test", "")
+            val prompt = ApprovalPrompt("Prowl self-test", "")
             val sig = runCatching { vault.sign(alias, m1, null, prompt) }.getOrNull()
             first = sig != null
             if (sig != null) {

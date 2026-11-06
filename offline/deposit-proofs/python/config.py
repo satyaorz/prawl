@@ -1,4 +1,4 @@
-"""Sepolia consensus constants for the Prawl v3 deposit-proof verifier.
+"""Sepolia consensus constants for the Prowl v3 deposit-proof verifier.
 
 Every value here was read from a live Sepolia beacon node on 2026-11-06
 (`/eth/v1/config/spec`, `/eth/v1/config/fork_schedule`, `/eth/v1/beacon/genesis`)
@@ -45,7 +45,7 @@ CURRENT_SYNC_COMMITTEE_GINDEX_GLOAS = 2945
 NEXT_SYNC_COMMITTEE_GINDEX_GLOAS = 2946
 EXECUTION_BLOCK_HASH_GINDEX_GLOAS = 2856
 
-# Prawl policy: a sync aggregate must carry a 2/3 supermajority (spec's
+# Prowl policy: a sync aggregate must carry a 2/3 supermajority (spec's
 # `sum * 3 >= SYNC_COMMITTEE_SIZE * 2`; with 512 members this is >= 342, which is also
 # the smallest count strictly greater than 2/3). MIN_SYNC_COMMITTEE_PARTICIPANTS (=1) is
 # far too weak for a payment check.

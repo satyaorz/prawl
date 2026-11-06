@@ -13,7 +13,7 @@ const STEPS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * Offline mode. The paying itself happens on the Prawl Android app (it needs a
+ * Offline mode. The paying itself happens on the Prowl Android app (it needs a
  * hardware key that signs once); this side loads coins, cashes them out and
  * refreshes them. Everything here works from links and QR codes.
  */

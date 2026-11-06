@@ -9,7 +9,7 @@
  * Only the credential id is remembered locally, to skip the account picker; it
  * is not secret. Recovery on a new device calls unlock() without it.
  */
-const RP_NAME = "Prawl";
+const RP_NAME = "Prowl";
 const PRF_SALT_LABEL = "prawl/v1/root";
 
 export class PasskeyError extends Error {
@@ -140,7 +140,7 @@ export async function unlockWithPasskey(credentialId?: string): Promise<PasskeyR
  * Some authenticators return the PRF result at creation; others only on get(),
  * so this falls back to an immediate unlock.
  */
-export async function createPasskey(label = "Prawl wallet", opts: { clockSkewS?: number } = {}): Promise<PasskeyRoot> {
+export async function createPasskey(label = "Prowl wallet", opts: { clockSkewS?: number } = {}): Promise<PasskeyRoot> {
   if (!passkeysAvailable()) throw new PasskeyError("Passkeys are not available in this browser", "UNSUPPORTED");
   const salt = await prfSalt();
   const bornAt = bornAtFrom(Date.now() / 1000, opts.clockSkewS ?? 0);

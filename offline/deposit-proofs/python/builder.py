@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prawl v3 deposit-proof builder (online). Talks to a beacon API (light-client routes) and an
+"""Prowl v3 deposit-proof builder (online). Talks to a beacon API (light-client routes) and an
 execution JSON-RPC that serves eth_getProof at finalized depth.
 
   builder.py cache   --beacon URL [--beacon2 URL] [--checkpoint ROOT] --out cache.json

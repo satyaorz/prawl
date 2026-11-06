@@ -17,7 +17,7 @@ interface IRailgunView {
 /// @notice Against the REAL RAILGUN contracts on a Sepolia fork (anvil --fork-url ... --hardfork osaka, then
 ///  `forge test --fork-url http://127.0.0.1:<port> --match-contract RailgunForkTest`). Skipped elsewhere.
 ///  The ShieldRequest is REAL: built by kohaku-railgun-wasm's Shield.addErc20 (tools/build_shield_request.cjs),
-///  i.e. what the Prawl wallet's RailgunWallet.buildShield produces, for a throwaway 0zk address.
+///  i.e. what the Prowl wallet's RailgunWallet.buildShield produces, for a throwaway 0zk address.
 contract RailgunForkTest is SoftKeys {
     address constant RSW = 0xeCFCf3b4eC647c4Ca6D49108b311b7a7C9543fea; // RailgunSmartWallet proxy (Sepolia)
     address constant WETH = 0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14; // RAILGUN wrappedBaseToken (Sepolia)

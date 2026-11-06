@@ -24,7 +24,7 @@ import java.security.cert.Certificate;
 import java.security.spec.ECGenParameterSpec;
 
 /**
- * Prawl one-time-key (OTK) hardware test.
+ * Prowl one-time-key (OTK) hardware test.
  *
  * Question under test: does this phone's secure hardware enforce
  * KeyGenParameterSpec.setMaxUsageCount(1), so a coin key can sign exactly once?

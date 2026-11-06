@@ -28,20 +28,9 @@ export function Icon({ name, className = "h-5 w-5" }: { name: IconName; classNam
   );
 }
 
-/** The Prawl mark: a shielded drop. */
+/** The Prowl mark: the smiley (public/prowl-logo.png). Decorative: the name is always written next to it. */
 export function Logo({ className = "h-7 w-7" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id="prawl-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#34d399" />
-          <stop offset="1" stopColor="#059669" />
-        </linearGradient>
-      </defs>
-      <path d="M16 2.500 5 7v8c0 7 4.700 11.800 11 14.500C22.300 26.800 27 22 27 15V7L16 2.500Z" fill="url(#prawl-g)" />
-      <path d="M16 9v9.500M12 15l4 4 4-4" stroke="#022c22" strokeWidth="2.200" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-    </svg>
-  );
+  return <img src="/prowl-logo.png" alt="" aria-hidden="true" className={`${className} select-none object-contain`} draggable={false} />;
 }
 
 /** Ether diamond in a round badge. */

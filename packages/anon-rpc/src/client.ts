@@ -1,5 +1,5 @@
 /**
- * Prawl's Anon-RPC client.
+ * Prowl's Anon-RPC client.
  *
  * Every request (JSON-RPC read, JSON-RPC batch, write, HTTP GET/POST) goes
  * through one private path, `#send`, which:

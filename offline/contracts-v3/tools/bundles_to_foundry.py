@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Prawl v3 bundles (phone format) into one flat JSON fixture for the Foundry tests.
+"""Convert Prowl v3 bundles (phone format) into one flat JSON fixture for the Foundry tests.
 
 INPUT: a directory of *.json bundles exactly as Wallet3Activity writes them (synthetic ones add "_test"):
   {
