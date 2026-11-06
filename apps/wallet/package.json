@@ -1,0 +1,31 @@
+{
+  "name": "@prawl/wallet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@anon-rpc/browser-harness": "0.4.0",
+    "@prawl/anon-rpc": "workspace:*",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "viem": "2.57.14"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.4",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tailwindcss": "^4.3.4",
+    "typescript": "5.9.3",
+    "vite": "^8.3.6",
+    "vitest": "5.0.5"
+  }
+}
