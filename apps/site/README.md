@@ -69,7 +69,7 @@ for release.
 
 ## Point the buttons at your wallet
 
-The wallet origin defaults to `https://prowl-wallet.vercel.app`. Override it at
+The wallet origin defaults to `https://prawl-wallet.centralindia.cloudapp.azure.com`. Override it at
 build time:
 
 ```sh
