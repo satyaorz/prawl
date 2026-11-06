@@ -93,7 +93,10 @@ describe("phone bridge adapter", () => {
     const win = globalThis as unknown as { window?: { prawlOffline?: unknown } };
     win.window = { prawlOffline: fake({ markDeposited: async () => Promise.reject(new Error("phone busy")) }) };
     try {
-      await expect(tellPhone((b) => b.markDeposited({ coinId: "0xab", txHash: "0xcd" }))).resolves.toBeUndefined();
+      // A failed notification never throws and is reported as not delivered (the page then tells the user to tap it on the phone).
+      await expect(tellPhone((b) => b.markDeposited({ coinId: "0xab", txHash: "0xcd" }))).resolves.toBe(false);
+      win.window = { prawlOffline: fake({ markDeposited: async () => ({ ok: true }) }) };
+      await expect(tellPhone((b) => b.markDeposited({ coinId: "0xab", txHash: "0xcd" }))).resolves.toBe(true);
     } finally {
       delete win.window;
     }

@@ -548,8 +548,8 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [depositCall(p)], status);
     await remember(opLog, myEpoch, "offline-load", p.value, p.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
-    if (ok) void tellPhone((b) => b.markDeposited({ coinId: p.coinId, txHash: txs.at(-1)!.hash }));
-    updateAction(myEpoch, { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs });
+    const told = ok && (await tellPhone((b) => b.markDeposited({ coinId: p.coinId, txHash: txs.at(-1)!.hash })));
+    updateAction(myEpoch, { kind, status: ok ? (told ? "Loaded. This phone was told." : "Loaded. Tap \"Deposited\" on the phone.") : "The deposit reverted", done: true, txs });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
   } catch (e) {
     updateAction(myEpoch, { ...failedAction("Load failed", e, revertReason(e)), kind });
@@ -687,10 +687,10 @@ export async function offlineLoadPrivate(p: LoadPrivatePayload): Promise<void> {
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [activateCall(p)], status);
     await remember(opLog, myEpoch, "offline-load", fundWei, p.params.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
-    if (ok) void tellPhone((b) => b.markDeposited({ coinId: p.params.coinId, txHash: txs.at(-1)!.hash }));
+    const told = ok && (await tellPhone((b) => b.markDeposited({ coinId: p.params.coinId, txHash: txs.at(-1)!.hash })));
     updateAction(myEpoch, {
       kind,
-      status: ok ? "Loaded privately. Tap \"Deposited\" on the phone." : "Activation reverted",
+      status: ok ? (told ? "Loaded privately. This phone was told." : "Loaded privately. Tap \"Deposited\" on the phone.") : "Activation reverted",
       done: true,
       ...(ok ? {} : { error: `The funds are at ${p.depositAddress}. Open the same link again to retry activation; the depositor ${p.params.depositor} can also refund.` }),
       txs,

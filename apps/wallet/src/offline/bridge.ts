@@ -137,12 +137,14 @@ export async function refreshOnPhone(b: PrawlOfflineBridge, req: { coinId: strin
 }
 
 /** Best effort: tell the phone a coin is live (or refreshed). A failure here never undoes the transaction. */
-export async function tellPhone(call: (b: PrawlOfflineBridge) => Promise<unknown>): Promise<void> {
+/** True only when the phone app is here AND accepted the call; the phone keeps the signed payload, so a failure can be retried by hand. */
+export async function tellPhone(call: (b: PrawlOfflineBridge) => Promise<unknown>): Promise<boolean> {
   const b = getBridge();
-  if (!b) return;
+  if (!b) return false;
   try {
     await call(b);
+    return true;
   } catch {
-    // The phone keeps the signed payload and can be told again.
+    return false;
   }
 }
