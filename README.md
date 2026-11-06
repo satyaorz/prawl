@@ -2,6 +2,10 @@
 
 A privacy-first Ethereum wallet for the browser.
 
+> **Naming.** The product is **Prowl**. Some identifiers still say `prawl` on purpose: the Android package `xyz.prawl.offline`, the key and
+> message labels (`prawl/v1/...`, `PRAWL-OTK-v3`), the site's domain and the `window.prawlOffline` bridge. Keys, passkeys and coins are bound
+> to them, so changing them would mean a new wallet. The repository is `satyaorz/prawl`.
+
 - **Private balance first.** Your main account is a RAILGUN shielded balance; the public address is only the way in and out.
 - **No IP or address linking at the RPC layer.** Every chain read and write goes over Tor via Anon-RPC, with a separate circuit per identity: the wallet's account, each transaction, each one-time sender, and the shared RAILGUN scan.
 - **No seed phrase, no server.** Keys come from a passkey (WebAuthn PRF). The same synced passkey on another device restores the wallet.

@@ -2,6 +2,10 @@
 
 Pay ETH phone to phone with no network, without a double spend.
 
+> **Naming.** The product is **Prowl**. Some identifiers still say `prawl` on purpose: the Android package `xyz.prawl.offline`, the key and
+> message labels (`prawl/v1/...`, `PRAWL-OTK-v3`), the site's domain and the `window.prawlOffline` bridge. Keys, passkeys and coins are bound
+> to them, so changing them would mean a new wallet. The repository is `satyaorz/prawl`.
+
 Each coin is owned by a key that the phone's secure hardware will sign with **only once**
 (Android Keystore `setMaxUsageCount(1)`, StrongBox where available). The recipient checks the
 phone's Google-signed key attestation offline, so a copied wallet or a rooted phone cannot
