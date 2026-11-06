@@ -244,6 +244,24 @@ export async function lockWallet(): Promise<void> {
   update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined });
 }
 
+/**
+ * Send ETH from the public account to another public address (e.g. leftovers
+ * after shielding). This links the two addresses on chain, like any transfer.
+ */
+export async function sendPublicEth(to: Hex, amountWei: bigint): Promise<void> {
+  const kind = "public-send";
+  const status = (s: string) => update({ action: { kind, status: s } });
+  try {
+    if (!keys) throw new Error("wallet is locked");
+    const txs = await sendCalls(anon, state.chainId, keys.evmAccount, [{ to, data: "0x", value: amountWei }], status);
+    const ok = txs.every((t) => t.status === "success");
+    update({ action: { kind, status: ok ? `Sent ${fmtEth(amountWei)} ETH.` : "The transfer reverted", done: true, txs } });
+    if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
+  } catch (e) {
+    update({ action: { kind, status: "Send failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+  }
+}
+
 /** Move public ETH from the wallet's EVM account into the private balance. */
 export async function shieldEth(amountWei: bigint): Promise<void> {
   if (!keys || !state.railgunAddress) throw new Error("wallet is locked");

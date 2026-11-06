@@ -4,7 +4,10 @@
 // waits for public ETH, then processes handoff links dropped into <dir>:
 //   check-*.txt   open the link, log what the card shows (no transaction)
 //   go-*.txt      open the link and press Load / Cash out, log the result
-// A processed file is renamed to *.done. Write "exit" to <dir>/control.txt to stop.
+// A processed file is renamed to *.done. Commands in <dir>/control.txt:
+//   reload        reload the page (new build) and unlock with the same passkey
+//   sweep 0x…     send all public ETH (minus gas) to that address
+//   exit          stop (the passkey, and anything left in the wallet, is gone)
 // The virtual passkey lives only in this browser session.
 // Usage: CHROME=... node scripts/live-offline.mjs <url> <dir>
 import { chromium } from "playwright";
@@ -50,7 +53,35 @@ try {
     if (existsSync(ctl)) {
       const cmd = readFileSync(ctl, "utf8").trim();
       rmSync(ctl, { force: true });
+      log(`control: ${cmd}`);
       if (cmd === "exit") break;
+      if (cmd === "reload") {
+        await page.reload();
+        await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 180_000 });
+        await page.getByRole("button", { name: "Unlock with passkey" }).click();
+        while (!/synced in/.test(await card.innerText())) await sleep(2000);
+        log("reloaded and unlocked");
+      }
+      const sweep = /^sweep (0x[0-9a-fA-F]{40})$/.exec(cmd);
+      if (sweep) {
+        const form = page.locator("section", { hasText: "Add funds privately" });
+        if (!(await form.getByPlaceholder("0x… recipient").isVisible())) await form.getByRole("button", { name: "Send public ETH elsewhere" }).click();
+        await form.getByPlaceholder("0x… recipient").fill(sweep[1]);
+        await form.getByRole("button", { name: "Max" }).nth(1).click();
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await form.getByRole("button", { name: "Send", exact: true }).click();
+          let t = "";
+          for (let i = 0; i < 90; i++) {
+            t = await form.innerText();
+            if (/Sent |Send failed|reverted/.test(t)) break;
+            await sleep(2000);
+          }
+          log(`sweep: ${t.replace(/\n/g, " | ").slice(-300)}`);
+          const fits = /Try at most ([\d.]+) ETH/.exec(t)?.[1];
+          if (!fits) break;
+          await form.getByPlaceholder("0.001").fill(String(Math.floor(Number(fits) * 0.98 * 1e9) / 1e9));
+        }
+      }
     }
     const bal = await publicEth();
     if (bal !== lastBalance) log(`public balance ${bal} ETH`);
