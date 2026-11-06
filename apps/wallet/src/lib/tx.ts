@@ -69,6 +69,16 @@ export class InsufficientFundsError extends Error {
   }
 }
 
+/**
+ * True when gas estimation refused with "insufficient funds" although the balance read in the same batch covers the
+ * value: the estimating node is behind the one that answered the balance, not the account actually short of funds.
+ */
+function lagging(gasR: { result: unknown } | { error: Error } | undefined, balR: { result: unknown } | { error: Error } | undefined, value: bigint): boolean {
+  if (!gasR || !("error" in gasR) || !/insufficient funds/i.test(gasR.error.message)) return false;
+  if (!balR || "error" in balR || typeof balR.result !== "string") return false;
+  try { return BigInt(balR.result) > value; } catch { return false; }
+}
+
 function unwrap(item: { result: unknown } | { error: Error } | undefined, what: string): unknown {
   if (!item) throw new Error(`${what}: no answer`);
   if ("error" in item) throw new Error(`${what}: ${item.error.message}`);
@@ -92,13 +102,22 @@ export async function sendCalls(
     const label = calls.length > 1 ? ` ${i + 1}/${calls.length}` : "";
     onStatus?.(`Preparing transaction${label}…`);
     const txReq = { from: account.address, to: call.to, data: call.data, value: `0x${call.value.toString(16)}` };
-    const [nonceR, feeR, tipR, gasR, balR] = await client.batch(id, chainId, [
-      { method: "eth_getTransactionCount", params: [account.address, "pending"] },
-      { method: "eth_getBlockByNumber", params: ["latest", false] },
-      { method: "eth_maxPriorityFeePerGas", params: [] },
-      { method: "eth_estimateGas", params: [txReq, "latest"] },
-      { method: "eth_getBalance", params: [account.address, "latest"] },
-    ]);
+    let nonceR, feeR, tipR, gasR, balR;
+    for (let attempt = 0; ; attempt++) {
+      [nonceR, feeR, tipR, gasR, balR] = await client.batch(id, chainId, [
+        { method: "eth_getTransactionCount", params: [account.address, "pending"] },
+        { method: "eth_getBlockByNumber", params: ["latest", false] },
+        { method: "eth_maxPriorityFeePerGas", params: [] },
+        { method: "eth_estimateGas", params: [txReq, "latest"] },
+        { method: "eth_getBalance", params: [account.address, "latest"] },
+      ]);
+      if (attempt >= 6 || !lagging(gasR, balR, call.value)) break;
+      // The requests of one batch can be answered by different public nodes, one of them a block behind:
+      // right after an account was funded it estimates gas against a zero balance. Wait and ask again.
+      onStatus?.("Waiting for the network to catch up with your balance…");
+      await new Promise((r) => setTimeout(r, 5000));
+      checkAuthorized?.();
+    }
     const nonce = Number(hexBig(unwrap(nonceR, "nonce")));
     const baseFee = hexBig((unwrap(feeR, "latest block") as { baseFeePerGas: string }).baseFeePerGas);
     const tip = hexBig(unwrap(tipR, "priority fee"));

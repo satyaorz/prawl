@@ -92,89 +92,133 @@ async function unlock() {
   await page.getByRole("button", { name: "Swap", exact: true }).waitFor({ timeout: 10 * MIN });
 }
 
-try {
-  await page.goto(url);
-  await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 180_000 });
-  await page.getByRole("button", { name: "Create wallet" }).click();
-  await page.getByRole("button", { name: "Swap", exact: true }).waitFor({ timeout: 10 * MIN });
-  await page.getByRole("button", { name: "Copy Public address" }).click();
-  const account = await page.evaluate(() => navigator.clipboard.readText());
-  writeFileSync(path.join(dir, "address.txt"), account + "\n");
-  log(`wallet open; public account ${account}`);
-  log(`FUND IT (~0.03 ETH), then create ${path.join(dir, "go.txt")}`);
-  await until("go.txt", async () => ({ done: existsSync(path.join(dir, "go.txt")), note: "waiting for funding" }), 3 * 60 * MIN, 3000);
+let account = "";
+/** The flow, as named steps: a failed step can be fixed and continued from (`resume <name>`) in the same browser. */
+const STEPS = [
+  ["create", async () => {
+    await page.goto(url);
+    await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 180_000 });
+    await page.getByRole("button", { name: "Create wallet" }).click();
+    await page.getByRole("button", { name: "Swap", exact: true }).waitFor({ timeout: 10 * MIN });
+    await page.getByRole("button", { name: "Copy Public address" }).click();
+    account = await page.evaluate(() => navigator.clipboard.readText());
+    writeFileSync(path.join(dir, "address.txt"), account + "\n");
+    log(`wallet open; public account ${account}`);
+    log(`FUND IT (~0.017 ETH for the default amounts), then create ${path.join(dir, "go.txt")}`);
+    await until("go.txt", async () => ({ done: existsSync(path.join(dir, "go.txt")), note: "waiting for funding" }), 3 * 60 * MIN, 3000);
+  }],
+  ["shield", async () => {
+    // Shield into the private balance, wait for the PPOI check: the real way money gets in.
+    await page.getByRole("button", { name: "Shield", exact: true }).first().click();
+    await dialog.waitFor();
+    await dialog.getByPlaceholder("0.01").fill(SHIELD_ETH);
+    await click("Shield ETH");
+    // While a sheet is open the app shows an action's progress in a banner BEHIND it: close the sheet and read that.
+    await closeSheet();
+    const shieldStage = async () => (await page.locator("body").innerText()).match(/(Building shield…|Preparing transaction[^\n]*|Waiting for the network[^\n]*|Sending transaction[^\n]*|Shielded\.[^\n]*|Shield failed[^\n]*|Status unknown[^\n]*|Shield transaction reverted|Not enough[^\n]*)/)?.[0];
+    const shielded = await until("Shield ETH", async () => {
+      const t = await shieldStage();
+      return { done: !!t && /^(Shielded\.|Shield failed|Status unknown|Shield transaction reverted|Not enough)/.test(t), value: t, note: t ?? "(no status yet)" };
+    }, 15 * MIN, 5000);
+    if (!/^Shielded\./.test(shielded)) throw new Error(`Shield ETH: ${shielded} | ${(await page.locator("body").innerText()).match(/Shield failed[^\n]*\n[^\n]*/)?.[0] ?? ""}`);
+    log("Shield ETH: done");
+  }],
+  ["ppoi", async () => {
+    await until("PPOI (spendable private balance)", async () => {
+      const v = await spendable();
+      return { done: v > 0, note: `${v} spendable` };
+    }, 60 * MIN, 30_000);
+  }],
+  ["fund", async () => {
+    await page.getByRole("button", { name: "Swap", exact: true }).click();
+    await dialog.waitFor();
+    await dialog.getByLabel("ETH to move to a new swap account").fill(FUND_SWAP_ACCOUNT);
+    await act("Fund new swap account", /Swap account funded/, 25 * MIN);
+  }],
+  ["connect", async () => {
+    if (!(await dialog.isVisible().catch(() => false))) {
+      await page.getByRole("button", { name: "Swap", exact: true }).click();
+      await dialog.waitFor();
+    }
+    log("opening the swap dashboard (FHE worker, key download over Tor)…");
+    await click("Open swap dashboard");
+    const v = await until("connect", async () => {
+      const t = await dlgText();
+      const alert = await alertText();
+      if (alert) return { done: true, value: `ERROR ${alert}`, note: alert };
+      return { done: /Public \/ wrapped \/ swap vault/.test(t), value: t, note: "connecting (key download over Tor can take minutes)" };
+    }, 20 * MIN, 5000);
+    if (String(v).startsWith("ERROR")) throw new Error(`connect: ${v}`);
+    log(`dashboard open: ${(await dlgText()).slice(0, 400)}`);
+  }],
+  ["swap", async () => {
+    await dialog.getByPlaceholder("0.0").fill(SWAP_AMOUNT);
+    await act("Swap privately", /Encrypted order submitted/, 20 * MIN);
+    writeFileSync(path.join(dir, "ordered.txt"), new Date().toISOString() + "\n");
+    log("order placed. Now run the counterparty: (cd private-swap && node scripts/counterparty-order.mjs 1)");
+  }],
+  ["settle", async () => {
+    // The wallet advances the round by itself now. Watch until the payout is credited.
+    const settled = await until("round", async () => {
+      const t = await dlgText();
+      const alert = await alertText();
+      if (/payout is in your confidential balance/.test(t)) return { done: true, value: t, note: "settled" };
+      if (alert && /reverted|did not|stale|expired|paused/i.test(alert)) return { done: true, value: `ERROR ${alert}`, note: alert };
+      return { done: false, note: (t.match(/Round \d+[^|]*\|[^|]*\|[^|]*/)?.[0] ?? t.slice(0, 160)) };
+    }, 45 * MIN, 10_000);
+    if (String(settled).startsWith("ERROR")) throw new Error(`round: ${settled}`);
+    log(`round settled: ${String(settled).slice(0, 500)}`);
+  }],
+  ["withdraw", async () => {
+    // Withdraw the payout (the output asset) from the vault to the swap account's public balance.
+    await act("Withdraw payout", /Withdrawal requested/, 10 * MIN, /^Withdraw .* Custom token to the swap account$/);
+    await until("exit released", async () => {
+      const t = await dlgText();
+      return { done: /Exit released/.test(t), note: t.slice(-120) };
+    }, 25 * MIN, 8000);
+  }],
+  ["shieldback", async () => {
+    // Shield the leftover (WETH and gas ETH) back into the private balance.
+    await act("Shield back", /Moved back into your private balance/, 20 * MIN, "Shield back to my private balance");
+  }],
+];
 
-  // Shield into the private balance, wait for the PPOI check: the real way money gets in.
-  await page.getByRole("button", { name: "Shield", exact: true }).first().click();
-  await dialog.waitFor();
-  await dialog.getByPlaceholder("0.01").fill(SHIELD_ETH);
-  await act("Shield ETH", /Shielded\./, 15 * MIN);
-  await closeSheet();
-  await until("PPOI (spendable private balance)", async () => {
-    const v = await spendable();
-    return { done: v > 0, note: `${v} spendable` };
-  }, 60 * MIN, 30_000);
+async function runFrom(name) {
+  const start = STEPS.findIndex(([n]) => n === name);
+  if (start < 0) throw new Error(`unknown step ${name}; steps: ${STEPS.map(([n]) => n).join(", ")}`);
+  for (const [n, fn] of STEPS.slice(start)) {
+    log(`== step: ${n}`);
+    await fn();
+  }
+}
 
-  await page.getByRole("button", { name: "Swap", exact: true }).click();
-  await dialog.waitFor();
-  await dialog.getByLabel("ETH to move to a new swap account").fill(FUND_SWAP_ACCOUNT);
-  await act("Fund new swap account", /Swap account funded/, 25 * MIN);
-
-  log("opening the swap dashboard (FHE worker, key download over Tor)…");
-  await click("Open swap dashboard");
-  await until("connect", async () => {
-    const t = await dlgText();
-    const alert = await alertText();
-    if (alert) return { done: true, value: `ERROR ${alert}`, note: alert };
-    return { done: /Public \/ wrapped \/ swap vault/.test(t), value: t, note: "connecting (key download over Tor can take minutes)" };
-  }, 20 * MIN, 5000).then((v) => { if (typeof v === "string" && v.startsWith("ERROR")) throw new Error(`connect: ${v}`); });
-  log(`dashboard open: ${(await dlgText()).slice(0, 400)}`);
-
-  await dialog.getByPlaceholder("0.0").fill(SWAP_AMOUNT);
-  await act("Swap privately", /Encrypted order submitted/, 20 * MIN);
-  writeFileSync(path.join(dir, "ordered.txt"), new Date().toISOString() + "\n");
-  log("order placed. Now run the counterparty: (cd private-swap && node scripts/counterparty-order.mjs 1)");
-
-  // The wallet advances the round by itself now. Watch until the payout is credited.
-  const settled = await until("round", async () => {
-    const t = await dlgText();
-    const alert = await alertText();
-    if (/payout is in your confidential balance/.test(t)) return { done: true, value: t, note: "settled" };
-    if (alert && /reverted|did not|stale|expired/i.test(alert)) return { done: true, value: `ERROR ${alert}`, note: alert };
-    return { done: false, note: (t.match(/Round \d+[^|]*\|[^|]*\|[^|]*/)?.[0] ?? t.slice(0, 160)) };
-  }, 45 * MIN, 10_000);
-  if (String(settled).startsWith("ERROR")) throw new Error(`round: ${settled}`);
-  log(`round settled: ${String(settled).slice(0, 500)}`);
-
-  // Withdraw the payout (the output asset) from the vault to the swap account's public balance.
-  await act("Withdraw payout", /Withdrawal requested/, 10 * MIN, /^Withdraw .* Custom token to the swap account$/);
-  await until("exit released", async () => {
-    const t = await dlgText();
-    return { done: /Exit released/.test(t), note: t.slice(-120) };
-  }, 25 * MIN, 8000);
-
-  // Shield the leftover (WETH and gas ETH) back into the private balance.
-  await act("Shield back", /Moved back into your private balance/, 20 * MIN, "Shield back to my private balance");
-  log("SWAP LIVE TEST DONE");
-} catch (e) {
-  log("SWAP LIVE TEST FAILED:", e.message);
+async function hold(why) {
+  log("SWAP LIVE TEST FAILED:", why);
   process.exitCode = 1;
   const controlFile = path.join(dir, "control.txt");
-  log(`holding the browser open; write status | reload | exit to ${controlFile}`);
+  log(`holding the browser open; write status | reload | resume <step> | exit to ${controlFile}`);
   const end = Date.now() + 3 * 60 * MIN;
   while (Date.now() < end) {
     if (existsSync(controlFile)) {
       const cmd = readFileSync(controlFile, "utf8").trim();
       rmSync(controlFile, { force: true });
       log(`control: ${cmd}`);
-      if (cmd === "exit") break;
+      if (cmd === "exit") return;
       try {
-        if (cmd === "status") log(`sheet: ${(await dlgText()).slice(0, 1500)} | body: ${(await page.locator("body").innerText()).replace(/\n+/g, " | ").slice(0, 600)}`);
+        if (cmd === "status") log(`sheet: ${(await dlgText()).slice(0, 1500)} | body: ${(await page.locator("body").innerText()).replace(/\n+/g, " | ").slice(0, 700)}`);
         if (cmd === "reload") { await page.reload(); await unlock(); log("reloaded and unlocked"); }
+        if (cmd.startsWith("resume ")) { await closeSheet().catch(() => {}); await runFrom(cmd.slice(7).trim()); log("SWAP LIVE TEST DONE"); process.exitCode = 0; return; }
       } catch (err) { log(`control ${cmd} failed: ${err.message}`); }
     }
     await sleep(5000);
   }
+}
+
+try {
+  await runFrom("create");
+  log("SWAP LIVE TEST DONE");
+} catch (e) {
+  await hold(e.message);
 } finally {
   await browser.close();
 }
