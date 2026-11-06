@@ -14,7 +14,8 @@ A privacy-first Ethereum wallet for the browser.
 | Fund | Send Sepolia ETH to the public account, then **Shield ETH** into the private balance. |
 | Settle | New shields wait for the PPOI check (about an hour). The wallet refreshes every minute and shows each note's PPOI state. |
 | Pay privately | Private send to a `0zk` address as an ERC-4337 UserOperation from a fresh one-time EIP-7702 sender. The RAILGUN paymaster takes gas from the private balance, so the sender has no ETH and no history. Queued PPOI proofs are submitted on the following syncs. |
-| Exit | Withdraw to a public address, with warnings when that would link you (own account, right after a shield). |
+| Exit | Withdraw to a public address as native ETH (or WETH), with warnings when that would link you (own account, right after a shield). Gas comes from the private balance; the wallet checks it fits before proving. |
+| Offline cash | Load coins minted on the Prawl Android app into the offline escrow, and cash out phone-signed redemptions, from links or QR codes (`#/offline/load?d=…`, `#/offline/redeem?d=…`). Simulated before sending; escrow errors are named. |
 | Restore | On a new device, the passkey returns the wallet's creation time; the scan starts from the snapshot and replays only from then. **Full rescan** is the escape hatch. |
 
 Nothing secret touches disk: RAILGUN checkpoints are sealed with AES-GCM under the passkey-derived storage key.
@@ -46,10 +47,20 @@ gateway/stop.sh                               # when done
 
 Without a local gateway the wallet falls back to the public demo gateway.
 
+## Deploy (static site)
+
+```sh
+pnpm --filter ./apps/wallet build:web   # apps/wallet/dist-web: app + worker, Tor bootstrap, wasm, snapshot, vercel.json
+```
+
+Deploy `apps/wallet/dist-web` to any static host (Vercel: `vercel deploy apps/wallet/dist-web`). The build uses the gateway in `VITE_PRAWL_GATEWAY` (default: the public demo gateway). A visitor can switch with a `?gateway=<ip:port:certhash>` link, which asks them to confirm. Passkeys are bound to the site's domain: choose the final domain before real wallets are made. Refresh the Tor bootstrap and pool snapshot with each deploy (the bootstrap goes stale in about 3 days).
+
 ## Test
 
 ```sh
 pnpm test
 CHROME=/path/to/chromium node scripts/smoke.mjs                       # boots Tor in Chromium and reads over it
 CHROME=/path/to/chromium RESTORE=1 node scripts/smoke-wallet.mjs URL  # create, wipe, restore a wallet over Tor
+CHROME=/path/to/chromium node scripts/live-funded.mjs URL DIR         # live Sepolia: shield, PPOI, private send, withdraw
+CHROME=/path/to/chromium node scripts/live-offline.mjs URL DIR        # live Sepolia: offline-cash load and cash-out links
 ```
