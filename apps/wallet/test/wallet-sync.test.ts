@@ -60,6 +60,37 @@ describe("wallet sync", () => {
     await wallet.lockWallet();
   });
 
+  it("does not stay on 'Syncing…' forever when one request never answers; a later Refresh starts a new attempt", async () => {
+    reset(0);
+    await wallet.createWallet();
+    vi.useFakeTimers();
+    try {
+      calls.length = 0;
+      // The worker's sync call hangs (as when a Tor guard cannot be reached): it never resolves.
+      rg.call.mockImplementationOnce(async (op: string) => {
+        calls.push(op);
+        if (op === "sync") await new Promise<never>(() => undefined);
+        return undefined;
+      });
+      const stuck = wallet.sync();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(wallet.walletState.get().phase).toBe("syncing");
+      await vi.advanceTimersByTimeAsync(180_000);
+      await stuck; // the watchdog releases the single-flight
+      const stalled = wallet.walletState.get();
+      expect(stalled.phase).toBe("error");
+      expect(stalled.error).toMatch(/taking longer than usual/);
+      // Refresh now starts a fresh attempt that can finish normally.
+      const again = wallet.sync();
+      await vi.advanceTimersByTimeAsync(100);
+      await again;
+      expect(wallet.walletState.get().phase).toBe("ready");
+      expect(calls.filter((c) => c === "sync")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs one sync at a time and skips PPOI submission when nothing is queued", async () => {
     reset(0);
     await wallet.createWallet();

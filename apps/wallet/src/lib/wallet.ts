@@ -271,9 +271,31 @@ async function openRailgun(opts: StartOptions): Promise<void> {
 
 /** One sync at a time: a second caller (button, timer, after an action) waits for the running one. */
 let running: Promise<void> | undefined;
+/**
+ * A sync waits on the Tor worker and the network. If one request never answers (a Tor guard that cannot be reached,
+ * a stalled node), the single-flight below would stay pending forever: the screen says "Syncing…" for good and the
+ * actions that need a ready wallet stay disabled. After this long, say so and let Refresh start a new attempt; the old
+ * attempt is not cancelled and still updates the screen if it eventually finishes.
+ */
+const SYNC_WATCHDOG_MS = 180_000;
+
 export function sync(): Promise<void> {
-  running ??= doSync().finally(() => (running = undefined));
-  return running;
+  if (running) return running;
+  const attempt: Promise<void> = Promise.race([
+    doSync(),
+    new Promise<void>((resolve) =>
+      setTimeout(() => {
+        if (running === attempt && (state.phase === "syncing" || state.phase === "opening")) {
+          update({ phase: "error", error: "Syncing is taking longer than usual: the network may be slow. Press Refresh to try again." });
+        }
+        resolve();
+      }, SYNC_WATCHDOG_MS),
+    ),
+  ]).finally(() => {
+    if (running === attempt) running = undefined;
+  });
+  running = attempt;
+  return attempt;
 }
 
 async function doSync(): Promise<void> {
