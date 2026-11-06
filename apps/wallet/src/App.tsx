@@ -15,10 +15,10 @@ export function App() {
         <p className="text-sm text-zinc-400">Private by default. Every request goes over Tor.</p>
       </header>
       <WalletCard />
+      <ShieldForm />
       <PrivateActions />
       <ReceiveCard />
       <OfflineCard />
-      <ShieldForm />
       <TorStatusCard />
       <WatchAddress />
       <TraceList />

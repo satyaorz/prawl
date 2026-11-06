@@ -71,7 +71,7 @@ export function ShieldForm() {
       </div>
       {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       <button onClick={() => setSendOpen((v) => !v)} className="mt-3 text-xs text-zinc-500 hover:text-zinc-300">
-        {sendOpen ? "Hide" : "Send public ETH elsewhere"}
+        {sendOpen ? "Hide public send" : "Send public ETH elsewhere"}
       </button>
       {sendOpen && (
         <div className="mt-2 flex flex-col gap-2">
