@@ -3,7 +3,7 @@ import { decodeFunctionData, encodeAbiParameters, encodeErrorResult, encodeEvent
 import loadFixture from "./fixtures/offline/load-deposited.json";
 import redeemFixture from "./fixtures/offline/redeem-already-paid.json";
 import { ESCROW_ABI, depositCall, redeemCall, redeemOutcome, revertReason } from "../src/offline/escrow";
-import { ESCROW_V3, ESCROW_V31, PayloadError, ShieldAsk, configProblems, decodeD, depositorUri, encodeD, parsePayload, payloadFromText, payoutValue, type RedeemPayload } from "../src/offline/payload";
+import { ESCROW_V3, ESCROW_V31, ESCROW_V32, PayloadError, ShieldAsk, configProblems, decodeD, depositorUri, encodeD, parsePayload, payloadFromText, payoutValue, type RedeemPayload } from "../src/offline/payload";
 
 describe("offline handoff payloads (real phone vectors)", () => {
   it("decodes a load link and builds the exact deposit call", () => {
@@ -206,5 +206,48 @@ describe("refresh and shield-ask", () => {
       expect((e as ShieldAsk).valueWei).toBe(2_000_000_000_000_000n);
     }
     expect(() => payloadFromText(`prawl://offline/shield-ask?d=${encodeD({ v: 2, t: "shield-ask", value: "1" })}`)).toThrow(/not a shield request/);
+  });
+});
+
+describe("shield-ask nonce and escrow v3.2", () => {
+  const NONCE = "0123456789abcdef0123456789abcdef";
+  const ask = (extra: object) => `prawl://offline/shield-ask?d=${encodeD({ v: 1, t: "shield-ask", chainId: 11155111, escrow: ESCROW_V31, value: "2000000000000000", ...extra })}`;
+  const catchAsk = (text: string): ShieldAsk => {
+    try {
+      payloadFromText(text);
+    } catch (e) {
+      if (e instanceof ShieldAsk) return e;
+      throw e;
+    }
+    throw new Error("expected a ShieldAsk");
+  };
+
+  it("carries the phone's nonce and escrow so the target can echo them", async () => {
+    const a = catchAsk(ask({ nonce: NONCE }));
+    expect(a.nonce).toBe(NONCE);
+    expect(a.escrow).toBe(ESCROW_V31);
+    expect(catchAsk(ask({})).nonce).toBeUndefined();
+    const { shieldTargetLink: link, decodeD: dec } = await import("../src/offline/payload");
+    const req = { npk: `0x${"7e".repeat(32)}`, tokenType: 0, tokenAddress: "0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14", tokenSubID: 0n, value: 2_000_000_000_000_000n, encryptedBundle: [`0x${"01".repeat(32)}`, `0x${"02".repeat(32)}`, `0x${"03".repeat(32)}`], shieldKey: `0x${"04".repeat(32)}` } as const;
+    const withNonce = dec(link(ESCROW_V31, req as never, NONCE).split("d=")[1]!) as Record<string, unknown>;
+    expect(withNonce.nonce).toBe(NONCE); // top-level, next to `request`
+    expect(withNonce.request).toBeDefined();
+    const typed = dec(link(ESCROW_V31, req as never).split("d=")[1]!) as Record<string, unknown>;
+    expect("nonce" in typed).toBe(false);
+  });
+
+  it("refuses a malformed nonce, another chain and an escrow that cannot shield", () => {
+    expect(() => payloadFromText(ask({ nonce: "ABC" }))).toThrow(/nonce/);
+    expect(() => payloadFromText(ask({ nonce: NONCE.toUpperCase() }))).toThrow(/nonce/);
+    expect(() => payloadFromText(ask({ chainId: 1 }))).toThrow(/chain/);
+    expect(() => payloadFromText(ask({ escrow: ESCROW_V3 }))).toThrow(/cannot cash out into RAILGUN/);
+  });
+
+  it("treats v3.2 like v3.1 for the private kinds and plain flows", () => {
+    expect(configProblems(parsePayload({ ...loadFixture.payload, escrow: ESCROW_V32 }))).toEqual([]);
+    const lp = { v: 1, t: "load-private", chainId: 11155111, escrow: ESCROW_V32, depositAddress: "0x00000000000000000000000000000000000000e5",
+      params: { coinId: `0x${"a1".repeat(32)}`, expiry: 1794812810, k0x: `0x${"b2".repeat(32)}`, k0y: `0x${"c3".repeat(32)}`, depositor: "0x00000000000000000000000000000000000000d4", minValue: "1", maxValue: "1", tip: "0" } };
+    expect(configProblems(parsePayload(lp))).toEqual([]);
+    expect(configProblems(parsePayload({ ...lp, escrow: ESCROW_V3 })).join(" ")).toMatch(/v3.1 or newer/);
   });
 });

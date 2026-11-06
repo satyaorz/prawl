@@ -31,7 +31,7 @@ function takeFromLocation(): string | undefined {
 }
 
 /** Website → phone: the target a phone signs a cash-out into this wallet's private balance over (HANDOFF §6). */
-function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
+function ShieldTarget({ ask }: { ask?: { value: string; escrow: `0x${string}`; nonce?: string; n: number } }) {
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState("");
   // A scanned shield-ask opens the panel with the phone's value filled in and builds the target at once.
@@ -39,15 +39,18 @@ function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
     if (!ask) return;
     setOpen(true);
     setAmount(ask.value);
-    void build(ask.value);
+    void build(ask.value, ask);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ask]);
   const [link, setLink] = useState<string>();
   const [qr, setQr] = useState<string>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  /** The target answers a scanned ask (nonce echoed), so the phone can tie it to that request. */
+  const [bound, setBound] = useState(false);
 
-  async function build(value = amount) {
+  /** `from`: the phone's scanned ask, whose escrow and nonce the target must echo; typed values have neither. */
+  async function build(value = amount, from?: { escrow: `0x${string}`; nonce?: string }) {
     setError(undefined);
     setLink(undefined);
     setQr(undefined);
@@ -60,7 +63,8 @@ function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
     setBusy(true);
     try {
       const req = await buildShieldTarget(wei);
-      const l = shieldTargetLink(ESCROW_V31, req);
+      const l = shieldTargetLink(from?.escrow ?? ESCROW_V31, req, from?.nonce);
+      setBound(!!from?.nonce);
       setLink(l);
       setQr(await QRCode.toDataURL(l, { margin: 1, width: 280, errorCorrectionLevel: "L", color: { dark: "#09090b", light: "#fafafa" } }));
     } catch (e) {
@@ -96,6 +100,9 @@ function ShieldTarget({ ask }: { ask?: { value: string; n: number } }) {
           {qr && link && (
             <div className="mt-3 flex flex-col items-center gap-2">
               <img src={qr} alt="Shield target QR for the phone" width={240} height={240} className="rounded-lg" />
+              <p className={`text-xs ${bound ? "text-emerald-400" : "text-amber-400"}`}>
+                {bound ? "Bound to the phone's request." : "Typed value: the phone will warn that this target is not bound to a request. Prefer scanning the phone's QR."}
+              </p>
               <button className="text-xs text-zinc-500 hover:text-zinc-300" onClick={() => void navigator.clipboard.writeText(link)}>
                 Copy link
               </button>
@@ -121,7 +128,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
   const [qr, setQr] = useState<string>();
   const [status, setStatus] = useState<CoinStatus | { error: string }>();
   const [ownCoin, setOwnCoin] = useState(AUTO_CONFIRM);
-  const [ask, setAsk] = useState<{ value: string; n: number }>();
+  const [ask, setAsk] = useState<{ value: string; escrow: `0x${string}`; nonce?: string; n: number }>();
   /** Read-only checks of a private load against the escrow (deposit address, reservation, expiry), run when it opens. */
   const [chainProblems, setChainProblems] = useState<string[]>();
 
@@ -137,7 +144,7 @@ export function OfflineCard({ onOpened }: { onOpened?: () => void } = {}) {
       setPayload(undefined);
       if (e instanceof ShieldAsk) {
         // The phone asked for a shield target for its note: answer it in the panel below.
-        setAsk({ value: formatEther(e.valueWei), n: Date.now() });
+        setAsk({ value: formatEther(e.valueWei), escrow: e.escrow, ...(e.nonce ? { nonce: e.nonce } : {}), n: Date.now() });
         setText("");
         return;
       }

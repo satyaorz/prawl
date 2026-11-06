@@ -11,7 +11,11 @@ export const OFFLINE_CHAIN_ID = 11_155_111;
 export const ESCROW_V3 = "0x70b3B7EdCD18087C999ec80e3C3B0227c7e0D6E5" as const;
 /** v3.1 adds private load (commit, fund by RAILGUN unshield, activate) and cash-out into a shield. Plain load/redeem work on both. */
 export const ESCROW_V31 = "0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779" as const;
-export const KNOWN_ESCROWS: readonly Hex[] = [ESCROW_V3, ESCROW_V31];
+/** v3.2 = v3.1 plus the audit's contract fixes: same ABI and storage layout, so every v3.1 flow works on it. */
+export const ESCROW_V32 = "0x2492B9199d7029a0e0801bf226Fd5afc75C99B12" as const;
+export const KNOWN_ESCROWS: readonly Hex[] = [ESCROW_V3, ESCROW_V31, ESCROW_V32];
+/** Escrows with commit-then-fund, shield cash-out and refresh. */
+export const RAILGUN_ESCROWS: readonly Hex[] = [ESCROW_V31, ESCROW_V32];
 const sameAddr = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export interface Output {
@@ -105,7 +109,12 @@ export type OfflinePayload = LoadPayload | RedeemPayload | LoadPrivatePayload | 
 /** A phone's "shield-ask": the note value it wants a shield target for (HANDOFF §11). */
 export class ShieldAsk extends Error {
   override name = "ShieldAsk";
-  constructor(readonly valueWei: bigint) {
+  constructor(
+    readonly valueWei: bigint,
+    readonly escrow: Hex,
+    /** 16 random bytes as 32 lowercase hex chars, new for each ask; the target must echo it. */
+    readonly nonce?: string,
+  ) {
     super("a shield request from the phone");
   }
 }
@@ -310,7 +319,11 @@ export function payloadFromText(text: string): OfflinePayload {
   if (kind === "shield-ask") {
     const a = obj(decodeD(d), "shield-ask");
     if (a.v !== 1 || a.t !== "shield-ask") throw new PayloadError("not a shield request from the phone");
-    throw new ShieldAsk(wei(a.value, "value"));
+    const escrow = addr(a.escrow, "escrow");
+    if (!RAILGUN_ESCROWS.some((e) => sameAddr(e, escrow))) throw new PayloadError(`the phone asked for a target on escrow ${escrow}, which cannot cash out into RAILGUN here`);
+    if (a.chainId !== undefined && Number(a.chainId) !== OFFLINE_CHAIN_ID) throw new PayloadError(`the phone's request is for chain ${String(a.chainId)}, not Sepolia`);
+    if (a.nonce !== undefined && !(typeof a.nonce === "string" && /^[0-9a-f]{32}$/.test(a.nonce))) throw new PayloadError("the phone's nonce is not 32 lowercase hex characters");
+    throw new ShieldAsk(wei(a.value, "value"), escrow, a.nonce as string | undefined);
   }
   const p = parsePayload(decodeD(d));
   if (kind && kind !== p.t) throw new PayloadError(`link says ${kind} but the payload is a ${p.t}`);
@@ -322,8 +335,8 @@ export function configProblems(p: OfflinePayload): string[] {
   const out: string[] = [];
   if (p.chainId !== OFFLINE_CHAIN_ID) out.push(`it is for chain ${p.chainId}, this wallet uses Sepolia (${OFFLINE_CHAIN_ID})`);
   if (!KNOWN_ESCROWS.some((e) => sameAddr(e, p.escrow))) out.push(`it names escrow ${p.escrow}, which is not one of Prawl's (${KNOWN_ESCROWS.join(", ")})`);
-  else if ((p.t === "load-private" || p.t === "redeem-shield" || p.t === "refresh") && !sameAddr(p.escrow, ESCROW_V31)) {
-    out.push(`${p.t} needs escrow v3.1 (${ESCROW_V31}); this names ${p.escrow}`);
+  else if ((p.t === "load-private" || p.t === "redeem-shield" || p.t === "refresh") && !RAILGUN_ESCROWS.some((e) => sameAddr(e, p.escrow))) {
+    out.push(`${p.t} needs escrow v3.1 or newer (${RAILGUN_ESCROWS.join(" or ")}); this names ${p.escrow}`);
   }
   return out;
 }
@@ -345,6 +358,7 @@ export function depositorUri(address: string, chainId = OFFLINE_CHAIN_ID): strin
  * Website → phone: the target a cash-out into a private balance must name
  * (HANDOFF §6). The phone signs over sha256(abi.encode(request)).
  */
-export function shieldTargetLink(escrow: Hex, request: ShieldRequest, chainId = OFFLINE_CHAIN_ID): string {
-  return `prawl://offline/shield-target?d=${encodeD({ v: 1, t: "shield-target", chainId, escrow, request: shieldRequestWire(request) })}`;
+export function shieldTargetLink(escrow: Hex, request: ShieldRequest, nonce?: string, chainId = OFFLINE_CHAIN_ID): string {
+  // `nonce` is the phone's, echoed unchanged: without it the phone shows the target as "not bound to a request".
+  return `prawl://offline/shield-target?d=${encodeD({ v: 1, t: "shield-target", chainId, escrow, ...(nonce ? { nonce } : {}), request: shieldRequestWire(request) })}`;
 }
