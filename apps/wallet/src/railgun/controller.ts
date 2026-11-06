@@ -51,6 +51,12 @@ export class RailgunController {
     return { deployment, rpcUrl: this.#transport.rpcUrl };
   }
 
+  /** Route RPC calls that name `address` (a one-time sender) to its own identity. */
+  useAccount(address: string): void {
+    if (!this.#transport) throw new Error("RAILGUN transport not prepared");
+    this.#transport.addAccount(address);
+  }
+
   #post(m: ToWorker, transfer: Transferable[] = []): void {
     this.#worker.postMessage(m, transfer);
   }

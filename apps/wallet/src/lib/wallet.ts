@@ -6,13 +6,16 @@
  */
 import { SEPOLIA } from "@prawl/anon-rpc";
 import { createPasskey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
-import type { Balance } from "@prawl/railgun";
-import { privateKeyToAddress } from "viem/accounts";
+import type { Balance, Hex } from "@prawl/railgun";
+import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { keccak256, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
 import { railgun } from "../railgun/controller";
-import { publicBalance, sendCalls, type SentTx } from "./tx";
+import { publicBalance, sendCalls, sendUserOp, type SentTx } from "./tx";
+
+/** ERC-4337 bundler (the RAILGUN paymaster pays gas from the private balance). */
+export const BUNDLER_URL = "https://public.pimlico.io/v2/11155111/rpc";
 
 export type WalletPhase = "locked" | "unlocking" | "opening" | "syncing" | "ready" | "error";
 
@@ -164,4 +167,46 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
   } catch (e) {
     update({ action: { kind, status: "Shield failed", done: true, error: e instanceof Error ? e.message : String(e) } });
   }
+}
+
+/**
+ * Private transfer or unshield, as a paymaster-sponsored UserOperation.
+ * The UserOperation's sender is a fresh one-time EIP-7702 account, never the
+ * wallet's public account: gas comes out of the private balance, so the
+ * sender needs no ETH and has no history to link to.
+ */
+async function privateOp(kind: "send" | "unshield", run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>): Promise<void> {
+  if (!keys) throw new Error("wallet is locked");
+  const status = (s: string) => update({ action: { kind, status: s } });
+  try {
+    status("Proving in your browser… (this takes a while)");
+    const oneTimeKey = generatePrivateKey();
+    const sender = privateKeyToAddress(oneTimeKey);
+    railgun().useAccount(sender);
+    const prepared = await run(oneTimeKey);
+    status("Sending to the bundler over Tor…");
+    const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
+    update({ action: { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] } });
+    await sync();
+  } catch (e) {
+    update({ action: { kind, status: kind === "send" ? "Send failed" : "Unshield failed", done: true, error: e instanceof Error ? e.message : String(e) } });
+  }
+}
+
+/** Send private ETH (WETH notes) to another 0zk address. */
+export function privateSendEth(recipient: string, amountWei: bigint): Promise<void> {
+  const weth = state.wrappedBaseToken as Hex | undefined;
+  if (!weth) throw new Error("wallet is not open");
+  return privateOp("send", (accountPrivateKey) =>
+    railgun().call("prepareTransfer", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
+  );
+}
+
+/** Withdraw private ETH to a public address (as WETH; the 0.25% RAILGUN fee is added on top). */
+export function unshieldEth(recipient: Hex, amountWei: bigint): Promise<void> {
+  const weth = state.wrappedBaseToken as Hex | undefined;
+  if (!weth) throw new Error("wallet is not open");
+  return privateOp("unshield", (accountPrivateKey) =>
+    railgun().call("prepareUnshield", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
+  );
 }

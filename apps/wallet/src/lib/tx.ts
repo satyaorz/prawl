@@ -85,3 +85,37 @@ export async function waitForReceipt(client: AnonRpcClient, chainId: number, has
 export async function publicBalance(client: AnonRpcClient, chainId: number, address: string): Promise<bigint> {
   return hexBig(await client.read(client.identities.account(address), chainId, "eth_getBalance", [address, "latest"]));
 }
+
+/**
+ * Send a signed UserOperation and wait for it. The bundler call names the
+ * one-time sender, so it goes on that sender's own identity (fresh circuit);
+ * the receipt wait uses the UserOperation hash's identity.
+ */
+export async function sendUserOp(
+  client: AnonRpcClient,
+  chainId: number,
+  sender: string,
+  signed: unknown,
+  expectedHash: Hex,
+  onStatus?: (s: string) => void,
+  timeoutMs = 300_000,
+): Promise<SentTx> {
+  const op = signed as { userOp: unknown; entryPoint: string };
+  if (!op?.userOp || !op.entryPoint) throw new Error("malformed signed UserOperation");
+  const id = client.identities.account(sender);
+  const hash = (await client.write(id, chainId, "eth_sendUserOperation", [op.userOp, op.entryPoint])) as Hex;
+  if (hash.toLowerCase() !== expectedHash.toLowerCase()) throw new Error(`bundler returned ${hash}, expected ${expectedHash}`);
+  onStatus?.("Waiting for the bundler to include it…");
+  const wait = client.identities.tx(hash);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const r = (await client.read(wait, chainId, "eth_getUserOperationReceipt", [hash]).catch(() => null)) as
+      | { success: boolean; receipt: { transactionHash: Hex; blockNumber: string; gasUsed: string } }
+      | null;
+    if (r) {
+      return { hash: r.receipt.transactionHash, status: r.success ? "success" : "reverted", blockNumber: hexBig(r.receipt.blockNumber), gasUsed: hexBig(r.receipt.gasUsed) };
+    }
+    await new Promise((res) => setTimeout(res, 4000));
+  }
+  throw new Error(`UserOperation ${hash} not included after ${timeoutMs / 1000} s`);
+}
