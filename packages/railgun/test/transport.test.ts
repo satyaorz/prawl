@@ -54,6 +54,16 @@ describe("RAILGUN transport", () => {
     expect(seen[1]).toBe("public:railgun-11155111");
   });
 
+  it("routes calls naming a later-added account (one-time sender) to that account's identity", async () => {
+    const seen: string[] = [];
+    const { client } = stubClient((label) => (seen.push(label), "0x0"));
+    const t = transport(client, ACCOUNT);
+    const oneTime = "0x00000000000000000000000000000000000000b2";
+    t.addAccount(oneTime);
+    await t.fetch(t.rpcUrl, post({ jsonrpc: "2.0", id: 1, method: "eth_getTransactionCount", params: [oneTime, "latest"] }));
+    expect(seen[0]).toBe("acct:0x0000…00b2");
+  });
+
   it("keeps batch ids and turns errors into JSON-RPC errors", async () => {
     const { client } = stubClient((_l, method) => {
       if (method === "eth_call") throw new AnonRpcError("execution reverted", "RPC_ERROR", { rpcCode: 3, rpcData: "0x08c379a0" });

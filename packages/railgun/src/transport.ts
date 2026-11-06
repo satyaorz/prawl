@@ -33,6 +33,12 @@ export interface RailgunTransport {
   fetch: typeof fetch;
   /** Pass to RailgunWallet.open as rpcUrl. */
   rpcUrl: string;
+  /**
+   * Register another account of this wallet (e.g. a one-time UserOperation
+   * sender). RPC calls that name it then go on its own identity, not on the
+   * shared public RAILGUN scope.
+   */
+  addAccount(address: string): void;
 }
 
 interface JsonRpcCall {
@@ -65,12 +71,17 @@ export function createRailgunTransport(opts: TransportOptions): RailgunTransport
   const rpcHost = (opts.rpcHost ?? DEFAULT_RPC_HOST).toLowerCase();
   const rpcUrl = `https://${rpcHost}/${opts.chainId}`;
   const client = opts.client;
-  const account = opts.accountAddress?.toLowerCase().replace(/^0x/, "");
   const publicId = client.identities.publicScope(`railgun-${opts.chainId}`);
-  const accountId = opts.accountAddress ? client.identities.account(opts.accountAddress) : undefined;
+  const accounts = new Map<string, Identity>();
+  const addAccount = (address: string) => {
+    const id = client.identities.account(address);
+    accounts.set(address.toLowerCase().replace(/^0x/, ""), id);
+  };
+  if (opts.accountAddress) addAccount(opts.accountAddress);
 
   const identityFor = (call: JsonRpcCall): Identity => {
-    if (accountId && account && JSON.stringify(call.params ?? []).toLowerCase().includes(account)) return accountId;
+    const text = JSON.stringify(call.params ?? []).toLowerCase();
+    for (const [hex, id] of accounts) if (text.includes(hex)) return id;
     return publicId;
   };
 
@@ -130,5 +141,5 @@ export function createRailgunTransport(opts: TransportOptions): RailgunTransport
     return other(input, init);
   };
 
-  return { fetch: transportFetch as typeof fetch, rpcUrl };
+  return { fetch: transportFetch as typeof fetch, rpcUrl, addAccount };
 }
