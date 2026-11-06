@@ -22,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import xyz.prawl.core.android.BluetoothTransport
+import xyz.prawl.core.attest.AttestationProblems
 import xyz.prawl.core.protocol.VerifyLine
 import xyz.prawl.core.transport.PayQr
 import xyz.prawl.core.transport.PaymentSession
@@ -87,6 +88,14 @@ class ReceiveViewModel(app: Application) : AndroidViewModel(app) {
                 phase.value = ReceivePhase.Preparing("Creating a one-time receive key in secure hardware…")
                 val w = g.wallet()
                 val req = w.request(name)
+                val own = w.selfCheck(req)
+                if (own.isNotEmpty()) {
+                    w.cancelRequest(name); requestId = null
+                    phase.value = ReceivePhase.Failed("This phone cannot receive offline cash:\n" +
+                        AttestationProblems.explain(own, AttestationProblems.Whose.THIS).joinToString("\n") { "• $it" } +
+                        "\n(failed checks: ${own.joinToString("; ")})", null)
+                    return@launch
+                }
                 val kh = w.pendingKeyHash(name) ?: error("receive key missing")
                 val secret = ByteArray(16).also { SecureRandom().nextBytes(it) }
                 val uuid = UUID.randomUUID()

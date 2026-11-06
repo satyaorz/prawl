@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import xyz.prawl.core.attest.AttestationProblems
 import xyz.prawl.core.attest.AttestationResult
 import xyz.prawl.core.attest.ChainChecker
 import xyz.prawl.core.attest.TrustAnchors
@@ -316,6 +317,16 @@ class OfflineWallet(
         ReceiveRequest(req)
     }
 
+    /**
+     * Checks this phone's own receive key with the same rules a payer applies, so a phone that cannot receive says so before it
+     * shows a code (instead of the payer seeing a refusal). It cannot catch a payer running a different app build: that phone's
+     * rules decide. Returns the failed checks; empty means a payer running this same build will accept the key.
+     */
+    fun selfCheck(req: ReceiveRequest): List<String> = synchronized(lock) {
+        try { checker.verify(certs.chain(req.chain, req.certs)).let { if (it.ok) emptyList() else it.fails.toList() } }
+        catch (e: Exception) { listOf(e.message ?: "unreadable") }
+    }
+
     /** Leaf key hash of a pending receive request (what the QR commits to). */
     fun pendingKeyHash(name: String): String? = keys.publicKey("recv_$name")?.let { Bytes.sha256Hex(it.encoded) }
 
@@ -360,7 +371,12 @@ class OfflineWallet(
         // would let the payee equivocate and freeze the coin's subtree.
         val pr = try { checker.verify(certs.chain(to, reqCerts)) } catch (e: Exception) { AttestationResult().apply { fails.add(e.message ?: "unreadable") } }
         log("  payee key check: " + pr.summary())
-        if (!pr.ok) { log("REFUSING TO PAY: payee key is not a hardware one-time key"); return PayOutcome.Refused("payee key is not a hardware one-time key: ${pr.fails.joinToString("; ")}", pr) }
+        if (!pr.ok) {
+            log("REFUSING TO PAY: payee key is not a hardware one-time key: ${pr.fails.joinToString("; ")}")
+            return PayOutcome.Refused("Nothing was paid. The other phone cannot receive offline cash from this one:\n" +
+                AttestationProblems.explain(pr.fails).joinToString("\n") { "• $it" } +
+                "\n(failed checks: ${pr.fails.joinToString("; ")})", pr)
+        }
         // only now (the chain verified) keep the certificates it uses; junk the payee attached is dropped (audit F-13)
         try { certs.absorb(reqCerts, to) } catch (e: Exception) { return PayOutcome.Refused("could not store the payee's certificates: ${e.message}") }
         // retry: a note already signed to this exact key -> resend the same bytes
