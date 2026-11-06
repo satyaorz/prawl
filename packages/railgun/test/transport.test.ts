@@ -34,6 +34,14 @@ describe("RAILGUN transport", () => {
     expect(read.mock.calls[0]![0].label).toBe("public:railgun-11155111");
   });
 
+  it("reads binary request bodies (the worker bridge sends an ArrayBuffer)", async () => {
+    const { client } = stubClient(() => "0xaa36a7");
+    const t = transport(client);
+    const bytes = new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id: 5, method: "eth_chainId", params: [] }));
+    const res = await t.fetch(t.rpcUrl, { method: "POST", body: bytes.buffer });
+    expect(await res.json()).toEqual({ jsonrpc: "2.0", id: 5, result: "0xaa36a7" });
+  });
+
   it("uses the account identity only for calls that name the account", async () => {
     const seen: string[] = [];
     const { client } = stubClient((label) => (seen.push(label), "0x1"));

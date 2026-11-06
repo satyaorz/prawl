@@ -25,7 +25,9 @@ try {
   await page.getByText(/Connected over Tor|Tor failed/).waitFor({ timeout: 120_000 });
   console.log(`[${s()}] tor ready`);
   await page.getByRole("button", { name: "Create wallet" }).click();
-  await page.getByText("Private balance").waitFor({ timeout: 120_000 });
+  await page.getByText("Private balance").or(page.locator("section").first().locator("p.text-red-400")).first().waitFor({ timeout: 120_000 });
+  const openErr = page.locator("section").first().locator("p.text-red-400");
+  if (await openErr.count()) throw new Error(`wallet failed to open: ${await openErr.first().innerText()}`);
   console.log(`[${s()}] wallet open`);
   let last = "";
   const deadline = Date.now() + maxMs;

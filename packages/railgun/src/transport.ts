@@ -89,7 +89,15 @@ export function createRailgunTransport(opts: TransportOptions): RailgunTransport
   const rpcFetch = async (url: string, init?: RequestInit, request?: Request): Promise<Response> => {
     const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
     if (method !== "POST") throw new TypeError("railgun rpc: POST only");
-    const text = init?.body !== undefined && init.body !== null ? String(init.body) : request ? await request.text() : "";
+    // The body may be a string, ArrayBuffer, typed array or Blob (the worker bridge sends an ArrayBuffer).
+    const text =
+      init?.body !== undefined && init.body !== null
+        ? typeof init.body === "string"
+          ? init.body
+          : await new Response(init.body).text()
+        : request
+          ? await request.text()
+          : "";
     let body: unknown;
     try {
       body = JSON.parse(text);
