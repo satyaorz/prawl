@@ -171,7 +171,7 @@ const STEPS = [
   }],
   ["withdraw", async () => {
     // Withdraw the payout (the output asset) from the vault to the swap account's public balance.
-    await act("Withdraw payout", /Withdrawal requested/, 10 * MIN, /^Withdraw .* Custom token to the swap account$/);
+    await act("Withdraw payout", /Withdrawal requested/, 10 * MIN, /^Withdraw .* PRAWL to the swap account$/);
     await until("exit released", async () => {
       const t = await dlgText();
       return { done: /Exit released/.test(t), note: t.slice(-120) };

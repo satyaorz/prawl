@@ -181,7 +181,7 @@ export function SwapDashboard() {
 
   const inputAsset = (direction === 1 ? 0 : 1) as 0 | 1;
   const outputAsset = (1 - inputAsset) as 0 | 1;
-  const labels: [string, string] = service?.config.tokenA.toLowerCase() === wallet.wrappedBaseToken?.toLowerCase() ? ["WETH", "Custom token"] : ["Custom token", "WETH"];
+  const labels: [string, string] = service?.config.tokenA.toLowerCase() === wallet.wrappedBaseToken?.toLowerCase() ? ["WETH", "PRAWL"] : ["PRAWL", "WETH"];
   let quantity = 0n;
   try { quantity = parseUnits(amount || "0", 6); } catch { /* rendered as unavailable */ }
   const lotIn = direction === 1 ? balances?.lotA : balances?.lotB;
@@ -225,9 +225,13 @@ export function SwapDashboard() {
       )}
 
       <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <p className="text-xs text-zinc-500">Single pool · Sepolia</p>
-        <p className="mt-1 text-lg font-semibold">WETH / custom token</p>
-        <p className="mt-2 text-xs text-zinc-400">Orders are encrypted and settle in batches against a Uniswap v4 pool.</p>
+        <p className="text-xs text-zinc-500">Test token · Sepolia · Uniswap v4 pool</p>
+        <p className="mt-1 text-lg font-semibold">WETH / PRAWL</p>
+        <ol className="mt-3 space-y-1.5 text-xs text-zinc-400">
+          <li><span className="font-medium text-zinc-200">1. Fund.</span> Move some of your private balance into a fresh swap account.</li>
+          <li><span className="font-medium text-zinc-200">2. Swap.</span> Your order is encrypted and waits in a batch. The batch settles once at least {balances?.minSubmitters.toString() ?? "2"} accounts have ordered; if it does not fill in time, your order is refunded.</li>
+          <li><span className="font-medium text-zinc-200">3. Withdraw.</span> Take the payout out, or shield the leftover back into your private balance.</li>
+        </ol>
       </div>
 
       {swapConfigured() && unlocked && (
@@ -269,9 +273,9 @@ export function SwapDashboard() {
               )}
               <div className="space-y-2">
                 <p className="text-xs text-zinc-500">Spendable private WETH: <span className="font-mono">{wallet.balances ? formatEther(spendable) : "…"}</span></p>
-                <div className="flex gap-2">
-                  <input value={fundAmount} onChange={(e) => setFundAmount(e.target.value.trim())} inputMode="decimal" placeholder="Amount in ETH" aria-label="ETH to move to a new swap account" className="min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-900 p-2 font-mono text-sm" />
-                  <button disabled={busy || !fundAmount} onClick={() => void fundNew()} className="rounded-xl bg-zinc-100 px-3 text-xs font-semibold text-zinc-950 disabled:opacity-40">Fund new swap account</button>
+                <div className="flex flex-col gap-2">
+                  <input value={fundAmount} onChange={(e) => setFundAmount(e.target.value.trim())} inputMode="decimal" placeholder="Amount in ETH" aria-label="ETH to move to a new swap account" className="w-full rounded-xl border border-zinc-700 bg-zinc-900 p-3 font-mono text-sm" />
+                  <button disabled={busy || !fundAmount} onClick={() => void fundNew()} className="w-full rounded-xl bg-zinc-100 px-3 py-2.5 text-sm font-semibold text-zinc-950 disabled:opacity-40">Fund new swap account</button>
                 </div>
                 <p className="text-xs text-zinc-500">Comes out of your private balance with the usual RAILGUN fee, plus {formatEther(SWAP_ACCOUNT_GAS_WEI)} ETH kept in the account for its own gas.</p>
               </div>
@@ -366,9 +370,12 @@ export function SwapDashboard() {
           <button className="underline" onClick={() => setAutoError("")}>Try again</button>
         </p>
       )}
-      <p className="text-xs leading-relaxed text-zinc-400">
-        What stays hidden: each order&rsquo;s direction and size, and how much of a round was matched. What does not: that this account wrapped, funded and exited (and the amounts of those steps), which accounts took part, and the round&rsquo;s net trade on Uniswap. With few participants the net can reveal individual orders, so treat this as order-intent privacy, not anonymity.
-      </p>
+      <details className="text-xs leading-relaxed text-zinc-400">
+        <summary className="cursor-pointer text-zinc-300">What is private, and what is not?</summary>
+        <p className="mt-2">
+          Hidden: each order&rsquo;s direction and size, and how much of a round was matched. Not hidden: that this account wrapped, funded and exited (and the amounts of those steps), which accounts took part, and the round&rsquo;s net trade on Uniswap. With few participants the net can reveal individual orders, so this is order-intent privacy, not anonymity.
+        </p>
+      </details>
     </div>
   );
 }

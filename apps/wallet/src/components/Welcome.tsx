@@ -8,6 +8,7 @@ const FEATURES: ReadonlyArray<readonly [IconName, string, string]> = [
   ["shield", "A private balance", "Your funds sit in a shielded pool (RAILGUN). Sends between private addresses reveal nothing."],
   ["lock", "No seed phrase, no server", "Your keys come from a passkey. The same synced passkey on another device restores everything."],
   ["receive", "Tor on every request", "Each address and each transaction uses its own Tor circuit, so no node links your IP to you."],
+  ["swap", "Private swaps", "Swap WETH for a test token on Uniswap v4. Orders are encrypted and batched, and only the net trade is public."],
   ["offline", "Offline cash", "With the Prowl Android app you can pay another phone with no network at all, then cash out here."],
 ];
 
