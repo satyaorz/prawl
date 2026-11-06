@@ -36,6 +36,12 @@ export interface PrawlOfflineBridge {
   acceptShieldTarget(target: unknown): Promise<unknown>;
   markDeposited(req: { coinId: string; txHash: string }): Promise<unknown>;
   markRefreshed(req: { coinId: string; newCoinId?: string; txHash?: string }): Promise<unknown>;
+  /**
+   * Optional (newer app builds): tell the phone this wallet's public address so its own Load form can offer it
+   * as the depositor / reclaim address. A convenience only: it signs and spends nothing, the phone keeps it in
+   * memory and shows the full address before the user submits.
+   */
+  setAccount?(req: { address: string }): Promise<unknown>;
 }
 
 const METHODS = ["mint", "coins", "cashOut", "refresh", "shieldAsk", "acceptShieldTarget", "markDeposited", "markRefreshed"] as const;
