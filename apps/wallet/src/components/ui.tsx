@@ -70,7 +70,7 @@ export function Identicon({ seed, className = "h-8 w-8" }: { seed: string; class
 /** A round action button with a label under it (Receive, Shield, Send, Withdraw). */
 export function ActionButton({ icon, label, onClick, disabled }: { icon: IconName; label: string; onClick: () => void; disabled?: boolean }) {
   return (
-    <button onClick={onClick} disabled={disabled} className="group flex w-16 flex-col items-center gap-1.5 text-xs text-zinc-300 disabled:opacity-40">
+    <button onClick={onClick} disabled={disabled} className="group flex w-14 flex-col items-center gap-1.5 text-xs text-zinc-300 disabled:opacity-40">
       <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500 text-zinc-950 transition group-hover:bg-emerald-400 group-active:scale-95">
         <Icon name={icon} className="h-5 w-5" />
       </span>

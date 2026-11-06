@@ -100,7 +100,7 @@ export function Home() {
             : "Loading…"}
         </p>
 
-        <div className="mt-5 flex flex-wrap justify-center gap-2">
+        <div className="mt-5 flex flex-wrap justify-center gap-1.5">
           <ActionButton icon="receive" label="Receive" onClick={() => open("receive")} />
           <ActionButton icon="shield" label="Shield" onClick={() => open("shield")} />
           <ActionButton icon="send" label="Send" onClick={() => open("send")} />
