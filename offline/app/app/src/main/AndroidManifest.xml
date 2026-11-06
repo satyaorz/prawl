@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Bluetooth payments between phones (Android 12+ runtime permissions). Scan results are never used for location. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Scanning the payee's code, the wallet's address code. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Owner approval per spend (fingerprint / PIN). -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Only for user-initiated online actions: light-client sync / deposit proofs and the revocation-list update.
+         Offline payments (Bluetooth) never use the network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!-- Lets the wallet shell (TWA in the same APK, or another app signed with the same key) hand over synced deposit
+         data and revocation lists. Signature-level: a web page or a third-party app cannot use it. -->
+    <permission android:name="${applicationId}.permission.SYNC_OFFLINE_DATA" android:protectionLevel="signature" />
+
+    <application
+        android:name=".PrawlApp"
+        android:label="@string/app_name"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
+        android:theme="@style/Theme.Prawl"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:targetApi="s">
+
+        <!-- The offline-cash entry point: launcher (standalone fallback) and the hook for the TWA shell. -->
+        <activity
+            android:name=".OfflineCashActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- prawl://offline/<screen|pay|deposited>?… (deep links; never act without the user's confirmation) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="prawl" android:host="offline" />
+            </intent-filter>
+            <!-- Explicit entry for the wallet shell: extra "screen" = balance|receive|pay|load|cashout|device|settings -->
+            <intent-filter>
+                <action android:name="xyz.prawl.offline.action.OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".OfflineDataSyncActivity"
+            android:exported="true"
+            android:permission="${applicationId}.permission.SYNC_OFFLINE_DATA"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="xyz.prawl.offline.action.SYNC" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

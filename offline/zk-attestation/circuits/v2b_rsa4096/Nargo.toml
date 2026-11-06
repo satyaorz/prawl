@@ -1,0 +1,8 @@
+[package]
+name = "v2b_rsa4096"
+type = "bin"
+authors = ["prawl"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+bignum = { path = "../../deps/bignum" }

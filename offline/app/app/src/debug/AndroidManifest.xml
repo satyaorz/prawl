@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- DEBUG ONLY: adb-driven harness mode, same intent extras as the Java harness's Wallet3Activity.
+             Exported so `adb shell am start` can reach it; never present in release builds. -->
+        <activity
+            android:name="xyz.prawl.offline.harness.HarnessActivity"
+            android:exported="true"
+            android:label="Prawl harness"
+            android:theme="@android:style/Theme.DeviceDefault" />
+    </application>
+</manifest>

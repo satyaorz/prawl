@@ -1,0 +1,14 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.28"
+evm_version = "osaka"          # as escrow_v3 (P256VERIFY); also prices MODEXP per EIP-7883
+optimizer = true
+optimizer_runs = 1             # 200 gives a 25,172 B verifier, over the EIP-170 24,576 B limit
+gas_limit = 9223372036854775807
+fs_permissions = [{ access = "read", path = "./fixtures" }]
+remappings = ["forge-std/=lib/forge-std/src/"]
+
+[lint]
+lint_on_build = false

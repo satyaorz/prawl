@@ -1,0 +1,31 @@
+diff --git a/barretenberg/cpp/src/barretenberg/api/api_msgpack.cpp b/barretenberg/cpp/src/barretenberg/api/api_msgpack.cpp
+index bc50a27..84c5551 100644
+--- a/barretenberg/cpp/src/barretenberg/api/api_msgpack.cpp
++++ b/barretenberg/cpp/src/barretenberg/api/api_msgpack.cpp
+@@ -8,7 +8,7 @@
+ #include <string>
+ #include <vector>
+ 
+-#if !defined(__wasm__) && !defined(_WIN32)
++#if !defined(__wasm__) && !defined(_WIN32) && !defined(__ANDROID__) // prawl patch: BB_LITE Android build has no ipc lib
+ #include "barretenberg/ipc/ipc_server.hpp"
+ #include <csignal>
+ #include <thread>
+@@ -104,7 +104,7 @@ int process_msgpack_commands(std::istream& input_stream)
+     return 0;
+ }
+ 
+-#if !defined(__wasm__) && !defined(_WIN32)
++#if !defined(__wasm__) && !defined(_WIN32) && !defined(__ANDROID__) // prawl patch: BB_LITE Android build has no ipc lib
+ // Set up platform-specific parent death monitoring
+ // This ensures the bb process exits when the parent (Node.js) dies
+ static void setup_parent_death_monitoring()
+@@ -285,7 +285,7 @@ int execute_msgpack_run(const std::string& msgpack_input_file,
+                         [[maybe_unused]] size_t request_ring_size,
+                         [[maybe_unused]] size_t response_ring_size)
+ {
+-#if !defined(__wasm__) && !defined(_WIN32)
++#if !defined(__wasm__) && !defined(_WIN32) && !defined(__ANDROID__) // prawl patch: BB_LITE Android build has no ipc lib
+     // Check if this is a shared memory path (ends with .shm)
+     if (!msgpack_input_file.empty() && msgpack_input_file.size() >= 4 &&
+         msgpack_input_file.substr(msgpack_input_file.size() - 4) == ".shm") {

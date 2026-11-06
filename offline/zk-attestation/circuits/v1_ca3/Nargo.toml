@@ -1,0 +1,9 @@
+[package]
+name = "v1_ca3"
+type = "bin"
+authors = ["prawl"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+sha256 = { path = "../../deps/sha256" }
+prawl_attest = { path = "../prawl_attest" }

@@ -1,0 +1,21 @@
+# Build outputs and run artefacts
+out/
+cache/
+build*/
+broadcast/
+logs/
+*.log
+*.out
+__pycache__/
+.venv/
+target/
+# Phone data and generated fixtures stay on the laptop (attestation chains identify the phones)
+fixtures/
+relay*/
+linkability/
+phone_vectors*/
+# Signing keys
+*.keystore
+*.jks
+# Installed with `forge install`
+lib/forge-std/

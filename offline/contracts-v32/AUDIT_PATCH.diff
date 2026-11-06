@@ -1,0 +1,141 @@
+--- v31/src/PrawlEscrowV31.sol	2026-11-06 12:58:59.620137495 +0530
++++ v31_patched/src/PrawlEscrowV31.sol	2026-11-06 14:13:26.039848866 +0530
+@@ -60,6 +60,13 @@
+     /// @notice slot 7 (v3.1). coinId => keccak256(abi.encode(DepositParams)) reserved by `commitDeposit`.
+     mapping(bytes32 => bytes32) public pendingDeposits;
+ 
++    /// @notice slot 8 (AUDIT F3). coinId => total value of the notes whose keys were proven broken in this coin
++    ///  (bounds what a frozen coin's sweep can send to the compensation sink).
++    mapping(bytes32 => uint256) public quarantined;
++
++    /// @notice slot 9 (AUDIT F3). keccak256(abi.encode(coinId, keyHash)) => that key's note value is already in `quarantined`.
++    mapping(bytes32 => bool) public brokenCounted;
++
+     /// @dev Transient (EIP-1153): the deposit address whose ETH `receive` currently accepts (during `_pull` only).
+     address private transient _expectEthFrom;
+ 
+@@ -152,6 +159,10 @@
+     address internal constant P256VERIFY = address(0x100);
+     bytes32 internal constant BROKEN = bytes32(uint256(1));
+ 
++    /// @notice AUDIT F2: protocol-level fan-out bound. Wallets MUST refuse (when creating and when receiving) any
++    ///  spend with more outputs; a redemption has to carry every output of every spend on its path.
++    uint256 public constant MAX_OUTPUTS = 32;
++
+     uint8 internal constant REC_OK = 0;
+     uint8 internal constant REC_CONFLICT = 1;
+     uint8 internal constant REC_BROKEN = 2;
+@@ -255,6 +266,8 @@
+     error BadRefreshCoinId(bytes32 expected);
+     error UnexpectedEth();
+     error ForwarderFailed();
++    error TooManyOutputs(uint256 n); // AUDIT F2
++    error NotSpendMessage(); // AUDIT F4
+ 
+     constructor(
+         uint256 grace_,
+@@ -457,9 +470,10 @@
+         for (uint256 i = 0; i < path.length; i++) {
+             Spend calldata sp = path[i];
+             (, uint8 st) = _spend(h.coinId, w, sp.outputs, sp.r, sp.s);
+-            if (st == REC_BROKEN) _freeze(h.coinId, w.kh);
++            if (st == REC_BROKEN) _freeze(h.coinId, w.kh, w.value);
+             _advance(w, sp);
+         }
++        if (!_isSpendMessage(a.message) || !_isSpendMessage(b.message)) revert NotSpendMessage();
+         bytes32 hA = sha256(a.message);
+         bytes32 hB = sha256(b.message);
+         if (hA == hB) revert SameMessage();
+@@ -469,7 +483,12 @@
+         bool fresh = firstMsg[kh] != BROKEN;
+         if (!fresh && coins[h.coinId].frozen) revert NothingNew(kh);
+         if (fresh) _markBroken(h.coinId, kh, hA, hB);
+-        _freeze(h.coinId, kh);
++        _freeze(h.coinId, kh, w.value);
++    }
++
++    /// @dev AUDIT F4: only bytes that start with the v3 spend tag count as a "message signed by the key".
++    function _isSpendMessage(bytes calldata m) internal pure returns (bool) {
++        return m.length > 13 && bytes13(m[0:13]) == bytes13("PRAWL-OTK-v3|");
+     }
+ 
+     function brokenKey(bytes32 kh) external view returns (bool) {
+@@ -486,8 +505,15 @@
+         c.closed = true;
+         uint256 rest = h.value - c.paid;
+         if (c.frozen) {
+-            emit FrozenRemainderSwept(h.coinId, compensationSink, rest);
+-            _pay(compensationSink, rest);
++            // AUDIT F3: the sink gets at most the value of the broken notes; the honest remainder is reclaimed as usual
++            uint256 q = quarantined[h.coinId];
++            uint256 toSink = rest < q ? rest : q;
++            emit FrozenRemainderSwept(h.coinId, compensationSink, toSink);
++            _pay(compensationSink, toSink);
++            if (rest > toSink) {
++                emit Reclaimed(h.coinId, h.depositor, rest - toSink);
++                _pay(h.depositor, rest - toSink);
++            }
+         } else {
+             emit Reclaimed(h.coinId, h.depositor, rest);
+             _pay(h.depositor, rest);
+@@ -721,7 +747,7 @@
+     function _blocked(bytes32 coinId, Walk memory w, uint8 st) internal {
+         if (st == REC_BROKEN) {
+             if (coins[coinId].frozen) revert KeyBroken(w.depth, w.kh);
+-            _freeze(coinId, w.kh);
++            _freeze(coinId, w.kh, w.value);
+         }
+         emit RedeemBlocked(coinId, w.kh, w.depth);
+     }
+@@ -744,12 +770,13 @@
+         internal
+         returns (bytes32 m, uint8 st)
+     {
++        if (outs.length > MAX_OUTPUTS) revert TooManyOutputs(outs.length);
+         (bytes32 oh, uint256 sum, bool overflow, bool anyZero) = V3.outputsHash(outs);
+         if (anyZero) revert ZeroOutput(w.depth);
+         if (overflow || sum != w.value) revert ConservationViolated(w.depth, overflow ? type(uint256).max : sum, w.value);
+         m = sha256(V3.message(w.prefix, w.depth, w.noteId, oh));
+         if (!_p256(m, r, s, w.x, w.y)) revert BadSig(w.depth);
+-        st = _record(coinId, w.kh, m, w.depth);
++        st = _record(coinId, w.kh, m, w.depth, w.value);
+     }
+ 
+     function _advance(Walk memory w, Spend calldata sp) internal pure {
+@@ -764,7 +791,7 @@
+         w.depth++;
+     }
+ 
+-    function _record(bytes32 coinId, bytes32 kh, bytes32 m, uint256 depth) internal returns (uint8) {
++    function _record(bytes32 coinId, bytes32 kh, bytes32 m, uint256 depth, uint256 noteValue) internal returns (uint8) {
+         bytes32 prev = firstMsg[kh];
+         if (prev == m) return REC_OK;
+         if (prev == 0) {
+@@ -774,7 +801,7 @@
+         }
+         if (prev == BROKEN) return REC_BROKEN;
+         _markBroken(coinId, kh, prev, m);
+-        _freeze(coinId, kh);
++        _freeze(coinId, kh, noteValue);
+         return REC_CONFLICT;
+     }
+ 
+@@ -784,12 +811,17 @@
+         emit Equivocation(coinId, kh, hA, hB);
+     }
+ 
+-    function _freeze(bytes32 coinId, bytes32 kh) internal {
++    function _freeze(bytes32 coinId, bytes32 kh, uint256 noteValue) internal {
+         CoinState storage c = coins[coinId];
+         if (!c.frozen) {
+             c.frozen = true;
+             emit CoinFrozen(coinId, kh);
+         }
++        bytes32 ck = keccak256(abi.encode(coinId, kh));
++        if (!brokenCounted[ck]) {
++            brokenCounted[ck] = true;
++            quarantined[coinId] += noteValue;
++        }
+     }
+ 
+     function _p256(bytes32 h, bytes32 r, bytes32 s, bytes32 x, bytes32 y) internal view returns (bool ok) {

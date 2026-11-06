@@ -1,0 +1,9 @@
+[package]
+name = "v2b_p384_ecdsa"
+type = "bin"
+authors = ["prawl"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+bignum = { path = "../../deps/bignum" }
+noir_bigcurve = { path = "../../deps/bigcurve" }

@@ -1,0 +1,1 @@
+Vendored from https://github.com/base/nitro-validator commit 0ea0d12366b4fa44f9e07e4755f2ad36561cb674 (MIT). Solidity files copied unmodified (src/, src/vendor/). The JS hint tool was NOT used; tools/p384_hints.py is our own generator.
