@@ -19,16 +19,23 @@ const rg = {
 };
 vi.mock("../src/railgun/controller", () => ({ railgun: () => rg }));
 vi.mock("../src/lib/anon", () => ({ anon: { head: vi.fn(async () => 100n) } }));
-vi.mock("../src/lib/store", () => ({ store: { get: vi.fn(async () => undefined), set: vi.fn(async () => undefined) } }));
-vi.mock("../src/lib/tx", () => ({ publicBalance: vi.fn(async () => 0n), sendCalls: vi.fn(), sendUserOp: vi.fn() }));
-vi.mock("@prawl/keys", () => ({
+const kv = new Map<string, unknown>();
+vi.mock("../src/lib/store", () => ({ store: { get: vi.fn(async (k: string) => kv.get(k)), set: vi.fn(async (k: string, v: unknown) => kv.set(k, v)) } }));
+vi.mock("../src/lib/tx", () => ({
+  publicBalance: vi.fn(async () => 0n),
+  sendCalls: vi.fn(async () => [{ hash: `0x${"cd".repeat(32)}`, status: "success", blockNumber: 1n, gasUsed: 21000n }]),
+  sendUserOp: vi.fn(),
+}));
+const storageKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+vi.mock("@prawl/keys", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@prawl/keys")>()),
   createPasskey: vi.fn(async () => ({ root: new Uint8Array(32), credentialId: "cred", bornAt: 1_794_000_000 })),
   unlockWithPasskey: vi.fn(),
   deriveWalletKeys: vi.fn(async () => ({
     railgunSpending: `0x${"01".repeat(32)}`,
     railgunViewing: `0x${"02".repeat(32)}`,
     evmAccount: `0x${"03".repeat(32)}`,
-    storage: {} as CryptoKey,
+    storage: storageKey,
   })),
 }));
 
@@ -113,5 +120,22 @@ describe("private op costs", () => {
 
   it("has nothing to offer when gas alone exceeds the balance", () => {
     expect(wallet.maxPrivateAmountWei("unshield", 1_000_000_000_000_000n)).toBe(0n);
+  });
+});
+
+describe("activity history", () => {
+  it("records a finished public send in the sealed log and clears it on lock", async () => {
+    await wallet.lockWallet();
+    reset(0);
+    await wallet.createWallet();
+    expect(wallet.walletState.get().activity).toEqual([]);
+    await wallet.sendPublicEth("0x00000000000000000000000000000000000000e5", 1000n);
+    const [entry] = wallet.walletState.get().activity ?? [];
+    expect(entry).toMatchObject({ kind: "public-send", amount: "1000", to: "0x00000000000000000000000000000000000000e5", ok: true, txHash: `0x${"cd".repeat(32)}` });
+    const sealed = [...kv.entries()].find(([k]) => k.startsWith("activity:"));
+    expect(sealed).toBeDefined();
+    expect(JSON.stringify(sealed![1])).not.toContain("00e5");
+    await wallet.lockWallet();
+    expect(wallet.walletState.get().activity).toBeUndefined();
   });
 });

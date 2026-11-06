@@ -3,6 +3,7 @@ import { TraceList } from "./components/TraceList";
 import { PrivateActions } from "./components/PrivateActions";
 import { ReceiveCard } from "./components/ReceiveCard";
 import { OfflineCard } from "./components/OfflineCard";
+import { ActivityCard } from "./components/ActivityCard";
 import { ShieldForm } from "./components/ShieldForm";
 import { WalletCard } from "./components/WalletCard";
 import { WatchAddress } from "./components/WatchAddress";
@@ -19,6 +20,7 @@ export function App() {
       <PrivateActions />
       <ReceiveCard />
       <OfflineCard />
+      <ActivityCard />
       <TorStatusCard />
       <WatchAddress />
       <TraceList />

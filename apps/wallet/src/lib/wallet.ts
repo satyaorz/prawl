@@ -11,6 +11,7 @@ import { generatePrivateKey, privateKeyToAddress } from "viem/accounts";
 import { keccak256, toHex } from "viem";
 import { anon } from "./anon";
 import { store } from "./store";
+import { ActivityLog, type Activity, type ActivityKind } from "./activity";
 import { railgun } from "../railgun/controller";
 import { publicBalance, sendCalls, sendUserOp, type SentTx } from "./tx";
 import { depositCall, loadProblems, redeemCall, revertReason, simulateRedeem } from "../offline/escrow";
@@ -43,6 +44,8 @@ export interface WalletState {
   lastSyncMs?: number;
   /** Our operations whose PPOI proofs are still queued (submitted on each sync). */
   poiQueue?: number;
+  /** This wallet's own history, newest first (sealed on disk). */
+  activity?: Activity[];
   /** Gas the paymaster took from the private balance for this wallet's last private operation. */
   privateGasWei?: bigint;
   /** Last PPOI submission problem, if any. The proofs stay queued. */
@@ -57,6 +60,19 @@ export interface WalletState {
 const CREDENTIAL_KEY = "passkey:credential-id";
 
 let keys: WalletKeys | undefined;
+let activityLog: ActivityLog | undefined;
+
+/** Record finished transactions in the sealed history. Never fails the action. */
+async function remember(kind: ActivityKind, amountWei: bigint, to: string | undefined, txs: readonly SentTx[]): Promise<void> {
+  try {
+    for (const t of txs) {
+      const list = await activityLog?.add({ at: Date.now(), kind, amount: amountWei.toString(), ...(to ? { to } : {}), txHash: t.hash, ok: t.status === "success" });
+      if (list) update({ activity: list });
+    }
+  } catch {
+    // history is a convenience; the transaction already happened
+  }
+}
 let state: WalletState = { phase: "locked", hasPasskey: false, chainId: SEPOLIA };
 const listeners = new Set<() => void>();
 
@@ -95,7 +111,10 @@ async function openRailgun(opts: StartOptions): Promise<void> {
   const rg = railgun();
   const { deployment, rpcUrl } = await rg.prepare(state.chainId, evmAddress);
   // Record name derived from the account, so two wallets on one device never share a checkpoint.
-  const checkpointName = `railgun:${state.chainId}:${keccak256(toHex(evmAddress)).slice(2, 18)}`;
+  const walletTag = `${state.chainId}:${keccak256(toHex(evmAddress)).slice(2, 18)}`;
+  const checkpointName = `railgun:${walletTag}`;
+  activityLog = new ActivityLog(store, keys.storage, `activity:${walletTag}`);
+  void activityLog.load().then((activity) => update({ activity }), () => update({ activity: [] }));
   const opened = await rg.call("open", {
     chainId: state.chainId,
     rpcUrl,
@@ -240,8 +259,9 @@ export async function rescanWallet(): Promise<void> {
 export async function lockWallet(): Promise<void> {
   stopAutoSync();
   keys = undefined;
+  activityLog = undefined;
   await railgun().call("close", undefined as never);
-  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined });
+  update({ phase: "locked", railgunAddress: undefined, evmAddress: undefined, balances: undefined, syncedBlock: undefined, poiQueue: undefined, poiError: undefined, activity: undefined });
 }
 
 /**
@@ -254,6 +274,7 @@ export async function sendPublicEth(to: Hex, amountWei: bigint): Promise<void> {
   try {
     if (!keys) throw new Error("wallet is locked");
     const txs = await sendCalls(anon, state.chainId, keys.evmAccount, [{ to, data: "0x", value: amountWei }], status);
+    await remember("public-send", amountWei, to, txs);
     const ok = txs.every((t) => t.status === "success");
     update({ action: { kind, status: ok ? `Sent ${fmtEth(amountWei)} ETH.` : "The transfer reverted", done: true, txs } });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
@@ -274,6 +295,7 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
       items: [{ token: "native", amount: amountWei.toString() }],
     });
     const txs = await sendCalls(anon, state.chainId, keys.evmAccount, calls, status);
+    await remember("shield", amountWei, undefined, txs);
     const ok = txs.every((t) => t.status === "success");
     update({ action: { kind, status: ok ? "Shielded. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs } });
     await sync();
@@ -341,6 +363,7 @@ function explain(kind: "send" | "unshield", e: unknown): string {
 async function privateOp(
   kind: "send" | "unshield",
   amountWei: bigint,
+  to: string,
   run: (oneTimeKey: Hex) => Promise<{ signed: unknown; userOpHash: Hex }>,
 ): Promise<void> {
   if (!keys) throw new Error("wallet is locked");
@@ -354,6 +377,7 @@ async function privateOp(
     const prepared = await run(oneTimeKey);
     status("Sending to the bundler over Tor…");
     const tx = await sendUserOp(anon, state.chainId, sender, prepared.signed, prepared.userOpHash, status);
+    await remember(kind, amountWei, to, [tx]);
     update({ action: { kind, status: tx.status === "success" ? "Done." : "The operation reverted", done: true, txs: [tx] } });
     await sync();
     // What the paymaster took: everything that left the balance beyond the amount and fee.
@@ -368,7 +392,7 @@ async function privateOp(
 export function privateSendEth(recipient: string, amountWei: bigint): Promise<void> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
-  return privateOp("send", amountWei, (accountPrivateKey) =>
+  return privateOp("send", amountWei, recipient, (accountPrivateKey) =>
     railgun().call("prepareTransfer", { recipient, token: weth, amount: amountWei.toString(), accountPrivateKey, bundlerUrl: BUNDLER_URL }),
   );
 }
@@ -382,7 +406,7 @@ export function privateSendEth(recipient: string, amountWei: bigint): Promise<vo
 export function unshieldEth(recipient: Hex, amountWei: bigint, opts: { asWeth?: boolean } = {}): Promise<void> {
   const weth = state.wrappedBaseToken as Hex | undefined;
   if (!weth) throw new Error("wallet is not open");
-  return privateOp("unshield", amountWei, (accountPrivateKey) =>
+  return privateOp("unshield", amountWei, recipient, (accountPrivateKey) =>
     railgun().call(
       "prepareUnshield",
       opts.asWeth
@@ -422,6 +446,7 @@ export async function offlineLoad(p: LoadPayload): Promise<void> {
       return;
     }
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [depositCall(p)], status);
+    await remember("offline-load", p.value, p.coinId, txs);
     const ok = txs.every((t) => t.status === "success");
     update({ action: { kind, status: ok ? "Loaded. Tap \"Deposited\" on the phone." : "The deposit reverted", done: true, txs } });
     if (state.evmAddress) update({ publicWei: await publicBalance(anon, state.chainId, state.evmAddress).catch(() => state.publicWei) });
@@ -452,8 +477,9 @@ export async function offlineRedeem(p: RedeemPayload): Promise<void> {
       return;
     }
     const txs = await sendCalls(anon, OFFLINE_CHAIN_ID, keys.evmAccount, [redeemCall(p)], status);
-    const ok = txs.every((t) => t.status === "success");
     const amount = payoutValue(p);
+    await remember("offline-redeem", amount, p.redemption.payout, txs);
+    const ok = txs.every((t) => t.status === "success");
     update({
       action: { kind, status: ok ? `Paid ${fmtEth(amount)} ETH to ${p.redemption.payout}.` : "The cash-out reverted", done: true, txs },
     });
