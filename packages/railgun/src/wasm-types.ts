@@ -1,5 +1,5 @@
 /**
- * The part of kohaku-railgun-wasm's generated bindings that Prawl uses
+ * The part of kohaku-railgun-wasm's generated bindings that Prowl uses
  * (kohaku_railgun_wasm.d.ts, wasm-bindgen 0.2.108). The bindings are built
  * locally (scripts/build-wasm.sh) and injected, so tests can pass a fake.
  */

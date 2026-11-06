@@ -45,7 +45,7 @@ library AndroidAttestation {
         uint256 extLen;
     }
 
-    /// @notice Fields of the KeyDescription that matter for a Prawl one-time key.
+    /// @notice Fields of the KeyDescription that matter for a Prowl one-time key.
     struct KeyDesc {
         uint256 attestationVersion;
         uint256 attestationSecurityLevel; // 0 Software, 1 TrustedEnvironment, 2 StrongBox
@@ -399,7 +399,7 @@ library AndroidAttestation {
         }
     }
 
-    // ------------------------------------------------------------------ Prawl OTK policy
+    // ------------------------------------------------------------------ Prowl OTK policy
 
     uint256 internal constant F_LEVEL = 1 << 0; // attestation from TEE or StrongBox
     uint256 internal constant F_LEVEL_MATCH = 1 << 1; // keyMint level == attestation level
@@ -413,7 +413,7 @@ library AndroidAttestation {
     uint256 internal constant F_PACKAGE = 1 << 9; // attestationApplicationId package
     uint256 internal constant F_SIGNER = 1 << 10; // app signing-certificate digest
 
-    /// @return fails bitmask of failed rules (0 = acceptable Prawl one-time key). The same rules as
+    /// @return fails bitmask of failed rules (0 = acceptable Prowl one-time key). The same rules as
     ///  OtkVerify.java, minus RKP/root/revocation (those are properties of the chain, not of the leaf).
     function otkPolicy(KeyDesc memory k, bytes32 pkgHash, bytes32 signerDigest) internal pure returns (uint256 fails) {
         if (k.attestationSecurityLevel != 1 && k.attestationSecurityLevel != 2) fails |= F_LEVEL;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deposit a phone-minted Prawl v3 coin into the escrow.
+# Deposit a phone-minted Prowl v3 coin into the escrow.
 #   tools/sepolia_deposit.sh <mint3_*.json> --rpc <url> [--simulate-only]
 # Reads the phone's mint file (coinId, expiry, value wei, k0x/k0y, depositor, chainId, escrow), checks that k0 is
 # the key of the genesis certificate in the file, and sends deposit(coinId, expiry, k0x, k0y){value} from the

@@ -5,7 +5,7 @@
  * checkpoints are all that touch disk.
  */
 import { SEPOLIA } from "@prawl/anon-rpc";
-import { createPasskey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
+import { createPasskey, deriveReclaimKey, deriveWalletKeys, unlockWithPasskey, type WalletKeys } from "@prawl/keys";
 import type { Balance, Hex } from "@prawl/railgun";
 import { generatePrivateKey, privateKeyToAccount, privateKeyToAddress } from "viem/accounts";
 import { getAddress, keccak256, toHex } from "viem";
@@ -345,7 +345,7 @@ export function createWallet(): Promise<void> {
   });
 }
 
-/** Unlock with the remembered passkey, or (recovery on a new device) let the user pick any Prawl passkey. */
+/** Unlock with the remembered passkey, or (recovery on a new device) let the user pick any Prowl passkey. */
 export function unlockWallet(): Promise<void> {
   return guarded(async () => {
     const remembered = await store.get<string>(CREDENTIAL_KEY);
@@ -423,6 +423,86 @@ export async function shieldEth(amountWei: bigint): Promise<void> {
     await remember(opLog, myEpoch, "shield", amountWei, undefined, txs);
     const ok = txs.every((t) => t.status === "success");
     updateAction(myEpoch, { kind, status: ok ? "Shielded. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs });
+    await sync();
+  } catch (e) {
+    updateAction(myEpoch, { ...failedAction("Shield failed", e), kind });
+    if (e instanceof UnconfirmedError) void sync();
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Reclaim accounts: a fresh address per private offline coin, derived from the passkey (see deriveReclaimKey). A coin that expires unspent
+// is refunded to its reclaim address, so that address is not your main one and never appears next to it in the coin or the refund. The
+// counter is stored per wallet; a restore on a new device starts it at 0 again, so reclaimAccounts() scans a window to find old ones.
+// ---------------------------------------------------------------------------------------------------------------------------------
+
+export interface ReclaimAccount {
+  index: number;
+  address: Hex;
+  balanceWei: bigint;
+}
+
+const reclaimCounterKey = (): string => `reclaim:next:${state.evmAddress ?? "none"}`;
+let reclaimQueue: Promise<unknown> = Promise.resolve();
+
+/** The next unused reclaim address (and its index). Reserved at once: asking twice never returns the same one. */
+export function nextReclaimAddress(): Promise<{ index: number; address: Hex }> {
+  const run = async () => {
+    if (!keys) throw new Error("wallet is locked");
+    const key = reclaimCounterKey();
+    const index = (await store.get<number>(key)) ?? 0;
+    const address = privateKeyToAddress(await deriveReclaimKey(keys.reclaimSeed, index));
+    await store.set(key, index + 1);
+    return { index, address };
+  };
+  const next = reclaimQueue.then(run, run);
+  reclaimQueue = next.catch(() => undefined);
+  return next;
+}
+
+/** How far past the counter to look, and the window used when the counter is unknown (a restored wallet). */
+const RECLAIM_SCAN_AHEAD = 3;
+const RECLAIM_RESTORE_WINDOW = 12;
+
+/** Balances of the reclaim accounts, each read over its own Tor identity. Slow on purpose: only when the user asks. */
+export async function reclaimAccounts(): Promise<ReclaimAccount[]> {
+  if (!keys) throw new Error("wallet is locked");
+  const next = (await store.get<number>(reclaimCounterKey())) ?? 0;
+  const upTo = Math.max(next + RECLAIM_SCAN_AHEAD, next === 0 ? RECLAIM_RESTORE_WINDOW : 0);
+  const out: ReclaimAccount[] = [];
+  for (let index = 0; index < upTo; index++) {
+    const address = privateKeyToAddress(await deriveReclaimKey(keys.reclaimSeed, index));
+    out.push({ index, address, balanceWei: await publicBalance(anon, state.chainId, address) });
+  }
+  return out;
+}
+
+/** Kept back to pay the shield transaction's gas from the account itself (~1.14M gas measured; the same reserve as the shield form). */
+const RECLAIM_GAS_RESERVE_WEI = 3_000_000_000_000_000n;
+
+/** Shield everything a reclaim account holds (minus gas) into the private balance, signed by that account's own key. */
+export async function shieldFromReclaim(index: number): Promise<void> {
+  if (!keys || !state.railgunAddress) throw new Error("wallet is locked");
+  const kind = "shield";
+  const opLog = activityLog;
+  const myEpoch = epoch;
+  const status = (s: string) => updateAction(myEpoch, { kind, status: s });
+  try {
+    const key = await deriveReclaimKey(keys.reclaimSeed, index);
+    const address = privateKeyToAddress(key);
+    status("Reading the reclaim account…");
+    const balance = await publicBalance(anon, state.chainId, address);
+    if (balance <= RECLAIM_GAS_RESERVE_WEI) throw new Error(`This reclaim account holds ${fmtEth(balance)} ETH, not enough to shield after gas`);
+    const amountWei = balance - RECLAIM_GAS_RESERVE_WEI;
+    status("Building shield…");
+    const calls = await railgun().call("buildShield", {
+      recipient: state.railgunAddress,
+      items: [{ token: "native", amount: amountWei.toString() }],
+    });
+    const txs = await sendCalls(anon, state.chainId, key, calls, status);
+    await remember(opLog, myEpoch, "shield", amountWei, undefined, txs);
+    const ok = txs.every((t) => t.status === "success");
+    updateAction(myEpoch, { kind, status: ok ? "Shielded from the reclaim account. It shows as pending until the PPOI check clears." : "Shield transaction reverted", done: true, txs });
     await sync();
   } catch (e) {
     updateAction(myEpoch, { ...failedAction("Shield failed", e), kind });

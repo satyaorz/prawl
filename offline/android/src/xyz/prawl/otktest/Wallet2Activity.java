@@ -49,12 +49,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.Deflater;
 
 /**
- * Prawl OTK wallet v2: hardened coin protocol + Bluetooth transport.
+ * Prowl OTK wallet v2: hardened coin protocol + Bluetooth transport.
  *
  * Changes from v1 (WalletActivity):
  *  - Coin carries an expiry; hop message v2 commits to it. Recipient enforces
  *    remaining lifetime, a hop limit and a value cap.
- *  - Recipient checks the key was created by the genuine Prawl app (package and
+ *  - Recipient checks the key was created by the genuine Prowl app (package and
  *    signing-cert digest from attestationApplicationId) on a recent patch level.
  *  - Revocation-list freshness: if the cached list is older than 48 h, only
  *    small coins are accepted.
@@ -376,7 +376,7 @@ public class Wallet2Activity extends Activity {
         AtomicReference<Object> res = new AtomicReference<>();
         runOnUiThread(() -> {
             BiometricPrompt bp = new BiometricPrompt.Builder(this)
-                    .setTitle("Prawl: approve payment")
+                    .setTitle("Prowl: approve payment")
                     .setSubtitle("Sign this coin over once")
                     .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG
                             | BiometricManager.Authenticators.DEVICE_CREDENTIAL)

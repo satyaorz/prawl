@@ -51,7 +51,7 @@ data class PayQr(
 
         fun parse(link: String): PayQr {
             val p = Handoff.parseLink(link)
-            require(p.kind == "pay") { "not a Prawl receive code" }
+            require(p.kind == "pay") { "not a Prowl receive code" }
             return fromJson(p.payload)
         }
 

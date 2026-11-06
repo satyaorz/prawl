@@ -334,7 +334,7 @@ export function payloadFromText(text: string): OfflinePayload {
 export function configProblems(p: OfflinePayload): string[] {
   const out: string[] = [];
   if (p.chainId !== OFFLINE_CHAIN_ID) out.push(`it is for chain ${p.chainId}, this wallet uses Sepolia (${OFFLINE_CHAIN_ID})`);
-  if (!KNOWN_ESCROWS.some((e) => sameAddr(e, p.escrow))) out.push(`it names escrow ${p.escrow}, which is not one of Prawl's (${KNOWN_ESCROWS.join(", ")})`);
+  if (!KNOWN_ESCROWS.some((e) => sameAddr(e, p.escrow))) out.push(`it names escrow ${p.escrow}, which is not one of Prowl's (${KNOWN_ESCROWS.join(", ")})`);
   else if ((p.t === "load-private" || p.t === "redeem-shield" || p.t === "refresh") && !RAILGUN_ESCROWS.some((e) => sameAddr(e, p.escrow))) {
     out.push(`${p.t} needs escrow v3.1 or newer (${RAILGUN_ESCROWS.join(" or ")}); this names ${p.escrow}`);
   }

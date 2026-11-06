@@ -44,6 +44,11 @@ interface BridgeHost {
      * Memory only, never persisted: it is a convenience, not an authority (the form still shows the full address and the user submits).
      */
     fun walletAddressSeen(addr40: String) {}
+    /**
+     * Whether this phone has verified the deposit of one of ITS OWN coins (a light-client proof is stored). The default says yes, for hosts
+     * that do not track it; the app answers from its proof store, so a coin the page merely marked deposited is "confirming", not spendable.
+     */
+    fun depositProven(coinIdHex: String): Boolean = true
 }
 
 /**
@@ -171,7 +176,12 @@ class BridgeDispatcher(
         val live = host.notes().filter { !it.spent }
         val arr = live.groupBy { it.header.coinId }.map { (id, ns) ->
             val h = ns.first().header
-            val state = when { ns.any { it.pendingDeposit } -> "awaiting_deposit"; h.expiry <= now -> "expired"; else -> "spendable" }
+            val state = when {
+                ns.any { it.pendingDeposit } -> "awaiting_deposit"
+                ns.any { it.awaitsOwnProof } && !host.depositProven(hex(id)) -> "confirming"
+                h.expiry <= now -> "expired"
+                else -> "spendable"
+            }
             buildJsonObject {
                 put("coinId", hex(id)); put("valueWei", ns.fold(BigInteger.ZERO) { s, n -> s + n.value }.toString())
                 put("expiry", h.expiry); put("state", state); put("escrow", hex(h.escrow))

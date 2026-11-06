@@ -1,4 +1,4 @@
-# Prawl offline cash: the Android app (v3 and v3.1), 2026-11-06
+# Prowl offline cash: the Android app (v3 and v3.1), 2026-11-06
 
 This folder is a Gradle project (Kotlin, Jetpack Compose). It has a `:core` protocol library, ported from the Java harness with the same wire formats, and an `:app` with the user-facing screens. The app also has a debug "harness mode" that the existing adb scripts can drive.
 

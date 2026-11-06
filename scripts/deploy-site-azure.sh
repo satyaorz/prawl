@@ -57,6 +57,10 @@ $FQDN {
 	@assetlinks path /.well-known/assetlinks.json
 	header @assetlinks Content-Type "application/json"
 
+	# The page itself always revalidates (assets are content-hashed and immutable): no stale page after a deploy.
+	@html path / /index.html
+	header @html Cache-Control "no-cache"
+
 	@assets path /assets/*
 	header @assets Cache-Control "public, max-age=31536000, immutable"
 

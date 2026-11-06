@@ -40,16 +40,19 @@ data class NoteView(
     /** On escrow v3.1: can be refreshed (new expiry) or cashed out into a private balance. */
     val refreshable: Boolean = false,
 ) {
-    enum class State { SPENDABLE, AWAITING_DEPOSIT, SPENT, REDEEMED, REFRESHED }
+    /** CONFIRMING: this phone's own coin, marked deposited, whose deposit it has not yet proven on-chain (not spendable yet). */
+    enum class State { SPENDABLE, CONFIRMING, AWAITING_DEPOSIT, SPENT, REDEEMED, REFRESHED }
 
     companion object {
-        fun of(n: Note, ownerApproval: Boolean) = NoteView(
+        /** [proven]: this phone holds a deposit proof for the note's coin (only matters for its own, genesis coins). */
+        fun of(n: Note, ownerApproval: Boolean, proven: Boolean = true) = NoteView(
             n.alias, n.label, n.value, n.depth, n.header.expiry,
             when {
                 n.refreshedTo != null -> State.REFRESHED
                 n.redeemedTo != null -> State.REDEEMED
                 n.spent -> State.SPENT
                 n.pendingDeposit -> State.AWAITING_DEPOSIT
+                n.awaitsOwnProof && !proven -> State.CONFIRMING
                 else -> State.SPENDABLE
             },
             ownerApproval, n.redeemedTo, Escrows.isV31(n.header.chainId, n.header.escrow),

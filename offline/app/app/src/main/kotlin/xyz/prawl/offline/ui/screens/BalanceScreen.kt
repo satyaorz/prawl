@@ -61,6 +61,7 @@ data class BalanceState(
     /** Spendable notes with less than 3 days left: time to refresh (v3.1) or cash out (v3). */
     val expiringSoon get() = spendable.filter { it.expiry - nowS < WARN_S }
     val awaiting get() = notes.filter { it.state == NoteView.State.AWAITING_DEPOSIT }
+    val confirming get() = notes.filter { it.state == NoteView.State.CONFIRMING }
 }
 
 @Composable
@@ -73,7 +74,7 @@ fun BalanceScreen(nav: Nav) {
     val state = remember(version, now) {
         val anchors = g.trust.anchors()
         BalanceState(
-            notes = g.notes.notes().map { NoteView.of(it, g.keys.requiresUserAuth(it.alias)) },
+            notes = g.notes.notes().map { NoteView.of(it, g.keys.requiresUserAuth(it.alias), g.depositProven(it.header.coinId)) },
             nowS = now, minRemainingS = g.settings.minRemainingS,
             pendingRequests = g.notes.pendingNames().size,
             revocationStale = g.recipientPolicy().isStale(now, anchors.revocationFetchedAt),
@@ -146,6 +147,16 @@ fun BalanceContent(
                 Row(Modifier.fillMaxWidth().clickable { onAwaiting(n.alias) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Mono(Fmt.eth(n.valueWei) + " ETH", Modifier.weight(1f))
                     Chip("pending", Status.PENDING)
+                }
+            }
+        }
+
+        if (s.confirming.isNotEmpty()) PCard(title = "Confirming deposit",
+            subtitle = "Marked deposited; this phone is checking the chain (about 15 minutes after the transaction). Not spendable until proven.") {
+            s.confirming.forEach { n ->
+                Row(Modifier.fillMaxWidth().clickable { onAwaiting(n.alias) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Mono(Fmt.eth(n.valueWei) + " ETH", Modifier.weight(1f))
+                    Chip("checking", Status.PENDING)
                 }
             }
         }

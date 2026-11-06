@@ -59,7 +59,7 @@ cat > /etc/prawl-gateway/config.json5 <<JSON
 JSON
 cat > /etc/systemd/system/prawl-gateway.service <<'UNIT'
 [Unit]
-Description=Prawl tor-js gateway (KPS, UDP)
+Description=Prowl tor-js gateway (KPS, UDP)
 After=network-online.target
 Wants=network-online.target
 

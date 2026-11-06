@@ -1,6 +1,10 @@
-# Prawl offline pay
+# Prowl offline pay
 
 Pay ETH phone to phone with no network, without a double spend.
+
+> **Naming.** The product is **Prowl**. Some identifiers still say `prawl` on purpose: the Android package `xyz.prawl.offline`, the key and
+> message labels (`prawl/v1/...`, `PRAWL-OTK-v3`), the site's domain and the `window.prawlOffline` bridge. Keys, passkeys and coins are bound
+> to them, so changing them would mean a new wallet. The repository is `satyaorz/prawl`.
 
 Each coin is owned by a key that the phone's secure hardware will sign with **only once**
 (Android Keystore `setMaxUsageCount(1)`, StrongBox where available). The recipient checks the
@@ -21,7 +25,7 @@ The website never holds offline cash. It sends the two on-chain steps: **load** 
    (the amount to the receiver plus change to a fresh key of its own) and sends it over Bluetooth
    Low Energy. The receiver verifies, entirely offline:
    - the coin's deposit (light-client proof, or a synced snapshot);
-   - every key in the chain: hardware one-time key, genuine Prawl app, locked bootloader,
+   - every key in the chain: hardware one-time key, genuine Prowl app, locked bootloader,
      recent security patch, not on the revocation list;
    - every signature, value conservation, expiry, hop limit and value cap.
 3. **Cash out (online).** The holder's phone signs a *redeem* spend naming a payout address (or

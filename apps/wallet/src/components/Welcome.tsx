@@ -8,10 +8,10 @@ const FEATURES: ReadonlyArray<readonly [IconName, string, string]> = [
   ["shield", "A private balance", "Your funds sit in a shielded pool (RAILGUN). Sends between private addresses reveal nothing."],
   ["lock", "No seed phrase, no server", "Your keys come from a passkey. The same synced passkey on another device restores everything."],
   ["receive", "Tor on every request", "Each address and each transaction uses its own Tor circuit, so no node links your IP to you."],
-  ["offline", "Offline cash", "With the Prawl Android app you can pay another phone with no network at all, then cash out here."],
+  ["offline", "Offline cash", "With the Prowl Android app you can pay another phone with no network at all, then cash out here."],
 ];
 
-/** The locked screen: what Prawl is, and the two ways in. */
+/** The locked screen: what Prowl is, and the two ways in. */
 export function Welcome() {
   const w = useWallet();
   const tor = useTor();
@@ -20,7 +20,7 @@ export function Welcome() {
   return (
     <section className="flex flex-col items-center px-6 pb-8 pt-10 text-center">
       <Logo className="h-16 w-16" />
-      <h1 className="mt-4 text-3xl font-semibold tracking-tight">Prawl</h1>
+      <h1 className="mt-4 text-3xl font-semibold tracking-tight">Prowl</h1>
       <p className="mt-1 text-sm text-zinc-400">The private wallet. Every request goes over Tor.</p>
 
       <div className="mt-8 flex w-full flex-col gap-2.5">

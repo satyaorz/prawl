@@ -70,7 +70,7 @@ class AttestationResult {
 }
 
 /**
- * Offline check that an Android Key Attestation chain proves a Prawl one-time coin key.
+ * Offline check that an Android Key Attestation chain proves a Prowl one-time coin key.
  * Kotlin port of the harness's `OtkVerify` (itself a port of otk_verifier.py), same checks, same order:
  *  - chain signatures verify up to a pinned Google attestation root
  *  - no certificate serial is on the cached revocation list; RKP certificates are inside their validity

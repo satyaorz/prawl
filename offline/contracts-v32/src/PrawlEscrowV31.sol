@@ -15,7 +15,7 @@ interface IOtkChecker {
     function bonds(bytes32 akId) external view returns (address owner, uint96 amount, uint64 unlockAt, bool slashed);
 }
 
-/// @title PrawlEscrowV31 -- Prawl v3 offline coins + private funding (RAILGUN), shielded redemption, refresh
+/// @title PrawlEscrowV31 -- Prowl v3 offline coins + private funding (RAILGUN), shielded redemption, refresh
 /// @notice Everything PrawlEscrowV3 does (raw/v3/SPEC.md; same messages, same rules, same storage slots 0..6),
 ///  plus (v3.1, justified in RESULTS.md):
 ///   * COMMIT-THEN-FUND deposits. The coin parameters (coinId, expiry, k0, depositor, minValue, maxValue, tip)

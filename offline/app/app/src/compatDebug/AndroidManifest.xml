@@ -4,7 +4,7 @@
         <activity
             android:name="xyz.prawl.offline.harness.HarnessActivity"
             android:exported="true"
-            android:label="Prawl harness"
+            android:label="Prowl harness"
             android:theme="@android:style/Theme.DeviceDefault" />
         <!-- The coordinator's scripts start xyz.prawl.otktest/xyz.prawl.otktest.Wallet3Activity: route it to the harness mode. -->
         <activity-alias

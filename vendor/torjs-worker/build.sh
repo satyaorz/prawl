@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Prawl's tor-js worker: upstream tor-js v0.4.4 plus keepalive.patch.
+# Build Prowl's tor-js worker: upstream tor-js v0.4.4 plus keepalive.patch.
 #
 # The patch adds a per-(isolation key, origin) keep-alive connection pool to the
 # worker's fetch (idle cap 8, 4 minute maximum connection age), a 5 s

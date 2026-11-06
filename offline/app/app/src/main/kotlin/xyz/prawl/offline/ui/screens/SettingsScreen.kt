@@ -173,7 +173,7 @@ fun SettingsScreen(nav: Nav) {
         "Update", { online("Fetching the revocation list…") { "Revocation list updated: ${g.trust.fetchFromGoogle()} entries" } }, { confirmRevocation = false })
     pendingImport?.let { j ->
         ConfirmDialog("Import deposit snapshot?",
-            "Recipients will accept coins this file lists as deposited. Import it only if it came from your own Prawl wallet.",
+            "Recipients will accept coins this file lists as deposited. Import it only if it came from your own Prowl wallet.",
             "Import", { runCatching { g.depositSources.install(j) }.fold({ msg = Status.OK to "Imported $it" }, { msg = Status.ERROR to (it.message ?: "invalid snapshot") }); g.changed() },
             { pendingImport = null })
     }

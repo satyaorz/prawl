@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title SlackPayoutPool -- compensation rule for a slashed Prawl bond (research sketch, seam D)
+/// @title SlackPayoutPool -- compensation rule for a slashed Prowl bond (research sketch, seam D)
 /// @notice One "event" per slashed culprit bond. The escrow (trusted caller) opens the event with the
 ///  forfeited ETH, burns a fraction, and registers each VERIFIED dishonoured claim during a window.
 ///  After the window every claimant withdraws  amount * g(N)  where N = total claimed:

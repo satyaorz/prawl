@@ -106,6 +106,22 @@ class OfflineCashActivity : ComponentActivity() {
     /** A native confirmation the bridge is waiting on (the page asked to spend; only the user can approve). */
     class PendingConfirm(val c: BridgeConfirm, val result: CompletableFuture<Boolean>)
 
+    @Volatile private var watching = true
+
+    /** Every 5 minutes while the app runs (first after 20 s): prove deposits, revert wrong marks, clean up. Offline or failing: tries later. */
+    private fun startDepositWatcher(g: AppGraph) {
+        Thread {
+            try { Thread.sleep(20_000) } catch (e: InterruptedException) { return@Thread }
+            while (watching) {
+                try {
+                    val r = g.depositWatcher.run()
+                    if (r.changed) { Log.i("PRAWL_DEP", "deposit watcher: $r"); g.changed() }
+                } catch (e: Exception) { Log.i("PRAWL_DEP", "deposit watcher skipped: ${e.javaClass.simpleName}") }
+                try { Thread.sleep(5 * 60_000L) } catch (e: InterruptedException) { return@Thread }
+            }
+        }.apply { isDaemon = true; name = "deposit-watcher" }.start()
+    }
+
     /** Keeps Google's revocation list under 12 h old without the user having to remember. Silent: offline or an error just leaves the old list. */
     private fun refreshRevocationInBackground(g: AppGraph) {
         if (!g.settings.autoRevocation) return
@@ -125,6 +141,7 @@ class OfflineCashActivity : ComponentActivity() {
         if (BuildConfig.DEBUG) intent.getStringExtra("site")?.let { prefs.edit().putString("debugSite", it.ifBlank { null }).apply() }
         val g = graph
         refreshRevocationInBackground(g)
+        startDepositWatcher(g)
         val host = object : BridgeHost {
             override fun wallet(): OfflineWallet = g.wallet()
             override fun notes(): List<Note> = g.notes.notes()
@@ -140,11 +157,13 @@ class OfflineCashActivity : ComponentActivity() {
             override fun changed() = g.changed()
             override fun nowS() = System.currentTimeMillis() / 1000
             override fun walletAddressSeen(addr40: String) = g.setWalletHint(addr40)
+            override fun depositProven(coinIdHex: String) = g.depositProven(coinIdHex)
         }
         val r = SiteConfig.resolve(BuildConfig.HANDOFF_SITE, BuildConfig.DEBUG, prefs.getString("debugSite", null))
         siteProblem = r.problem
         web = r.resolved?.let { WalletWebView(this, BridgeDispatcher(host), it, BuildConfig.DEBUG) { screen -> runOnUiThread { openNative(screen) } } }
         tab = if (web != null) 0 else 1
+        g.cashOutToWallet = web?.let { w -> { coinId: String, noteId: String? -> runOnUiThread { tab = 0; w.requestCashOutToWallet(coinId, noteId) } } }
         routeFor(intent)?.let { if (it != Route.Balance) stack.add(it); tab = 1 }
         setContent {
             CompositionLocalProvider(LocalHostActivity provides this) {
@@ -177,7 +196,7 @@ class OfflineCashActivity : ComponentActivity() {
         routeFor(intent)?.let { r -> if (r == Route.Balance) Nav(stack).home() else stack.add(r); tab = 1 }
     }
 
-    override fun onDestroy() { web?.destroy(); super.onDestroy() }
+    override fun onDestroy() { watching = false; web?.destroy(); super.onDestroy() }
 
     companion object {
         const val ACTION_OPEN = "xyz.prawl.offline.action.OPEN"

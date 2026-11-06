@@ -14,7 +14,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Offline, on-phone check that an Android Key Attestation chain proves a Prawl
+ * Offline, on-phone check that an Android Key Attestation chain proves a Prowl
  * one-time coin key. Java port of otk_verifier.py's policy:
  *   - chain signatures verify up to a pinned Google attestation root
  *   - no certificate serial is on the cached revocation list

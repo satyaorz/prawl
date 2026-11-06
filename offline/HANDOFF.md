@@ -1,6 +1,6 @@
 # Phone ↔ website handoff (v1, 2026-11-06)
 
-The Android offline-cash app and the Prawl website exchange small payloads by **QR code** or **link**. The website never holds offline cash. It only sends the on-chain transactions: deposit ("load") and redeem ("cash out"). Both sides must build to this exact format.
+The Android offline-cash app and the Prowl website exchange small payloads by **QR code** or **link**. The website never holds offline cash. It only sends the on-chain transactions: deposit ("load") and redeem ("cash out"). Both sides must build to this exact format.
 
 Network: Sepolia (chainId 11155111). Escrow v3: `0x70b3B7EdCD18087C999ec80e3C3B0227c7e0D6E5`.
 

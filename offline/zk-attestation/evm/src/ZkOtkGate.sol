@@ -6,7 +6,7 @@ interface IHonkVerifier {
     function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
 }
 
-/// @title ZkOtkGate -- on-chain acceptance of a Prawl coin key K from a circuit-v1 or circuit-v2 proof
+/// @title ZkOtkGate -- on-chain acceptance of a Prowl coin key K from a circuit-v1 or circuit-v2 proof
 /// @notice Shows what an escrow must check AROUND the SNARK verifier. Circuits v1 (RKP chain) and v2 (factory
 ///   StrongBox chain) expose the SAME 17 public fields; only the meaning of the first four ("anchor") differs:
 ///     v1 (kind 1): the 4 limbs of the Droid CA3 key;
@@ -29,7 +29,7 @@ contract ZkOtkGate {
     /// for kind 2 [2, allow_root, 0, 0] of an allow-list whose entries were each vetted to the Google root.
     mapping(bytes32 => bool) public trustedCa3;
     bytes32 public revRoot; // Google revocation list (gap-leaf Poseidon2 tree), updated from the daily list
-    bytes32 public banRoot; // Prawl ban list of h_A extracted from double-spend tags
+    bytes32 public banRoot; // Prowl ban list of h_A extracted from double-spend tags
     uint256 public minPatch; // policy: minimum osPatchLevel YYYYMM
     mapping(bytes32 => bytes32) public attested; // keyHash(K) => keccak(C_A, C_r) (kept for later tag checks)
     /// kind 2 (v2_factory) verifier, set once by the owner. Declared LAST so the v1-era storage layout

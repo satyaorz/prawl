@@ -56,7 +56,7 @@ export interface SyncProgress {
 export interface OpenOptions {
   wasm: RailgunWasm;
   chainId: number;
-  /** URL the core's JSON-RPC provider calls; Prawl passes a virtual URL bridged to Anon-RPC. */
+  /** URL the core's JSON-RPC provider calls; Prowl passes a virtual URL bridged to Anon-RPC. */
   rpcUrl: string;
   spendingKey: Hex;
   viewingKey: Hex;

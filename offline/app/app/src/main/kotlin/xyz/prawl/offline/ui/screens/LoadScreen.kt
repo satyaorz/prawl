@@ -98,10 +98,10 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
                     HandoffActions(Handoff.httpsLink(BuildConfig.HANDOFF_SITE, k, dd), Handoff.prawlLink(k, dd), BuildConfig.HANDOFF_SITE)
                     if (n.privateLoad) {
                         KeyValue("Deposit address", payload.str("depositAddress"), mono = true)
-                        Secondary("Open this in the Prawl wallet: it commits the coin, unshields exactly ${Fmt.eth(n.value + n.tipWei)} ETH from your private balance " +
+                        Secondary("Open this in the Prowl wallet: it commits the coin, unshields exactly ${Fmt.eth(n.value + n.tipWei)} ETH from your private balance " +
                             "to the deposit address, then activates it. The reclaim address ${Fmt.addr(h.depositor)} can refund an unactivated deposit and reclaims unspent value after expiry. " +
                             "The unshield amount and time are public.")
-                    } else Secondary("Open this in the Prawl wallet signed in as ${Fmt.addr(h.depositor)}; it sends deposit(...) with ${Fmt.eth(n.value)} ETH.")
+                    } else Secondary("Open this in the Prowl wallet signed in as ${Fmt.addr(h.depositor)}; it sends deposit(...) with ${Fmt.eth(n.value)} ETH.")
                 } else SecondaryButton("Show wallet code", { shown = n.alias })
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     PrimaryButton("Check deposit (online)", {
@@ -137,7 +137,7 @@ fun LoadScreen(nav: Nav, route: Route.Load) {
                     if (priv) Secondary("Using your main wallet address as the reclaim address links this coin's refund to you. A fresh address is better.", color = Tw.amber400)
                 } else SecondaryButton("Use my wallet address ${Fmt.addr(hint)}", { depositor = hint })
             }
-            if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prawl website (ethereum:0x…@11155111).") {
+            if (scanning) PermissionGate(Perms.CAMERA, "Camera needed to scan", "Scan the address code shown by the Prowl website (ethereum:0x…@11155111).") {
                 QrScanner(onResult = { text ->
                     scanning = false
                     val e = Eth.parseEip681(text)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Privacy analysis of real Prawl attestation chains (2026-11-06).
+"""Privacy analysis of real Prowl attestation chains (2026-11-06).
 
 For every certificate seen on the two phones (device_run*, phone_vectors_v1, android_test/linkability),
 report per-link algorithms, serials, subjects, validity and RKP provisioning info, and for each

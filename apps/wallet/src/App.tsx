@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Home } from "./components/Home";
 import { OfflineMode } from "./components/OfflineMode";
 import { Settings } from "./components/Settings";
@@ -22,6 +22,20 @@ export function App() {
   const tor = useTor();
   const unlocked = !!w.railgunAddress;
   const [mode, setMode] = useState<Mode>("online");
+  // "Cash out to my wallet" pressed in the phone app's native screen: it names the coin, this page does the rest (the phone still asks
+  // for approval and the fingerprint before it signs anything).
+  const [cashout, setCashout] = useState<{ coinId: string; noteId?: string; n: number }>();
+  useEffect(() => {
+    const onAsk = (e: Event) => {
+      const d = (e as CustomEvent).detail as { coinId?: unknown; noteId?: unknown } | undefined;
+      if (typeof d?.coinId !== "string" || !/^0x[0-9a-f]{64}$/.test(d.coinId)) return;
+      if (d.noteId !== undefined && (typeof d.noteId !== "string" || !/^[0-9A-Za-z_-]{1,128}$/.test(d.noteId))) return;
+      setMode("offline");
+      setCashout({ coinId: d.coinId, ...(typeof d.noteId === "string" ? { noteId: d.noteId } : {}), n: Date.now() });
+    };
+    window.addEventListener("prowl:cashout-to-wallet", onAsk);
+    return () => window.removeEventListener("prowl:cashout-to-wallet", onAsk);
+  }, []);
   const [settings, setSettings] = useState(false);
   const showOnline = unlocked && mode === "online";
   const showOffline = !unlocked || mode === "offline";
@@ -34,7 +48,7 @@ export function App() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Logo className="h-7 w-7" />
-                <span className="text-base font-semibold tracking-tight">Prawl</span>
+                <span className="text-base font-semibold tracking-tight">Prowl</span>
               </div>
               <span
                 className="inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900 px-3 py-1 text-xs text-zinc-300"
@@ -79,7 +93,7 @@ export function App() {
             <Home />
           </div>
           <div className={showOffline ? "" : "hidden"}>
-            <OfflineMode onOpened={() => setMode("offline")} />
+            <OfflineMode onOpened={() => setMode("offline")} cashout={cashout} />
           </div>
         </div>
 

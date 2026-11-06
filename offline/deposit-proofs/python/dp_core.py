@@ -1,4 +1,4 @@
-"""Offline primitives for Prawl v3 deposit proofs: SSZ (SHA-256), RLP, Merkle-Patricia
+"""Offline primitives for Prowl v3 deposit proofs: SSZ (SHA-256), RLP, Merkle-Patricia
 trie proofs (keccak256), and the sync-committee signing root. No network access here.
 
 The Java port (java/DepositProof.java) mirrors these functions one to one.

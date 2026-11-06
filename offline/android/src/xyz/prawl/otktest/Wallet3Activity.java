@@ -24,7 +24,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Prawl OTK wallet v3 (see raw/v3/SPEC.md): notes with SPLITTING and CHANGE.
+ * Prowl OTK wallet v3 (see raw/v3/SPEC.md): notes with SPLITTING and CHANGE.
  *
  * A note = (value in wei, one-time key). Spending a note with its key signs
  *   PRAWL-OTK-v3|chainId|escrow40|coinId|expiry|depth|parentNoteId|outputsHash

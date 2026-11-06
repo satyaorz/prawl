@@ -10,7 +10,7 @@ SRC=${KOHAKU_SRC:-$L/src/kohaku-rs}
 REF=${KOHAKU_REF:-feat/kohaku-railgun}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 [ -d "$SRC/.git" ] || git clone --branch "$REF" https://github.com/ethereum/kohaku-rs "$SRC"
-# Prawl patches (packages/railgun/patches), applied once.
+# Prowl patches (packages/railgun/patches), applied once.
 for p in "$HERE"/patches/*.patch; do
   if git -C "$SRC" apply --check "$p" 2>/dev/null; then git -C "$SRC" apply "$p" && echo "applied $(basename "$p")"
   elif git -C "$SRC" apply --reverse --check "$p" 2>/dev/null; then echo "already applied $(basename "$p")"

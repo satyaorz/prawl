@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prawl one-time-key (OTK) attestation verifier -- offline recipient check.
+"""Prowl one-time-key (OTK) attestation verifier -- offline recipient check.
 
 Checks an Android Key Attestation certificate chain (leaf first, PEM) and decides whether
-the attested key is acceptable as a Prawl coin key, i.e. a key the secure hardware will
+the attested key is acceptable as a Prowl coin key, i.e. a key the secure hardware will
 sign with AT MOST ONCE.
 
 Sources for every rule (see seam_a_uncopyable_coins.md for quotes):
@@ -179,7 +179,7 @@ def verify(chain_path, roots, status, now):
     res["kd"] = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in kd.items()}
     hw, sw = kd["hardwareEnforced"], kd["softwareEnforced"]
     res["coin_pubkey_sha256"] = hashlib.sha256(spki(chain[0])).hexdigest()
-    # 4. Prawl one-time-key policy
+    # 4. Prowl one-time-key policy
     pol = []
     def req(cond, msg):
         pol.append((bool(cond), msg))

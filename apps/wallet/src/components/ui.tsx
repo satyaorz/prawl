@@ -29,20 +29,9 @@ export function Icon({ name, className = "h-5 w-5" }: { name: IconName; classNam
   );
 }
 
-/** The Prawl mark: a shielded drop. */
+/** The Prowl mark: the smiley (public/prowl-logo.png). Decorative: the name is always written next to it. */
 export function Logo({ className = "h-7 w-7" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 32 32" className={className} aria-hidden="true">
-      <defs>
-        <linearGradient id="prawl-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#34d399" />
-          <stop offset="1" stopColor="#059669" />
-        </linearGradient>
-      </defs>
-      <path d="M16 2.500 5 7v8c0 7 4.700 11.800 11 14.500C22.300 26.800 27 22 27 15V7L16 2.500Z" fill="url(#prawl-g)" />
-      <path d="M16 9v9.500M12 15l4 4 4-4" stroke="#022c22" strokeWidth="2.200" strokeLinecap="round" strokeLinejoin="round" fill="none" />
-    </svg>
-  );
+  return <img src="/prowl-logo.png" alt="" aria-hidden="true" className={`${className} select-none object-contain`} draggable={false} />;
 }
 
 /** Ether diamond in a round badge. */
@@ -134,3 +123,16 @@ export function Sheet({ open, title, onClose, children }: { open: boolean; title
 }
 
 export const short = (s: string, head = 6, tail = 4): string => (s.length > head + tail + 1 ? `${s.slice(0, head)}…${s.slice(-tail)}` : s);
+
+/**
+ * An ETH amount for a big headline or a row: at most `decimals` decimals, trailing zeros dropped, and "<0.000001" for a dust amount, so it
+ * always fits a phone screen. The exact value stays available in the smaller text under it.
+ */
+export function fmtEthShort(wei: bigint, decimals = 6): string {
+  const scale = 10n ** BigInt(18 - decimals);
+  const q = wei / scale;                                  // truncated, never rounded up: it must not promise more than there is
+  if (wei > 0n && q === 0n) return `<0.${"0".repeat(decimals - 1)}1`;
+  const whole = q / 10n ** BigInt(decimals);
+  const frac = (q % 10n ** BigInt(decimals)).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : `${whole}`;
+}

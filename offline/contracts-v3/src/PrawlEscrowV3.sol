@@ -14,7 +14,7 @@ interface IOtkChecker {
     function bonds(bytes32 akId) external view returns (address owner, uint96 amount, uint64 unlockAt, bool slashed);
 }
 
-/// @title PrawlEscrowV3 -- on-chain settlement of Prawl v3 offline coins (splitting + change)
+/// @title PrawlEscrowV3 -- on-chain settlement of Prowl v3 offline coins (splitting + change)
 /// @notice Protocol: raw/v3/SPEC.md. A coin is a deposit owned by a genesis one-time P-256 key k0. Offline,
 ///  each note (value, one-time key K) is spent by K signing ONE v3 spend message that creates n >= 1 output
 ///  notes whose values sum to the note's value. A note is redeemed when its own key signs a spend with a

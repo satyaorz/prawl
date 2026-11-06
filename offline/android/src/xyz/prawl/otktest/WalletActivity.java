@@ -32,7 +32,7 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Prawl one-time-key (OTK) coin wallet: two-phone test harness.
+ * Prowl one-time-key (OTK) coin wallet: two-phone test harness.
  *
  * A coin is a chain of hops. Each holder owns the coin through a fresh attested
  * key created with setMaxUsageCount(1); paying = that key's single signature over

@@ -9,7 +9,7 @@ interface IBrokenKeys {
     function brokenKey(bytes32 keyHash) external view returns (bool);
 }
 
-/// @title DeviceBondRegistry -- trustless device bonds for Prawl one-time keys, slashed on equivocation
+/// @title DeviceBondRegistry -- trustless device bonds for Prowl one-time keys, slashed on equivocation
 /// @notice Trust anchors are Google's attestation roots, pinned at deployment. Everything below them is
 ///  verified on-chain from the REAL certificate formats:
 ///   * `cacheIssuer`: permissionless; verifies an intermediate CA certificate against an already trusted
@@ -179,7 +179,7 @@ contract DeviceBondRegistry {
         emit AttestationKeyRegistered(akId, issuerId, pl != 0, na);
     }
 
-    /// @notice Is `leaf` an acceptable Prawl one-time key attested by registered, non-blacklisted AK `akId`?
+    /// @notice Is `leaf` an acceptable Prowl one-time key attested by registered, non-blacklisted AK `akId`?
     /// @dev Returns the one-time key (x, y), its SPKI sha256 keyHash (= the phone's leafHash) and the OTK policy fail bitmask.
     function checkOtk(bytes calldata leaf, bytes32 akId)
         public
@@ -235,7 +235,7 @@ contract DeviceBondRegistry {
         AA.Cert memory c = AA.parse(d);
         // validity is NOT checked here: equivocation evidence stays good after the AK expires
         if (!AA.verifiedByP256(d, c, ak.x, ak.y)) revert BadSignature();
-        // Only a key the AK vouched for as a Prawl ONE-TIME key is evidence against the AK. A multi-use key
+        // Only a key the AK vouched for as a Prowl ONE-TIME key is evidence against the AK. A multi-use key
         // (e.g. the real e1 "cheat" key, no usageCountLimit) may legitimately sign twice; without this check
         // anyone could blacklist an honest attestation key by double-signing with an ordinary key.
         uint256 fails = AA.otkPolicy(AA.keyDescription(d, c), appPackageHash, appSignerDigest);

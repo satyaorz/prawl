@@ -253,7 +253,7 @@ class HarnessActivity : Activity() {
                 val secret = ByteArray(16).also { SecureRandom().nextBytes(it) }
                 val uuid = UUID.randomUUID()
                 val rf = x.getString("transport") == PayQr.RFCOMM
-                val (listener, qr) = if (rf) g.bluetooth.RfcommListener(uuid, "Prawl") to
+                val (listener, qr) = if (rf) g.bluetooth.RfcommListener(uuid, "Prowl") to
                     PayQr(name, w.pendingKeyHash(name)!!, secret, PayQr.RFCOMM, uuid, btName = g.bluetooth.localName())
                 else g.bluetooth.L2capListener(uuid).let { it to PayQr(name, w.pendingKeyHash(name)!!, secret, PayQr.L2CAP, uuid, psm = it.psm) }
                 write("qr_$name.txt", qr.link())

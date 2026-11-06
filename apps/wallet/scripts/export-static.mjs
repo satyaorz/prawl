@@ -50,6 +50,9 @@ const vercel = {
   trailingSlash: false,
   headers: [
     { source: "/(.*)", headers: security },
+    // The page itself always revalidates: an app WebView kept showing the old page (and the old name) after a deploy.
+    { source: "/", headers: [{ key: "cache-control", value: "no-cache" }] },
+    { source: "/index.html", headers: [{ key: "cache-control", value: "no-cache" }] },
     {
       source: "/anon-rpc/(.*)",
       headers: [

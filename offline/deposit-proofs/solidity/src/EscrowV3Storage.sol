@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @title EscrowV3Storage - storage-layout stub of the Prawl v3 escrow (deposit side only).
+/// @title EscrowV3Storage - storage-layout stub of the Prowl v3 escrow (deposit side only).
 /// @notice Pins the layout the offline deposit proof depends on: `deposits` MUST be the first
 ///         state variable (slot 0), so deposits[coinId] lives at keccak256(abi.encode(coinId, uint256(0))).
 ///         The full escrow (redemption, conflicts, expiry) must keep this variable first and must not

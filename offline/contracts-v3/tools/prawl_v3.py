@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prawl protocol v3 message format: an independent Python reference (raw/v3/SPEC.md section 3).
+"""Prowl protocol v3 message format: an independent Python reference (raw/v3/SPEC.md section 3).
 
 Written from the spec and cross-read against the phone code (android_test/.../Wallet3Activity.java):
 spendMessage, outputsHash, genesisNoteId, childNoteId and redeemKey below mirror those Java methods.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Size the in-circuit work for a ZK proof of a Prawl coin-key attestation, from the real chains.
+"""Size the in-circuit work for a ZK proof of a Prowl coin-key attestation, from the real chains.
 For each link: TBS length -> SHA-256/384 compression calls, signature algorithm, and which links are
 device-specific (must stay hidden) vs Google-public (can be public inputs).
 Run: ../.venv/bin/python circuit_sizing.py
