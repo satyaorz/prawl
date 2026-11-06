@@ -8,7 +8,7 @@ adds the pieces the wallet needs to run a real WETH / custom-token pair:
   netting, oracle-priced lots, settlement, confidential credits, expiry/refund).
 - `contracts/PoolLotPriceOracle.sol` — reads the lot price straight from the
   Uniswap v4 pool the batch settles against. No external feed is involved:
-  there is one pool, and its own price is the quote. (Chainlink is not used.)
+  there is one pool, and its own price is the quote.
 - `contracts/PrawlToken.sol` — fixed-supply 18-dp custom ERC-20.
 - `contracts/VeilConfidentialWrapper.sol` — ERC-7984 wrapper (6-dp confidential
   units over an 18-dp underlying, `rate = 1e12`).
@@ -41,7 +41,7 @@ npm test                # FHEVM mock network: 24 lifecycle tests + 3 real-pool t
 
 The suite has two halves:
 
-- `test/veil-batch-swap.test.ts`, `test/chainlink-lot-price.test.ts`,
+- `test/veil-batch-swap.test.ts`,
   `test/prawl-token.test.ts` — run on the FHEVM mock network. The swap leg is
   replaced by a 1:1 reserve (`MockBatchSwap`), so they validate the encrypted
   funding, ordering, netting, credits, expiry and refunds.

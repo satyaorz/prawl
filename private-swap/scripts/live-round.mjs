@@ -112,8 +112,30 @@ async function encryptFor(instance, contract, user, amount, direction, minOutput
   return input.encrypt();
 }
 
-/** Move `underlying` PRAWL/WETH into the confidential wrapper, then fund the batch. */
-async function fundConfidential(batch, wrapper, underlyingToken, user, units) {
+/**
+ * A public Sepolia RPC is load-balanced: a node can answer from a block that
+ * does not include the transaction we just mined, so a call that depends on it
+ * (a wrap right after its approve) fails gas estimation with a bare revert.
+ * Retry such steps a few times before giving up.
+ */
+async function retry(label, fn, attempts = 6) {
+  for (let i = 0; ; ++i) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i >= attempts - 1) throw e;
+      log(`${label}: ${String(e?.shortMessage ?? e?.message ?? e).slice(0, 90)}; retrying (${i + 1}/${attempts - 1})`);
+      await new Promise((r) => setTimeout(r, 6000));
+    }
+  }
+}
+
+/** Move `underlying` PRAWL/WETH into the confidential wrapper, then fund the batch. Skips a user who is already funded. */
+async function fundConfidential(batch, wrapper, underlyingToken, user, units, asset) {
+  if ((await batch.fundedBalance(user.address, asset)) !== ethers.ZeroHash) {
+    log(`${user.address} already has a funded vault balance; skipping funding`);
+    return;
+  }
   const rate = await wrapper.rate();
   const underlying = units * rate;
 
@@ -123,13 +145,12 @@ async function fundConfidential(batch, wrapper, underlyingToken, user, units) {
   if (allowance < underlying) {
     await (await underlyingToken.connect(user).approve(wrapper.target, underlying)).wait();
   }
-  await (await wrapper.connect(user).wrap(user.address, underlying)).wait();
+  await retry("wrap", async () => (await wrapper.connect(user).wrap(user.address, underlying)).wait());
 
   const enc = await (await ctx.instance.createEncryptedInput(wrapper.target, user.address).add64(units).encrypt());
-  const tx = await wrapper.connect(user)["confidentialTransferAndCall(address,bytes32,bytes,bytes)"](
+  await retry("fund vault", async () => (await wrapper.connect(user)["confidentialTransferAndCall(address,bytes32,bytes,bytes)"](
     batch.target, enc.handles[0], enc.inputProof, "0x00",
-  );
-  await tx.wait();
+  )).wait());
 }
 
 async function submitOrder(batch, user, amount, direction, minOutput = 0n) {
@@ -182,19 +203,21 @@ async function main2() {
   const rateA = await wA.rate();
   const rateB = await wB.rate();
   const requiredB = unitsB * rateB;
-  if ((await tokenB.balanceOf(counterparty.address)) < requiredB) {
+  if ((await tokenB.balanceOf(counterparty.address)) < requiredB && (await batch.fundedBalance(counterparty.address, 1)) === ethers.ZeroHash) {
     if ((await tokenB.balanceOf(wallet.address)) < requiredB) throw new Error("deployer lacks tokenB for the counterparty order");
     await (await tokenB.transfer(counterparty.address, requiredB)).wait();
     log("funded counterparty tokenB");
   }
   if ((await tokenA.balanceOf(wallet.address)) < unitsA * rateA) throw new Error("deployer lacks tokenA for A-side order");
-  await fundConfidential(batch, wA, tokenA, wallet, unitsA);
+  await fundConfidential(batch, wA, tokenA, wallet, unitsA, 0);
   log("deployer funded cA");
-  await fundConfidential(batch, wB, tokenB, counterparty, unitsB);
+  await fundConfidential(batch, wB, tokenB, counterparty, unitsB, 1);
   log("counterparty funded cB");
 
-  await submitOrder(batch, wallet, unitsA, DIR_A_TO_B);
-  await submitOrder(batch, counterparty, unitsB, DIR_B_TO_A);
+  for (const [user, units, dir] of [[wallet, unitsA, DIR_A_TO_B], [counterparty, unitsB, DIR_B_TO_A]]) {
+    if ((await batch.orderStatus(ctx.round, user.address)).submitted) log(`${user.address} already ordered; skipping`);
+    else await retry("submit order", () => submitOrder(batch, user, units, dir));
+  }
   log("both encrypted orders submitted");
 
   return { round: ctx.round };
