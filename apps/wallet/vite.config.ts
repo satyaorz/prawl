@@ -9,7 +9,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 
 export default defineConfig({
   plugins: [react(), tailwindcss(), prawlLocalAssets(repoRoot)],
-  server: { port: 5173, strictPort: true, host: "127.0.0.1" },
-  preview: { port: 4173, strictPort: true, host: "127.0.0.1" },
+  // "localhost", not 127.0.0.1: a WebAuthn RP ID must be a domain name.
+  server: { port: 5173, strictPort: true, host: "localhost" },
+  preview: { port: 4173, strictPort: true, host: "localhost" },
+  worker: { format: "es" },
   build: { target: "es2022" },
 });
