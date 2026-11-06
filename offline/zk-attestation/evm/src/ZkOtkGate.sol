@@ -6,17 +6,29 @@ interface IHonkVerifier {
     function verify(bytes calldata proof, bytes32[] calldata publicInputs) external view returns (bool);
 }
 
-/// @title ZkOtkGate -- on-chain acceptance of a Prawl coin key K from a circuit-v1 proof
-/// @notice Shows what an escrow must check AROUND the SNARK verifier. The proof's 17 public fields are
-///   [0..3] CA3 key limbs, [4] revocation root, [5] ban root, [6] t_from, [7] t_until (YYMMDDHHMMSS UTC),
+/// @title ZkOtkGate -- on-chain acceptance of a Prawl coin key K from a circuit-v1 or circuit-v2 proof
+/// @notice Shows what an escrow must check AROUND the SNARK verifier. Circuits v1 (RKP chain) and v2 (factory
+///   StrongBox chain) expose the SAME 17 public fields; only the meaning of the first four ("anchor") differs:
+///     v1 (kind 1): the 4 limbs of the Droid CA3 key;
+///     v2 (kind 2): [2, allow_root, 0, 0]  (allow_root = Poseidon2 Merkle root of vetted factory attestation keys).
+///   The gate selects the verifier by `kind` (each kind has its own vk) and looks the anchor up in ONE set of
+///   governance-approved anchors. A v2 proof under an attacker-built allow-list verifies mathematically but its
+///   anchor is not in the set, so it is rejected here (test_gate_rejects_attacker_allowlist).
+///   The 17 public fields are
+///   [0..3] anchor (above), [4] revocation root, [5] ban root, [6] t_from, [7] t_until (YYMMDDHHMMSS UTC),
 ///   [8] min osPatchLevel, [9..12] K limbs (x_hi, x_lo, y_hi, y_lo), [13..16] C_A.x, C_A.y, C_r.x, C_r.y.
 ///   No device- or attestation-key-identifying value reaches the chain (contrast: PrawlEscrowV3.depositAttested
 ///   takes `akId`, which links every attested deposit of one phone).
 /// @dev Measurement contract for RESULTS.md, not audited. Governance setters are owner-only for brevity.
 contract ZkOtkGate {
-    IHonkVerifier public immutable verifier;
+    IHonkVerifier public immutable verifier; // kind 1 (v1_ca3)
+    IHonkVerifier public factoryVerifier; // kind 2 (v2_factory), set once by the owner
     address public immutable owner;
-    mapping(bytes32 => bool) public trustedCa3; // keccak(x_hi, x_lo, y_hi, y_lo) of CA3 keys verified to the Google root off-chain
+    uint8 public constant KIND_RKP = 1;
+    uint8 public constant KIND_FACTORY = 2;
+    /// keccak(anchor[0..3]): for kind 1 the CA3 key (x_hi, x_lo, y_hi, y_lo) verified to the Google root off-chain;
+    /// for kind 2 [2, allow_root, 0, 0] of an allow-list whose entries were each vetted to the Google root.
+    mapping(bytes32 => bool) public trustedCa3;
     bytes32 public revRoot; // Google revocation list (gap-leaf Poseidon2 tree), updated from the daily list
     bytes32 public banRoot; // Prawl ban list of h_A extracted from double-spend tags
     uint256 public minPatch; // policy: minimum osPatchLevel YYYYMM
@@ -29,6 +41,8 @@ contract ZkOtkGate {
     error WeakPolicy();
     error BadProof();
     error AlreadyAttested();
+    error BadKind();
+    error NoFactoryVerifier();
 
     event KeyAttested(bytes32 indexed keyHash, bytes32 tagCommitments);
 
@@ -41,6 +55,17 @@ contract ZkOtkGate {
         minPatch = patch;
     }
 
+    /// @notice Set the v2 (factory) verifier once, and approve allow-list roots / further CA3 keys (owner-only).
+    function setFactoryVerifier(IHonkVerifier v) external {
+        require(msg.sender == owner && address(factoryVerifier) == address(0));
+        factoryVerifier = v;
+    }
+
+    function setAnchor(bytes32 anchorHash, bool ok) external {
+        require(msg.sender == owner);
+        trustedCa3[anchorHash] = ok;
+    }
+
     function setRoots(bytes32 rev, bytes32 ban) external {
         require(msg.sender == owner);
         revRoot = rev;
@@ -50,13 +75,28 @@ contract ZkOtkGate {
     /// @notice Verify the proof and the public-input policy only (no state change). Gas of this = cost per key
     ///   when the escrow only needs to check, e.g. inside depositAttested.
     function check(bytes calldata proof, bytes32[] calldata pi) public view returns (bytes32 keyHash) {
+        return checkKind(KIND_RKP, proof, pi);
+    }
+
+    /// @notice check() for either circuit kind (1 = RKP chain / v1, 2 = factory StrongBox chain / v2).
+    function checkKind(uint8 kind, bytes calldata proof, bytes32[] calldata pi) public view returns (bytes32 keyHash) {
+        IHonkVerifier vf;
+        if (kind == KIND_RKP) {
+            vf = verifier;
+        } else if (kind == KIND_FACTORY) {
+            vf = factoryVerifier;
+            if (address(vf) == address(0)) revert NoFactoryVerifier();
+            if (uint256(pi.length > 0 ? pi[0] : bytes32(0)) != 2) revert BadKind();
+        } else {
+            revert BadKind();
+        }
         if (pi.length != 17) revert BadInputs();
         if (!trustedCa3[keccak256(abi.encodePacked(pi[0], pi[1], pi[2], pi[3]))]) revert UntrustedCa3();
         if (pi[4] != revRoot || pi[5] != banRoot) revert StaleRoot();
         uint256 nowT = yymmddhhmmss(block.timestamp);
         if (uint256(pi[6]) > nowT || nowT > uint256(pi[7])) revert OutsideWindow();
         if (uint256(pi[8]) < minPatch) revert WeakPolicy();
-        if (!verifier.verify(proof, pi)) revert BadProof();
+        if (!vf.verify(proof, pi)) revert BadProof();
         // SPKI-DER SHA-256 of K, the v3 SPEC keyHash: 0x3059...0004 || x || y
         keyHash = sha256(
             abi.encodePacked(
@@ -68,7 +108,11 @@ contract ZkOtkGate {
 
     /// @notice check() + record K as attested (one new storage slot).
     function register(bytes calldata proof, bytes32[] calldata pi) external returns (bytes32 keyHash) {
-        keyHash = check(proof, pi);
+        return registerKind(KIND_RKP, proof, pi);
+    }
+
+    function registerKind(uint8 kind, bytes calldata proof, bytes32[] calldata pi) public returns (bytes32 keyHash) {
+        keyHash = checkKind(kind, proof, pi);
         if (attested[keyHash] != bytes32(0)) revert AlreadyAttested();
         bytes32 c = keccak256(abi.encodePacked(pi[13], pi[14], pi[15], pi[16]));
         attested[keyHash] = c;

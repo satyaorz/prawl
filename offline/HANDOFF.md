@@ -97,3 +97,23 @@ The phone REFUSES unless: `tokenType == 0`, `tokenAddress` is WETH, `tokenSubID 
 
 ## 9. Deciding "paid" (agreed with the wallet session)
 A mined `redeem` can return false or defer the payment while the receipt says success. Decide "paid" from the escrow's events (`Redeemed` for this coin), never from the receipt status. Our tools read `coins(coinId).paid` and the payout balance at the receipt block.
+
+---
+# v1.2 clarifications and the refresh flow (2026-11-06)
+
+## 10. `redeem-shield.shield` is the BARE request
+In a `redeem-shield` payload, `shield` is the bare 9-field request object (`{npk, tokenType, tokenAddress, tokenSubID, value, encryptedBundle[3], shieldKey}`), **not** the whole `shield-target` wrapper. That is exactly what `redeemToShield` consumes. If the website wants to check the wrapper's `chainId` and `escrow`, those are already in the `redeem-shield` payload's own `chainId` and `escrow`.
+
+## 11. Website → phone: `shield-ask` (optional, for the user's convenience)
+Instead of typing the note value V into the website, the phone can show a QR `{"v":1,"t":"shield-ask","chainId":11155111,"escrow":"0x236b…","value":"V"}` that the website scans, then answers with a `shield-target` for exactly V. Typing V by hand stays valid.
+
+## 12. Phone → website: refresh (`kind = refresh`)
+A refresh moves a note's value into a NEW coin with a new expiry, with no ETH movement, so a coin never expires in the user's hands. The phone signs a REDEEM-kind output of the new "refresh" kind (escrow v3.1 `RESULTS.md` §3.6). The payload is a `redeem` payload plus the new coin's fields:
+```json
+{"v":1,"t":"refresh","chainId":11155111,"escrow":"0x236b…d779",
+ "header":{…},"path":[…],"redemption":{"outputs":[…],"index":0,"payout":"0x…new coin's reclaim address","r":"0x…","s":"0x…"},
+ "refresh":{"newCoinId":"0x…","newExpiry":1794812810,"newK0x":"0x…","newK0y":"0x…"}}
+```
+**Website:** simulate `refresh(header, path, redemption, newCoinId, newExpiry, newK0x, newK0y)` and send it (anyone may send it). Then decide "done" from the escrow's refresh event for the old coin and the new coin's `deposits(newCoinId)` slot being non-zero. Tell the phone, which marks the new coin spendable only then. A refresh is final once signed (the old key is used up), so the phone keeps the signed payload until the website confirms.
+
+Note: `newCoinId` must equal `refreshCoinId(sha256(message), index)`; it carries the reserved `RFSH` prefix that deposits refuse. Do not let the user choose it.

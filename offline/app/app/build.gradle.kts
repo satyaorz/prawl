@@ -6,7 +6,8 @@ plugins {
 
 // Build-time config (override with -Pprawl.site=https://my-wallet.vercel.app etc.)
 val site: String = (findProperty("prawl.site") as String?) ?: "https://<site>"
-val escrow = "0x70b3B7EdCD18087C999ec80e3C3B0227c7e0D6E5"
+// Escrow for NEW coins: v3.1 (adds private load, shield cash-out, refresh). v3 coins stay spendable (see core Escrows.PRODUCT).
+val escrow = "0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779"
 val chainId = "11155111"
 // SHA-256 of keystore/prawl-debug.keystore's certificate: the same key that signed the Java harness, so the
 // attestation policy (package + signing cert) recognises keys made by either app.
@@ -23,7 +24,7 @@ android {
         versionCode = 300
         versionName = "0.3.0"
         buildConfigField("String", "HANDOFF_SITE", "\"$site\"")
-        buildConfigField("String", "ESCROW", "\"$escrow\"")
+        buildConfigField("String", "ESCROW", "\"$escrow\"")   // default escrow for new coins
         buildConfigField("String", "CHAIN_ID", "\"$chainId\"")
         // Light-client sync (deposit proofs). Beacon LC routes: Nimbus; independent checkpoint checkers; EL eth_getProof.
         buildConfigField("String", "BEACON", "\"http://unstable.sepolia.beacon-api.nimbus.team\"")

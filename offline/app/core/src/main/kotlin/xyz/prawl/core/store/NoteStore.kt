@@ -28,6 +28,12 @@ interface NoteStore {
     fun putAccepted(name: String, json: JsonObject)
     fun deleteAccepted(name: String)
     fun acceptedNames(): List<String>
+
+    /** Generic named records (e.g. kind "refresh": a refresh signed and handed to the website, not yet confirmed). */
+    fun record(kind: String, name: String): JsonObject?
+    fun putRecord(kind: String, name: String, json: JsonObject)
+    fun deleteRecord(kind: String, name: String)
+    fun recordNames(kind: String): List<String>
 }
 
 class FileNoteStore(private val dir: File) : NoteStore {
@@ -69,6 +75,19 @@ class FileNoteStore(private val dir: File) : NoteStore {
         .map { it.name }.filter { it.startsWith("accepted_") && it.endsWith(".json") }
         .map { it.removePrefix("accepted_").removeSuffix(".json") }.sorted()
 
+    private fun recFile(kind: String, name: String) = File(dir, "rec_${safe(kind)}_${safe(name)}.json")
+
+    override fun record(kind: String, name: String): JsonObject? =
+        recFile(kind, name).takeIf { it.exists() }?.let { runCatching { Js.parse(it.readText()) }.getOrNull() }
+
+    override fun putRecord(kind: String, name: String, json: JsonObject) = atomicWrite(recFile(kind, name), json.toString())
+
+    override fun deleteRecord(kind: String, name: String) { recFile(kind, name).delete() }
+
+    override fun recordNames(kind: String): List<String> = (dir.listFiles() ?: emptyArray())
+        .map { it.name }.filter { it.startsWith("rec_${safe(kind)}_") && it.endsWith(".json") }
+        .map { it.removePrefix("rec_${safe(kind)}_").removeSuffix(".json") }.sorted()
+
     companion object {
         /** Write-then-rename so a crash never leaves a half-written note (the harness wrote in place). */
         fun atomicWrite(f: File, text: String) {
@@ -83,6 +102,7 @@ class MemoryNoteStore : NoteStore {
     private val notes = LinkedHashMap<String, JsonObject>()
     private val pending = LinkedHashMap<String, JsonObject>()
     private val acceptedRecs = LinkedHashMap<String, JsonObject>()
+    private val recs = LinkedHashMap<String, JsonObject>()
     @Synchronized override fun notes() = notes.values.map { Note(it) }
     @Synchronized override fun note(alias: String) = notes[alias]?.let { Note(it) }
     @Synchronized override fun put(note: Note) { notes[note.alias] = note.json }
@@ -94,4 +114,8 @@ class MemoryNoteStore : NoteStore {
     @Synchronized override fun putAccepted(name: String, json: JsonObject) { acceptedRecs[name] = json }
     @Synchronized override fun deleteAccepted(name: String) { acceptedRecs.remove(name) }
     @Synchronized override fun acceptedNames() = acceptedRecs.keys.toList()
+    @Synchronized override fun record(kind: String, name: String) = recs["$kind/$name"]
+    @Synchronized override fun putRecord(kind: String, name: String, json: JsonObject) { recs["$kind/$name"] = json }
+    @Synchronized override fun deleteRecord(kind: String, name: String) { recs.remove("$kind/$name") }
+    @Synchronized override fun recordNames(kind: String) = recs.keys.filter { it.startsWith("$kind/") }.map { it.removePrefix("$kind/") }
 }

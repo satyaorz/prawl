@@ -10,10 +10,13 @@ import xyz.prawl.core.certs.CertResolver
 import xyz.prawl.core.model.Bundle
 import xyz.prawl.core.model.CoinHeader
 import xyz.prawl.core.model.Output
+import xyz.prawl.core.protocol.DepositParamsV31
 import xyz.prawl.core.util.Bytes
+import xyz.prawl.core.util.Eth
 import xyz.prawl.core.util.EcdsaDer
 import xyz.prawl.core.util.Js
 import xyz.prawl.core.util.int
+import xyz.prawl.core.util.long
 import xyz.prawl.core.util.obj
 import xyz.prawl.core.util.optStr
 import xyz.prawl.core.util.str
@@ -81,13 +84,44 @@ object Handoff {
         }
         val rd = bundleJson.obj("redeem")
         val rrs = EcdsaDer.parseStrict(Bytes.unb64(rd.str("sig")))
+        val kind = rd.optStr("kind") ?: "redeem"
+        require(kind == "redeem" || kind == "shield" || kind == "refresh") { "unknown redemption kind '$kind'" }
         return buildJsonObject {
-            put("v", VERSION); put("t", "redeem"); put("chainId", h.chainId.toLong()); put("escrow", a40(h.escrow))
+            put("v", VERSION); put("t", when (kind) { "shield" -> "redeem-shield"; "refresh" -> "refresh"; else -> "redeem" })
+            put("chainId", h.chainId.toLong()); put("escrow", a40(h.escrow))
             put("header", header(h)); put("path", path)
             put("redemption", buildJsonObject {
                 put("outputs", outs(Output.list(rd["outputs"] as JsonArray))); put("index", rd.int("index"))
                 put("payout", a40(rd.str("payout"))); put("r", hexInt32(rrs.r)); put("s", hexInt32(rrs.s))
             })
+            when (kind) {
+                // HANDOFF v1.1 §7: "the same object as redeem, plus shield: the request" (echoed exactly as the website sent it)
+                "shield" -> put("shield", rd.obj("shield"))
+                // PROVISIONAL (not in HANDOFF.md yet): the extra arguments of refresh(header, path, redemption, newCoinId, newExpiry, newK0x, newK0y);
+                // redemption.payout is the new coin's depositor (reclaim address)
+                "refresh" -> rd.obj("refresh").let { r ->
+                    put("refresh", buildJsonObject {
+                        put("newCoinId", h32(r.str("coinId"))); put("newExpiry", r.long("expiry"))
+                        put("newK0x", h32(r.str("k0x"))); put("newK0y", h32(r.str("k0y")))
+                    })
+                }
+            }
+        }
+    }
+
+    /**
+     * HANDOFF v1.1 §5 `load-private` payload for a coin minted for commit-then-fund (escrow v3.1): the `DepositParams`
+     * (exact mode: minValue = maxValue = the coin value; `depositor` = the reclaim address) and the CREATE2 `depositAddress`
+     * the website must unshield to. [tipWei] is the relayer tip the unshield amount must also cover.
+     */
+    fun loadPrivate(h: CoinHeader, tipWei: BigInteger = BigInteger.ZERO): JsonObject {
+        val p = DepositParamsV31.Params(h.coinId, h.expiry, BigInteger(requireNotNull(h.k0x) { "header has no k0x" }, 16),
+            BigInteger(requireNotNull(h.k0y) { "header has no k0y" }, 16), h.depositor.lowercase(), h.value, h.value, tipWei)
+        require(Eth.normalize40(h.escrow) != null)
+        return buildJsonObject {
+            put("v", VERSION); put("t", "load-private"); put("chainId", h.chainId.toLong()); put("escrow", a40(h.escrow))
+            put("params", DepositParamsV31.paramsJson(p))
+            put("depositAddress", "0x" + DepositParamsV31.depositAddress(h.escrow, p))
         }
     }
 

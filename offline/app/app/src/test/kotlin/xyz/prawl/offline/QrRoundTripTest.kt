@@ -15,6 +15,9 @@ import org.junit.Test
 import xyz.prawl.core.handoff.Handoff
 import xyz.prawl.core.transport.PayQr
 import xyz.prawl.core.util.Js
+import xyz.prawl.core.util.obj
+import xyz.prawl.core.util.with
+import xyz.prawl.offline.ui.components.QrCodes
 import xyz.prawl.core.util.str
 import java.io.File
 import java.util.UUID
@@ -53,5 +56,32 @@ class QrRoundTripTest {
         println("receive code: ${link.length} chars -> QR version $version")
         assertTrue(version <= 15)
         assertEquals(qr, PayQr.parse(link))
+    }
+
+    /**
+     * A signed redeem-shield carries the ~600 B ShieldRequest on top of the redeem arguments. Real bundle + the real kohaku request:
+     * measures whether one QR can still hold it (QR version 40 holds 2953 bytes at ECC L).
+     */
+    @Test fun redeemShieldQrSize() {
+        val ho = File(raw, "seam_a_uncopyable/android_test/relay3ho")
+        val bundle = Js.parse(File(ho, "redeem3_ho_n_ho_c1793948361543.json").readText())            // real depth-1 note
+        val kohaku = Js.parse(File(raw, "v3/escrow_v31/fixtures/railgun_shield_1e15.json").readText())
+        val rd = bundle.obj("redeem")
+        val shieldBundle = bundle.with("redeem", rd.with("kind", "shield").with("payout", "0x" + "0".repeat(40)).with("shield", kohaku["request"]!!))
+        val p = Handoff.redeem(shieldBundle, null)
+        val d = Handoff.encode(p)
+        val link = Handoff.prawlLink("redeem-shield", d)
+        println("redeem-shield (depth-1 note): json ${p.toString().length} chars, link ${link.length} chars")
+        assertEquals("redeem-shield", p.str("t"))
+        val fits = link.length <= 2953
+        val enc = runCatching { roundTrip(link) }
+        println("redeem-shield QR: " + if (enc.isSuccess) "fits, QR version ${enc.getOrNull()}" else "DOES NOT FIT one QR (${enc.exceptionOrNull()?.javaClass?.simpleName})")
+        assertEquals(fits, enc.isSuccess)
+        // the app must degrade (no crash) when the QR cannot be made: QrCodes.bitmap throws and QrImage shows the copy/file hint
+        val tooBig = "x".repeat(4000)
+        assertTrue(runCatching { QrCodes.bitmap(tooBig) }.isFailure)
+        // a depth-2 note (+ ~600 B per extra spend) is larger still
+        val ho2 = Js.parse(File(raw, "v3/handoff_vectors/redeem_already_paid.json").readText()).str("d").length
+        println("depth-2 redeem d=$ho2 chars (+ shield ~800) -> exceeds one QR; copy/file/open-link are the way")
     }
 }

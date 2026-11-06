@@ -38,6 +38,36 @@ def load(m):
     h = header(m)
     return {"v": 1, "t": "load", "chainId": int(m["chainId"]), "escrow": a40(m["escrow"]), **h}
 
+def load_private(m, rpc=None):
+    """HANDOFF v1.1 section 5: DepositParams plus the per-coin deposit address (exact mode: min == max == value)."""
+    import importlib.util
+    tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), "escrow_v31", "tools")
+    def _load(name, fn):  # the v3.1 prawl_v3.py (deposit_address) differs from the v3 one imported above
+        spec = importlib.util.spec_from_file_location(name, os.path.join(tools, fn))
+        m = importlib.util.module_from_spec(spec); sys.path.insert(0, tools); spec.loader.exec_module(m); return m
+    P31 = _load("prawl_v31", "prawl_v3.py")
+    keccak256 = _load("vsp_v31", "verify_storage_proof.py").keccak256  # pure-Python keccak
+    h = header(m)
+    esc = a40(m["escrow"])
+    params = {"coinId": h["coinId"], "expiry": h["expiry"], "k0x": h["k0x"], "k0y": h["k0y"],
+              "depositor": h["depositor"], "minValue": h["value"], "maxValue": h["value"], "tip": "0"}
+    # the v3.1 encoder reads str as hex and int as a number: amounts are decimal, so pass ints
+    enc = {**params, "expiry": int(params["expiry"]), "minValue": int(params["minValue"]),
+           "maxValue": int(params["maxValue"]), "tip": int(params["tip"])}
+    mine = "0x" + P31.deposit_address(esc[2:], enc, keccak256)
+    out = {"v": 1, "t": "load-private", "chainId": int(m["chainId"]), "escrow": esc, "params": params, "depositAddress": mine}
+    if rpc:  # cross-check with the deployed contract's own view
+        import subprocess
+        tup = "(%s,%s,%s,%s,%s,%s,%s,%s)" % (params["coinId"], params["expiry"], params["k0x"], params["k0y"],
+                                              params["depositor"], params["minValue"], params["maxValue"], params["tip"])
+        r = subprocess.run(["cast", "call", esc, "depositAddress((bytes32,uint64,uint256,uint256,address,uint256,uint256,uint256))(address)",
+                            tup, "--rpc-url", rpc], capture_output=True, text=True, timeout=120)
+        onchain = r.stdout.strip().lower()
+        if onchain != mine.lower():
+            sys.exit("deposit address mismatch: python %s vs contract %s (%s)" % (mine, onchain, r.stderr.strip()[:200]))
+        print("deposit address matches the contract's own derivation:", mine, file=sys.stderr)
+    return out
+
 def redeem(b):
     certs = b.get("certs", {})
     path = []
@@ -58,7 +88,8 @@ def main():
     kind, f = sys.argv[1], sys.argv[2]
     site = sys.argv[sys.argv.index("--site") + 1] if "--site" in sys.argv else "https://<site>"
     j = json.load(open(f))
-    p = load(j) if kind == "load" else redeem(j)
+    rpc = sys.argv[sys.argv.index("--rpc") + 1] if "--rpc" in sys.argv else None
+    p = load(j) if kind == "load" else load_private(j, rpc) if kind == "load-private" else redeem(j)
     raw = json.dumps(p, separators=(",", ":"))
     d = base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
     res = {"payload": p, "d": d, "https": f"{site}/#/offline/{kind}?d={d}", "prawl": f"prawl://offline/{kind}?d={d}",

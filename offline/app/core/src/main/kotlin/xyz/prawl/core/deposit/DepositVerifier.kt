@@ -126,7 +126,7 @@ class LightClientDepositVerifier(
      * (chainId, escrow40) pairs whose storage is trusted. A proof only shows what some contract stores, so the
      * contract must be the real escrow: anyone can deploy a look-alike whose storage says anything.
      */
-    private val trustedEscrows: Set<Pair<String, String>> = setOf(SEPOLIA_CHAIN_ID to SEPOLIA_ESCROW_V3),
+    private val trustedEscrows: Set<Pair<String, String>> = xyz.prawl.core.protocol.Escrows.PRODUCT,
     /** Called with (coinId, proof JSON) after a proof verified, so the holder can forward it with the coin. */
     private val onVerified: ((String, String) -> Unit)? = null,
 ) : DepositVerifier {
@@ -148,6 +148,7 @@ class LightClientDepositVerifier(
 
 const val SEPOLIA_CHAIN_ID = "11155111"
 const val SEPOLIA_ESCROW_V3 = "70b3b7edcd18087c999ec80e3c3b0227c7e0d6e5"
+const val SEPOLIA_ESCROW_V31 = "236b1dc3b1a90e23728da6e361b0ab1c386cd779"
 
 /** Backed if any source vouches for the coin. */
 class CompositeDepositVerifier(private val sources: List<DepositVerifier>) : DepositVerifier {

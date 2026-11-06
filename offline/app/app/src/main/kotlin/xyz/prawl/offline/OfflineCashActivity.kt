@@ -17,6 +17,7 @@ import xyz.prawl.offline.ui.screens.DeviceCheckScreen
 import xyz.prawl.offline.ui.screens.LoadScreen
 import xyz.prawl.offline.ui.screens.PayScreen
 import xyz.prawl.offline.ui.screens.ReceiveScreen
+import xyz.prawl.offline.ui.screens.RefreshScreen
 import xyz.prawl.offline.ui.screens.SettingsScreen
 import xyz.prawl.offline.ui.theme.PrawlTheme
 
@@ -27,7 +28,10 @@ sealed interface Route {
     /** [link]: a scanned/opened `prawl://offline/pay?d=…` receive code (pre-fills, never pays by itself). */
     data class Pay(val link: String? = null) : Route
     data class Load(val coinId: String? = null, val depositor: String? = null, val tx: String? = null) : Route
-    data class CashOut(val payout: String? = null) : Route
+    /** [shield]: a `shield-target` link/JSON from the website (opens the private-balance cash-out with it pre-filled). */
+    data class CashOut(val payout: String? = null, val shield: String? = null) : Route
+    /** Refresh a v3.1 note ([alias]) or confirm a signed refresh ([pendingCoinId]). */
+    data class Refresh(val alias: String? = null, val pendingCoinId: String? = null) : Route
     data object Device : Route
     data object Settings : Route
 }
@@ -49,7 +53,9 @@ val LocalHostActivity = staticCompositionLocalOf<ComponentActivity?> { null }
  *  - an explicit intent, action `xyz.prawl.offline.action.OPEN`, extra `screen` =
  *    balance | receive | pay | load | cashout | device | settings (optional extras `depositor`, `payout`);
  *  - a deep link `prawl://offline/<screen>`, `prawl://offline/pay?d=…` (a receive code),
- *    `prawl://offline/load?depositor=0x…`, `prawl://offline/deposited?coinId=0x…&tx=0x…` (asks the user to confirm).
+ *    `prawl://offline/load?depositor=0x…`, `prawl://offline/deposited?coinId=0x…&tx=0x…` (asks the user to confirm),
+ *    `prawl://offline/shield-target?d=…` (website's RAILGUN shield target: opens private cash-out, signs nothing by itself),
+ *    `prawl://offline/refreshed?coinId=0x…` (opens the pending refresh to confirm).
  * Links only navigate and pre-fill; nothing is signed or marked without the user acting on the screen.
  */
 class OfflineCashActivity : ComponentActivity() {
@@ -83,6 +89,8 @@ class OfflineCashActivity : ComponentActivity() {
             return when (kind) {
                 "pay" -> Route.Pay(uri.toString())
                 "deposited" -> Route.Load(coinId = uri.getQueryParameter("coinId"), tx = uri.getQueryParameter("tx"))
+                "shield-target" -> Route.CashOut(shield = uri.toString())
+                "refreshed" -> Route.Refresh(pendingCoinId = uri.getQueryParameter("coinId"))
                 else -> screen(kind, uri.getQueryParameter("depositor"), uri.getQueryParameter("payout"))
             }
         }
@@ -107,7 +115,8 @@ fun App(nav: Nav) {
         Route.Receive -> ReceiveScreen(nav)
         is Route.Pay -> PayScreen(nav, r.link)
         is Route.Load -> LoadScreen(nav, r)
-        is Route.CashOut -> CashOutScreen(nav, r.payout)
+        is Route.CashOut -> CashOutScreen(nav, r.payout, r.shield)
+        is Route.Refresh -> RefreshScreen(nav, r)
         Route.Device -> DeviceCheckScreen(nav)
         Route.Settings -> SettingsScreen(nav)
     }

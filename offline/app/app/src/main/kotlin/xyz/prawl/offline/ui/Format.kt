@@ -1,6 +1,7 @@
 package xyz.prawl.offline.ui
 
 import xyz.prawl.core.model.Note
+import xyz.prawl.core.protocol.Escrows
 import xyz.prawl.core.util.Eth
 import java.math.BigInteger
 import java.text.SimpleDateFormat
@@ -34,14 +35,25 @@ data class NoteView(
     val state: State,
     val ownerApproval: Boolean,
     val redeemedTo: String? = null,
+    /** On escrow v3.1: can be refreshed (new expiry) or cashed out into a private balance. */
+    val refreshable: Boolean = false,
 ) {
-    enum class State { SPENDABLE, AWAITING_DEPOSIT, SPENT, REDEEMED }
+    enum class State { SPENDABLE, AWAITING_DEPOSIT, SPENT, REDEEMED, REFRESHED }
 
     companion object {
         fun of(n: Note, ownerApproval: Boolean) = NoteView(
             n.alias, n.label, n.value, n.depth, n.header.expiry,
-            when { n.redeemedTo != null -> State.REDEEMED; n.spent -> State.SPENT; n.pendingDeposit -> State.AWAITING_DEPOSIT; else -> State.SPENDABLE },
-            ownerApproval, n.redeemedTo,
+            when {
+                n.refreshedTo != null -> State.REFRESHED
+                n.redeemedTo != null -> State.REDEEMED
+                n.spent -> State.SPENT
+                n.pendingDeposit -> State.AWAITING_DEPOSIT
+                else -> State.SPENDABLE
+            },
+            ownerApproval, n.redeemedTo, Escrows.isV31(n.header.chainId, n.header.escrow),
         )
     }
 }
+
+/** A refresh signed and handed to the website, waiting for the user to confirm it landed. */
+data class RefreshView(val coinId: String, val valueWei: BigInteger, val newExpiry: Long)

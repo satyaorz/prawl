@@ -1,11 +1,11 @@
-# Prawl offline cash: the Android app (v3), 2026-11-06
+# Prawl offline cash: the Android app (v3 and v3.1), 2026-11-06
 
 This folder is a Gradle project (Kotlin, Jetpack Compose). It has a `:core` protocol library, ported from the Java harness with the same wire formats, and an `:app` with the user-facing screens. The app also has a debug "harness mode" that the existing adb scripts can drive.
 
 **Status:**
-- Everything here was built and tested on the JVM only.
-- Nothing was installed on a phone (as instructed: no adb).
-- The device checklist is in §9.
+- Built and tested on the JVM here. The coordinator has since run the compat APK on the two phones (the v3 protocol, BLE+L2CAP and the verdict-delivery fix are verified there).
+- The v3.1 additions (§14: shield cash-out, refresh, private load) have only been tested on the JVM so far.
+- The device checklist is in §12; the v3.1 items are in §14.6.
 
 ## 1. APKs
 
@@ -261,7 +261,7 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 
 ## 11. What was tested on the JVM (`./gradlew test`: all pass)
 
-**`:core`: 67 tests,** run for both debug and release.
+**`:core`: 86 tests,** run for both debug and release (v3.1 adds 14, verdict delivery 5; see §14.5 and §15).
 
 | Suite | What it covers |
 |---|---|
@@ -272,7 +272,7 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 | LightClientTest (7) | 49 of the 50 shared DepositProof vectors (the 50th needs a package-private threshold override). The **real escrow-v3 proof of coin web1 backs the real coin**, and altered value/depositor/expiry, a proof of another coin, a look-alike escrow, no cache and a swapped key all fail. The **real bundle `pay3_web1_bobw` is accepted on the proof alone, with no snapshot**. A 3-periods-stale recipient accepts after the payer attaches the stored updates, and learns the committees. Bootstrap needs an independent confirmation. The RLP of the real Gloas/Amsterdam header re-encodes exactly |
 | WalletFlowTest (10) | Software keys with single use emulated, three phones. Mint, then pending deposit → split/change → retry resends identical bytes → malicious re-spend refused (change key cleaned up) → 2nd hop over an **encrypted in-memory link** (rich verdict) → conservation across phones → redeem → HANDOFF payload. Also: payee-key check before signing, QR key-hash mismatch, one note per receive key, owner approval (a silent sign is refused), hop/lifetime pre-checks, wrong session secret → link lost with the key kept, label reuse, deposit-proof forwarding |
 
-**`:app`: 12 tests** per debug variant.
+**`:app`: 19 tests** per debug variant (12 earlier + 6 v3.1 screenshots + 1 QR-size test; 3 in release variants).
 - `QrRoundTripTest`: the real handoff links and receive codes encode and decode back exactly.
 - `ScreenshotTest`: 10 renders.
 - Release variants run only `QrRoundTripTest`.
@@ -349,3 +349,109 @@ The permission screens (`PermissionGate`) explain why before the system dialog a
 - The payer cannot know the payee's own cap or revocation staleness, so a payment can still be signed and then rejected. The bundle stays resendable to the same key.
 - A `min_participants` vector of the 50 was skipped on the JVM; it needs a package-private field.
 - The debug APK is 41 MB (Compose, not minified).
+
+
+## 14. v3.1 phone side (added 2026-11-06): shield cash-out, refresh, private load
+
+Escrows: **v3.1 `0x236b1dC3b1a90E23728DA6E361b0Ab1C386cd779`** and **v3 `0x70b3B7EdCD18087C999ec80e3C3B0227c7e0D6E5`** (Sepolia). Specs followed: `escrow_v31/RESULTS.md` §3.5, §3.6, §6 and `HANDOFF.md` v1.1 §5–§9.
+
+### 14.1 Escrow rules
+- The product accepts and spends coins of **both** escrows for plain kinds (`Escrows.PRODUCT`: deposit/load, pay, redeem). That includes the receive-side escrow allowlist and the light-client trust set.
+- **Shield cash-out, refresh and private load need v3.1 and are refused on v3.** The wallet refuses them before signing anything, so no key is burnt. The UI hides or explains them for v3 coins.
+- New coins default to v3.1 (a Load-screen choice, v3 optional). Private load forces v3.1.
+- Proof building uses each coin's **own** escrow. This fixed a latent bug: the Load screen passed the default escrow, which would have mis-proven v3 coins once two escrows exist.
+- `mint` re-draws a coin id that starts with `RFSH` (0x52465348, reserved for refreshed coins).
+
+### 14.2 Shield cash-out (`OfflineWallet.redeemShield`, `ShieldRequest`, `checkShield`)
+- Output key `sha256hex("PRAWL-REDEEM-SHIELD|chainId|escrow40|" + sha256(abi.encode(ShieldRequest)))`; the encoding is the 9 static words (288 bytes).
+- Request parsing is strict: hex lengths, decimal forms, value ≤ uint120, `encryptedBundle` has exactly 3 words.
+- **Refusals** (all shown as green or red value-check lines in the UI, all enforced in `:core`):
+  - the coin is on v3.1;
+  - the target names this coin's chain and escrow (when it names them);
+  - `tokenType == 0`, token = the chain's WETH (Sepolia `0xfff9…6b14`), `tokenSubID == 0`;
+  - the shield value equals the note's value **exactly**;
+  - and, as for any redemption, the note must be unspent, deposited and unexpired.
+- Bundle: `redeem.kind = "shield"`, `redeem.shield` (the request exactly as the website sent it), `redeem.shieldHash`, payout `0x0000…0000`.
+- Website payload: `t:"redeem-shield"` = the `redeem` payload plus `shield`. This follows HANDOFF §7.
+- **Interpretation to confirm with the wallet session:** `shield` is the bare `request` object (not the whole `shield-target`), as the Java reference stores it and as `redeemToShield` consumes it.
+
+### 14.3 Refresh (`OfflineWallet.refresh` / `markRefreshed`, `Refresh`)
+- Output key `sha256hex("PRAWL-REFRESH|chainId|escrow40|newExpiry|newK0Hash|depositor40")`.
+- The new coin id is derived, not chosen: `"RFSH" + sha256hex("PRAWL-REFRESH-ID|" + sha256hex(message) + "|" + index)[8:]` (index 0).
+- The phone makes the new genesis key (same hardening: single-use, StrongBox if present, owner approval if set), takes a new expiry (1–28 days; the escrow needs ≤ 30 days at submission) and the new reclaim address, then signs. It refuses a zero or invalid reclaim address, a v3 coin, an expired note, and an out-of-range lifetime. If the hardware refuses the signature, the new key is deleted again.
+- Bundle: `redeem.kind = "refresh"`, `redeem.refresh = {expiry, k0:[cert ids], k0x, k0y, depositor, coinId}` (`coinId` is an extra, derived field), payout = the new depositor. The new key's certificate chain is carried in `certs`.
+- **State after submission** (the new coin does not exist as a spendable note yet):
+  - the old note is marked spent with `refreshedTo`;
+  - a pending record (`rec_refresh_<coinId>.json`) holds the new header, the new key alias and the signed bundle, and survives restarts;
+  - `markRefreshed(coinId)` creates the new genesis note and consumes the record. The UI calls it after an online light-client check of the new coin, or after the user confirms manually.
+  - The new coin's label is the old label plus `r` (`xr`, `xrr`, …), unique among live coins.
+- **Provisional website payload** (HANDOFF.md has none yet): `t:"refresh"` = the `redeem` payload plus `refresh:{newCoinId, newExpiry, newK0x, newK0y}`, with `redemption.payout` = the new depositor. These are exactly the extra arguments of `refresh(header, path, redemption, newCoinId, newExpiry, newK0x, newK0y)`. **This needs agreeing with the wallet session.**
+
+### 14.4 Private load (`load-private`, HANDOFF §5)
+- `mint(…, privateLoad = true, tipWei)`: the header's `depositor` is the **reclaim address** (the user enters a fresh public address). It requires v3.1. Exact mode: `minValue = maxValue = value`; the tip is added to what must be unshielded.
+- `Handoff.loadPrivate` produces `{v, t:"load-private", chainId, escrow, params{coinId, expiry, k0x, k0y, depositor, minValue, maxValue, tip}, depositAddress}`. `depositAddress` is computed on the phone as the CREATE2 address of the 56-byte forwarder (`DepositParamsV31`), so the website can check it against `depositAddress(params)` before sending funds.
+- The Load screen shows the QR/link and the deposit address, and explains the unshield amount (value + tip). "Check deposit (online)" works as before (the deposit slot is the same).
+
+### 14.5 Tests (JVM, 14 new in `V31Test`; all pass)
+| Test | What |
+|---|---|
+| kohakuShieldHash | The **real kohaku ShieldRequest** hashes to `0x2b5ff8a94e78d1c735aa2ff9bee40b7497fa4b90d8faaedbc1beb0218255cd7c`; the 288 abi bytes equal the fixture's `abiEncoded`; also accepted wrapped in a `shield-target` |
+| shieldVectorsMatchPython | 4 requests (1 real, 3 synthetic, one with a value near uint120) x 2 escrows: abi, hash and output key equal `v31_vectors.json` (generated by `tools/prawl_v3.py`) |
+| refreshVectorsMatchPython | 4 refresh output keys x 2 escrows, and 6 derived `RFSH` coin ids, equal the Python vectors; the SPKI hash of a point equals the key's encoded hash |
+| depositAddressesMatchPython | 4 DepositParams x 2 escrows: the CREATE2 deposit address equals the Python value |
+| shieldRequestIsParsedStrictly | 8 malformed requests rejected |
+| shieldCashOutOfTheKohakuRequest | End to end: the signed bundle's output key, shieldHash, payout `0x0`, signature (verified under the genesis key) and the `redeem-shield` payload |
+| shieldRefusals | Value above or below the note, ERC721, another token, subID ≠ 0, another chain, another escrow, malformed, a **v3 coin**, an expired note: all refused with the note unspent and the key untouched |
+| plainRedeemStillWorksOnBothEscrows | Plain redeem on v3 and v3.1 |
+| refreshSigns… | Output key, derived coin id, signature, carried certs, the pending record, the new key kept, `markRefreshed` creating a spendable genesis note, the new coin cashable, an already-refreshed note refused |
+| refreshRefusals | Lifetimes 0 / 60 s / > 28 d, zero or bad reclaim, v3 coin, a hardware refusal (the new key is deleted again), an expired note |
+| refreshedLabelsStayUnique, privateLoadPayload, shieldTargetLinkParses | Labels; the `load-private` payload and deposit address; link parsing |
+
+`:app` additions: six new screenshots (`9`, `9a`, `10`, `11`, `12`, `1a` in `docs/screenshots/`) and `QrRoundTripTest.redeemShieldQrSize` (7 tests).
+
+### 14.6 UI changes
+- **Cash out:** a switch "To an address / To a private balance". The private mode:
+  1. shows the note's value V and a QR for the wallet;
+  2. takes a `shield-target` (scan, or paste a link or JSON), and auto-selects the note whose value equals the request;
+  3. shows the value-check lines (`9_cashout_private.png`; `9a_…mismatch.png` shows the red case);
+  4. signs and shows the `redeem-shield` QR / copy / open / save file.
+  Deep link: `prawl://offline/shield-target?d=…` opens it pre-filled (and never signs).
+- **Balance:** each v3.1 note has a **Refresh** button; the warning appears when a note has less than **3 days** left (it was 48 h); v3 notes are labelled "v3" and can only be cashed out and loaded again; a "Refreshing" card lists signed refreshes awaiting confirmation. `prawl://offline/refreshed?coinId=…` opens one.
+- **Refresh screen:** pick a note, lifetime, reclaim address → sign → QR/link/file for the wallet → "Check on-chain (online)" / "Mark as refreshed".
+- **Load:** "Public deposit / Private (RAILGUN)" switch and an escrow choice (v3.1 default).
+- **Provisional, not in HANDOFF.md:** the QR showing V (`t:"shield-ask"`, `{chainId, escrow, value}`) that HANDOFF §6.1 describes in words only.
+
+### 14.7 Harness commands (debug builds; same activity as before)
+| Command | Extras | Output |
+|---|---|---|
+| `redeem` with a shield | `coin`, `shield=<file in files/in>` (shield-target JSON or bare request) | The first unspent note of `coin` worth exactly the request value → `out/redeem3_<coin>_<alias>.json`, `out/handoff_redeem_shield_<coin>_<alias>.json`. REFUSED with the Java reference's messages |
+| `refresh` | `coin`, `depositor=<reclaim>`, `expiresIn` (s, default 14 d), `note=<alias>`, `label=<new label>` | `out/refresh3_<coin>_<alias>.json`, `out/handoff_refresh_….json`; logs `REFRESH newCoinId 0x… newExpiry …` |
+| `mark_refreshed` | `newcoin=<hex coin id>` | The new coin's genesis note appears (label `<coin>r`) |
+| `load_private` | `coin`, `eth`, `depositor=<reclaim>`, `expiresIn`, `chainId`, `escrow` (default v3.1), `tip=<eth>` | `out/mint3_<coin>.json`, `out/handoff_load_private_<coin>.json`; logs the deposit address |
+| any command | `v31escrow=<addr>` (+ `chainId`) | Treats that escrow as v3.1 as well (a local anvil deployment) |
+
+Notes: the harness `redeem` without `shield` and `load_private` mint notes immediately spendable, like the harness's `mint`. Harness mode accepts any escrow for plain kinds, as before.
+
+### 14.8 Known gaps and things to confirm
+- **QR size.** A signed `redeem-shield` link for the real depth-1 note is **2,498 chars and fits one QR (version 37)**. A depth-2 note (about 2,500 chars for the plain redeem already, plus the ~800-char shield request) is **too large for any QR**; the app shows "too large for one QR" and the copy / open-link / save-file actions work. The same applies to refresh payloads of deep notes. A shield target for the phone to read is about 1,000 chars as a link and fits a QR comfortably.
+- **Provisional payloads** (agree with the wallet session): `t:"refresh"` (§14.3) and `t:"shield-ask"` (§14.6). The interpretation of `shield` in `redeem-shield` (§14.2) should be confirmed.
+- **Range-mode private load** (`minValue < maxValue`) is not offered; exact mode only. The tip is available in harness mode only (UI sends 0).
+- The refresh lifetime cap is 28 days, below the escrow's 30, to leave room between signing and submission. A refresh submitted more than about 2 days after signing may revert on the window.
+- Refresh and shield cash-out are **signature-final**: once signed, the old key is used up. Keep the signed file until the website's submission is confirmed (the UI says so). An abandoned refresh stays as a pending record; there is no "cancel" because the refresh could still be submitted later.
+- Not tested on a device: the new screens, `redeemToShield` / `refresh` against the real escrow, and the unshield flow. No v3.1 transaction was sent by this work.
+- Light-client proofs for the **new coin of a refresh** work through the same "Check on-chain (online)" path, but have not been run against a live refresh.
+
+## 15. Verdict delivery fix (BLE+L2CAP, found on the phones)
+**Bug:** with the Samsung as payee and the OnePlus as payer, the payee accepted but the payer got EOF instead of the verdict (5 of 5; the other direction 0 of 5). The payee closed the socket right after writing, and the stack dropped the unflushed verdict.
+
+**Fix (`PaymentSession`):**
+- The payee no longer closes right after the verdict. It waits (default 4 s, on a helper thread) for the payer's close-ack (`ACK` frame) or a disconnect, then closes.
+- The payer sends the ACK after reading the verdict.
+- Old harness payers that just disconnect still work. The payer's extra frame is ignored by an old harness payee.
+- **Idempotent accept:**
+  - After accepting, the wallet keeps `accepted_<name>.json` (the receive key's chain, the final spend signature's hash, the value; 7 days).
+  - A resend of the same payment returns ACCEPTED without re-verifying or crediting twice, even if the payee has already spent the note.
+  - `request(name)` re-presents the same key, so the payer's wallet resends the identical signed bytes.
+  - The receive screen has a "Payer didn't see it?" button.
+
+**Tests (`VerdictDeliveryTest`, 5):** an in-memory transport whose stack buffers writes and drops them when the writer closes first reproduces the bug (the payer ends `VerdictLost` while the payee holds the note); with the ack wait the verdict arrives; a silent payer cannot hang the payee; a connection that dies after the verdict is written leads to a successful resend answered ACCEPTED with nothing credited twice; the idempotent record survives spending the note and expires after 7 days.

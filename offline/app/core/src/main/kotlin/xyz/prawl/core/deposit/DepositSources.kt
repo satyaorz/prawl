@@ -19,7 +19,7 @@ class DepositSources(
     private val dir: File,
     private val lightClient: DepositProofBackend? = null,
     private val onProofVerified: ((String, String) -> Unit)? = null,
-    private val trustedEscrows: Set<Pair<String, String>> = setOf(SEPOLIA_CHAIN_ID to SEPOLIA_ESCROW_V3),
+    private val trustedEscrows: Set<Pair<String, String>> = xyz.prawl.core.protocol.Escrows.PRODUCT,
 ) {
     init { dir.mkdirs() }
 

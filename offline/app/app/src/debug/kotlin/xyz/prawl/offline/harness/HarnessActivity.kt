@@ -21,6 +21,8 @@ import xyz.prawl.core.keys.KeySpec
 import xyz.prawl.core.model.ReceiveRequest
 import xyz.prawl.core.protocol.OfflineWallet
 import xyz.prawl.core.protocol.OfflineWallet.PayOutcome
+import xyz.prawl.core.protocol.Escrows
+import xyz.prawl.core.protocol.ShieldRequest
 import xyz.prawl.core.transport.PayQr
 import xyz.prawl.core.transport.PaymentSession
 import xyz.prawl.core.transport.SecureLink
@@ -47,6 +49,15 @@ import java.util.UUID
  *   redeem    coin payout                               -> out/redeem3_<coin>_<alias>.json (+ out/handoff_redeem_…json)
  *   bt3_receive name snapshot [auth] | bt3_pay coin amount addr   (plaintext RFCOMM, harness UUID: interop with the Java harness)
  *   show | perm
+ * v3.1 (escrow 0x236b…d779; refused on v3):
+ *   redeem    coin shield=<file>                        shield-target JSON (or bare request) in files/in -> out/redeem3_… + out/handoff_redeem_shield_….json
+ *                                                       (refuses unless value == the note, plain WETH, matching escrow)
+ *   refresh   coin depositor=<reclaim addr> [expiresIn] [note=<alias>] [label=<new>] -> out/refresh3_<coin>_<alias>.json,
+ *                                                       out/handoff_refresh_….json; logs "REFRESH newCoinId 0x…"
+ *   mark_refreshed newcoin=<hex>                        the refresh landed: the new coin's genesis note appears
+ *   load_private coin eth depositor=<reclaim addr> [expiresIn] [chainId] [escrow] [tip=<eth>] -> out/mint3_<coin>.json,
+ *                                                       out/handoff_load_private_<coin>.json (params + depositAddress)
+ *   any command: v31escrow=<addr> [chainId] also treats that escrow as v3.1 (local anvil)
  * New:
  *   ble_receive name [snapshot] [transport=rfcomm]      -> out/qr_<name>.txt (the receive code), then listens (encrypted)
  *   ble_pay     coin amount qr                          (qr = file in files/in holding the prawl://offline/pay link)
@@ -96,7 +107,10 @@ class HarnessActivity : Activity() {
     private fun write(name: String, s: String) = File(outDir, name).writeText(s)
 
     private fun snapshot(name: String?) = name?.let { SnapshotDepositVerifier(Js.parse(read(it))) }
-    private fun wallet(snapshotFile: String? = null): OfflineWallet = graph.harnessWallet(snapshot(snapshotFile), ::log)
+    /** Extra escrow treated as v3.1 (local anvil tests): extras `v31escrow` (+ `chainId`, default 11155111). */
+    private var v31Extra: Set<Pair<String, String>> = emptySet()
+
+    private fun wallet(snapshotFile: String? = null): OfflineWallet = graph.harnessWallet(snapshot(snapshotFile), ::log, v31Extra)
 
     private fun handoffFile(kind: String, payload: JsonObject): String {
         val d = Handoff.encode(payload)
@@ -111,6 +125,7 @@ class HarnessActivity : Activity() {
         log("v3 cmd=$cmd on ${Build.MANUFACTURER} ${Build.MODEL}")
         val auth = x.getString("auth") == "true"
         val g = graph
+        v31Extra = x.getString("v31escrow")?.let { e -> Eth.normalize40(e)?.let { setOf((x.getString("chainId") ?: "11155111") to it) } } ?: emptySet()
         when (cmd) {
             "mint" -> {
                 val label = x.getString("coin")!!
@@ -143,6 +158,22 @@ class HarnessActivity : Activity() {
             "redeem" -> {
                 val coin = x.getString("coin")!!
                 val w = wallet()
+                val shieldFile = x.getString("shield")
+                if (shieldFile != null) {
+                    // cash out into a RAILGUN shield: the note whose value equals the request's value exactly (Wallet3Activity.redeemShield)
+                    val target = Js.parse(read(shieldFile))
+                    val req = try { ShieldRequest.parse(target) } catch (e: Exception) { log("REFUSED: ${e.message}"); return "REFUSED" }
+                    val note = g.notes.notes().firstOrNull { !it.spent && !it.pendingDeposit && it.label == coin && it.value == req.value }
+                        ?: run { log("REFUSED: no unspent note of $coin worth exactly ${req.value} wei (shield value must equal the note)"); return "REFUSED" }
+                    return when (val o = w.redeemShield(note.alias, target, BiometricApprover(this))) {
+                        is OfflineWallet.RedeemOutcome.Signed -> {
+                            write("redeem3_${coin}_${note.alias}.json", o.bundle.toString())
+                            write("handoff_redeem_shield_${coin}_${note.alias}.json", handoffFile("redeem-shield", o.handoff))
+                            "OK"
+                        }
+                        is OfflineWallet.RedeemOutcome.Refused -> { log("REFUSED: ${o.reason}"); "REFUSED" }
+                    }
+                }
                 val note = g.notes.notes().firstOrNull { !it.spent && !it.pendingDeposit && it.label == coin }
                     ?: run { log("no unspent note of $coin"); return "NONE" }
                 return when (val o = w.redeem(note.alias, x.getString("payout")!!, BiometricApprover(this))) {
@@ -153,6 +184,39 @@ class HarnessActivity : Activity() {
                     }
                     is OfflineWallet.RedeemOutcome.Refused -> { log("refused: ${o.reason}"); "REFUSED" }
                 }
+            }
+            "refresh" -> {
+                // sign a note into a new coin: coin=<label> depositor=<reclaim address> [expiresIn=<s>, default 14 d] [note=<alias>] [label=<new label>]
+                val coin = x.getString("coin")!!
+                val note = g.notes.notes().firstOrNull { !it.spent && !it.pendingDeposit && it.label == coin && (x.getString("note") == null || it.alias == x.getString("note")) }
+                    ?: run { log("no unspent note of $coin"); return "NONE" }
+                val secs = (x.getString("expiresIn") ?: (14 * 86400).toString()).toLong()
+                return when (val o = wallet().refresh(note.alias, secs, x.getString("depositor")!!, BiometricApprover(this), x.getString("label"))) {
+                    is OfflineWallet.RefreshOutcome.Signed -> {
+                        write("refresh3_${coin}_${note.alias}.json", o.bundle.toString())
+                        write("handoff_refresh_${coin}_${note.alias}.json", handoffFile("refresh", o.handoff))
+                        log("REFRESH newCoinId 0x${o.newCoinId} newExpiry ${o.newExpiry}")
+                        "OK"
+                    }
+                    is OfflineWallet.RefreshOutcome.Refused -> { log("refused: ${o.reason}"); "REFUSED" }
+                }
+            }
+            "mark_refreshed" -> {
+                // newcoin=<hex coin id from the refresh>: the refresh landed, create the new coin's genesis note
+                val n = wallet().markRefreshed(x.getString("newcoin")!!)
+                log("new coin live: label ${n.label}, coinId ${n.header.coinId}, ${Eth.eth(n.value)} ETH")
+                return "OK"
+            }
+            "load_private" -> {
+                // coin=<label> eth=<value> depositor=<RECLAIM address> [expiresIn] [chainId] [escrow, default v3.1] [tip=<eth>]
+                val label = x.getString("coin")!!
+                val m = wallet().mint(label, Eth.wei(x.getString("eth")!!), (x.getString("expiresIn") ?: (14 * 86400).toString()).toLong(),
+                    x.getString("chainId") ?: "11155111", x.getString("escrow") ?: ("0x" + Escrows.SEPOLIA_V31), x.getString("depositor")!!,
+                    KeySpec(userAuthPerUse = auth), privateLoad = true, tipWei = x.getString("tip")?.let { Eth.wei(it) } ?: java.math.BigInteger.ZERO)
+                write("mint3_$label.json", m.mintFile.toString())
+                write("handoff_load_private_$label.json", handoffFile("load-private", m.handoffPrivate))
+                log("depositAddress " + m.handoffPrivate.let { (it["depositAddress"] as kotlinx.serialization.json.JsonPrimitive).content })
+                return "OK"
             }
             "bt3_receive" -> {
                 val name = x.getString("name")!!

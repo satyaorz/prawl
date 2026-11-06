@@ -28,6 +28,7 @@ import xyz.prawl.offline.Route
 import xyz.prawl.offline.graph
 import xyz.prawl.offline.ui.Fmt
 import xyz.prawl.offline.ui.NoteView
+import xyz.prawl.offline.ui.RefreshView
 import xyz.prawl.offline.ui.components.Amount
 import xyz.prawl.offline.ui.components.Chip
 import xyz.prawl.offline.ui.components.Mono
@@ -42,6 +43,9 @@ import xyz.prawl.offline.ui.theme.Status
 import xyz.prawl.offline.ui.theme.Tw
 import java.math.BigInteger
 
+/** A note with less than this left gets the "refresh" warning. */
+const val WARN_S = 3 * 86400L
+
 data class BalanceState(
     val notes: List<NoteView>,
     val nowS: Long,
@@ -50,11 +54,12 @@ data class BalanceState(
     val pendingRequests: Int = 0,
     val revocationStale: Boolean = false,
     val depositSources: Int = 0,
+    val pendingRefreshes: List<RefreshView> = emptyList(),
 ) {
     val spendable get() = notes.filter { it.state == NoteView.State.SPENDABLE }
     val total: BigInteger get() = spendable.fold(BigInteger.ZERO) { a, n -> a + n.valueWei }
-    /** Spendable notes a recipient would refuse soon / now. */
-    val expiringSoon get() = spendable.filter { it.expiry - nowS < 48 * 3600 }
+    /** Spendable notes with less than 3 days left: time to refresh (v3.1) or cash out (v3). */
+    val expiringSoon get() = spendable.filter { it.expiry - nowS < WARN_S }
     val awaiting get() = notes.filter { it.state == NoteView.State.AWAITING_DEPOSIT }
 }
 
@@ -73,12 +78,14 @@ fun BalanceScreen(nav: Nav) {
             pendingRequests = g.notes.pendingNames().size,
             revocationStale = g.recipientPolicy().isStale(now, anchors.revocationFetchedAt),
             depositSources = g.depositSources.files().size,
+            pendingRefreshes = g.wallet().pendingRefreshes().map { RefreshView(it.coinId, it.value, it.header.expiry) },
         )
     }
     BalanceContent(state,
         onReceive = { nav.go(Route.Receive) }, onPay = { nav.go(Route.Pay()) }, onLoad = { nav.go(Route.Load()) },
         onCashOut = { nav.go(Route.CashOut()) }, onDevice = { nav.go(Route.Device) }, onSettings = { nav.go(Route.Settings) },
-        onAwaiting = { nav.go(Route.Load(coinId = it)) })
+        onAwaiting = { nav.go(Route.Load(coinId = it)) },
+        onRefresh = { nav.go(Route.Refresh(alias = it)) }, onPendingRefresh = { nav.go(Route.Refresh(pendingCoinId = it)) })
 }
 
 @Composable
@@ -86,6 +93,7 @@ fun BalanceContent(
     s: BalanceState,
     onReceive: () -> Unit = {}, onPay: () -> Unit = {}, onLoad: () -> Unit = {}, onCashOut: () -> Unit = {},
     onDevice: () -> Unit = {}, onSettings: () -> Unit = {}, onAwaiting: (String) -> Unit = {},
+    onRefresh: (String) -> Unit = {}, onPendingRefresh: (String) -> Unit = {},
 ) {
     var showSpent by remember { mutableStateOf(false) }
     Page("Offline cash", null, actions = {
@@ -109,10 +117,21 @@ fun BalanceContent(
         if (s.expiringSoon.isNotEmpty()) PCard(border = Tw.amber400.copy(alpha = 0.5f)) {
             StatusLine(Status.PENDING, "Refresh before expiry")
             val below = s.expiringSoon.filter { it.expiry - s.nowS < s.minRemainingS }
-            Secondary("${s.expiringSoon.size} note(s) expire within 48 h. Recipients refuse notes with less than " +
-                "${Fmt.left(s.minRemainingS)} left, and the escrow pays only before expiry. Go online, cash out and load again." +
+            Secondary("${s.expiringSoon.size} note(s) have less than 3 days left. Recipients refuse notes with less than " +
+                "${Fmt.left(s.minRemainingS)} left, and the escrow pays only before expiry." +
                 if (below.isNotEmpty()) " ${below.size} can no longer be spent offline." else "")
-            SecondaryButton("Cash out", onCashOut)
+            Secondary("Refresh moves a v3.1 note into a new coin with a fresh expiry (online, through the wallet). " +
+                "Older v3 coins can only be cashed out and loaded again.")
+            if (s.expiringSoon.any { !it.refreshable }) SecondaryButton("Cash out", onCashOut)
+        }
+        if (s.pendingRefreshes.isNotEmpty()) PCard(title = "Refreshing", subtitle = "Signed and handed to the wallet; confirm once it landed on-chain.") {
+            s.pendingRefreshes.forEach { r ->
+                Row(Modifier.fillMaxWidth().clickable { onPendingRefresh(r.coinId) }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Mono(Fmt.eth(r.valueWei) + " ETH", Modifier.weight(1f))
+                    Secondary("new expiry " + Fmt.date(r.newExpiry))
+                    Chip("pending", Status.PENDING)
+                }
+            }
         }
         if (s.revocationStale) PCard(border = Tw.amber400.copy(alpha = 0.5f)) {
             StatusLine(Status.PENDING, "Revocation list is older than 48 h")
@@ -135,16 +154,16 @@ fun BalanceContent(
             if (s.spendable.isEmpty()) Secondary("No spendable notes. Load cash while online, or receive a payment.")
             s.spendable.sortedBy { it.expiry }.forEachIndexed { i, n ->
                 if (i > 0) HorizontalDivider(color = Tw.zinc800)
-                NoteRow(n, s)
+                NoteRow(n, s, onRefresh)
             }
-            val spent = s.notes.filter { it.state == NoteView.State.SPENT || it.state == NoteView.State.REDEEMED }
+            val spent = s.notes.filter { it.state == NoteView.State.SPENT || it.state == NoteView.State.REDEEMED || it.state == NoteView.State.REFRESHED }
             if (spent.isNotEmpty()) {
                 Text(if (showSpent) "Hide spent (${spent.size})" else "Show spent (${spent.size})",
                     style = Tw.secondary.copy(color = Tw.zinc400), modifier = Modifier.clickable { showSpent = !showSpent }.padding(vertical = 4.dp))
                 if (showSpent) spent.forEach { n ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Mono(Fmt.eth(n.valueWei) + " ETH", Modifier.weight(1f), style = Tw.mono.copy(color = Tw.zinc500))
-                        Chip(if (n.state == NoteView.State.REDEEMED) "cashed out" else "spent", Status.NEUTRAL)
+                        Chip(when (n.state) { NoteView.State.REDEEMED -> "cashed out"; NoteView.State.REFRESHED -> "refreshed"; else -> "spent" }, Status.NEUTRAL)
                     }
                 }
             }
@@ -154,22 +173,24 @@ fun BalanceContent(
 }
 
 @Composable
-private fun NoteRow(n: NoteView, s: BalanceState) {
+private fun NoteRow(n: NoteView, s: BalanceState, onRefresh: (String) -> Unit) {
     val left = n.expiry - s.nowS
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Mono(Fmt.eth(n.valueWei) + " ETH", Modifier.weight(1f))
             when {
                 left < s.minRemainingS -> Chip("cash out", Status.ERROR)
-                left < 48 * 3600 -> Chip("refresh", Status.PENDING)
+                left < WARN_S -> Chip("refresh", Status.PENDING)
                 else -> Chip("ok", Status.OK)
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Secondary("expires in ${Fmt.left(left)}", color = if (left < 48 * 3600) Tw.amber400 else Tw.zinc500)
+            Secondary("expires in ${Fmt.left(left)}", color = if (left < WARN_S) Tw.amber400 else Tw.zinc500)
             Secondary("hop ${n.depth}/${s.maxHops}" + if (n.depth >= s.maxHops) " (cash out only)" else "")
             if (n.ownerApproval) Secondary("fingerprint")
+            if (!n.refreshable) Secondary("v3")
         }
+        if (n.refreshable && left > 0) SecondaryButton("Refresh", { onRefresh(n.alias) }, Modifier.padding(top = 4.dp))
     }
 }
 

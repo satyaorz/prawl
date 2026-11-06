@@ -96,5 +96,10 @@ class Note(val json: JsonObject) {
     val createdAt: Long? get() = json.optStr("createdAt")?.toLongOrNull()
     val label: String get() = header.label
     val isGenesis: Boolean get() = depth == 0
+    /** Minted for commit-then-fund (escrow v3.1 private load); [tipWei] is the relayer tip the unshield must also cover. */
+    val privateLoad: Boolean get() = json.bool("privateLoad")
+    val tipWei: BigInteger get() = json.optStr("tipWei")?.let { BigInteger(it) } ?: BigInteger.ZERO
+    /** Set when this note was fully spent into a refreshed coin (the new coin id). */
+    val refreshedTo: String? get() = json.optStr("refreshedTo")
 }
 

@@ -10,13 +10,15 @@ import java.util.UUID
 object SampleData {
     const val NOW = 1793952000L
     val notes = listOf(
-        NoteView("recv_r1a2b3c4", "c9f1e2", BigInteger("200000000000000000"), 1, NOW + 12 * 86400 + 5 * 3600, NoteView.State.SPENDABLE, true),
-        NoteView("n_c9f1e2_c1793942937257", "c9f1e2", BigInteger("700000000000000000"), 1, NOW + 12 * 86400, NoteView.State.SPENDABLE, true),
-        NoteView("recv_r9", "77aa01", BigInteger("1000000000000000"), 2, NOW + 30 * 3600, NoteView.State.SPENDABLE, false),
+        NoteView("recv_r1a2b3c4", "c9f1e2", BigInteger("200000000000000000"), 1, NOW + 12 * 86400 + 5 * 3600, NoteView.State.SPENDABLE, true, refreshable = true),
+        NoteView("n_c9f1e2_c1793942937257", "c9f1e2", BigInteger("700000000000000000"), 1, NOW + 12 * 86400, NoteView.State.SPENDABLE, true, refreshable = true),
+        NoteView("recv_r9", "77aa01", BigInteger("1000000000000000"), 2, NOW + 30 * 3600, NoteView.State.SPENDABLE, false, refreshable = true),
+        NoteView("recv_v3", "3c0de1", BigInteger("50000000000000000"), 1, NOW + 2 * 86400, NoteView.State.SPENDABLE, false),
         NoteView("n_5b11_g", "5b11", BigInteger("10000000000000000"), 0, NOW + 14 * 86400, NoteView.State.AWAITING_DEPOSIT, true),
         NoteView("n_c9f1e2_g", "c9f1e2", BigInteger("1000000000000000000"), 0, NOW + 12 * 86400, NoteView.State.SPENT, true),
     )
-    val balance = BalanceState(notes, NOW, 6 * 3600, pendingRequests = 1, depositSources = 1)
+    val balance = BalanceState(notes, NOW, 6 * 3600, pendingRequests = 1, depositSources = 1,
+        pendingRefreshes = listOf(xyz.prawl.offline.ui.RefreshView("52465348988d9cfd13fd12ff4f6ac905bb8032bf8aec0bb77c8b0cceeb0dece0", BigInteger("50000000000000000"), NOW + 14 * 86400)))
 
     /** The lines Dave's phone produced for the real 2-hop bundle pay3_s_dave1 (see core tests). */
     val lines = listOf(

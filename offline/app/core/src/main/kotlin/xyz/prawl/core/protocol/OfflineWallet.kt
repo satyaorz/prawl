@@ -71,6 +71,8 @@ class OfflineWallet(
     val depositProofFor: (coinId: String, recipientLc: JsonObject?) -> JsonObject? = { _, _ -> null },
     /** This phone's committee range, advertised in receive requests (`lc`: {"min","max"}), or null. */
     val lcAdvertisement: () -> JsonObject? = { null },
+    /** Escrows that implement shield cash-out, refresh and private load (v3.1). Those operations are refused on any other escrow. */
+    val v31Escrows: Set<Pair<String, String>> = Escrows.V31,
 ) {
     val certs = CertResolver(certStore, anchors)
     private val rnd = SecureRandom()
@@ -99,18 +101,32 @@ class OfflineWallet(
     class MintResult(val header: JsonObject, val mintFile: JsonObject, val note: Note) {
         /** HANDOFF.md `load` payload for the website. */
         val handoff: JsonObject get() = Handoff.load(mintFile)
+        /** HANDOFF v1.1 §5 `load-private` payload (only meaningful for a coin minted with `privateLoad`). */
+        val handoffPrivate: JsonObject get() = Handoff.loadPrivate(note.header, note.tipWei)
     }
 
+    /**
+     * Mints a coin: a fresh single-use genesis key and a random coin id.
+     *
+     * [privateLoad] (escrow v3.1 commit-then-fund): the coin is funded by a RAILGUN unshield to the deposit address, so
+     * [depositor] is the coin's RECLAIM address (not the funder), the escrow must be v3.1, and [tipWei] is the relayer
+     * tip the unshield must cover on top of the value (exact mode: minValue = maxValue = value).
+     */
     fun mint(
         label: String, valueWei: BigInteger, expiresInS: Long, chainId: String, escrow: String, depositor: String,
         spec: KeySpec = KeySpec(userAuthPerUse = ownerApprovalForNewKeys()), pendingDeposit: Boolean = false,
+        privateLoad: Boolean = false, tipWei: BigInteger = BigInteger.ZERO,
     ): MintResult = synchronized(lock) {
         require(valueWei.signum() > 0) { "value must be positive" }
         val escrow40 = Eth.normalize40(escrow) ?: throw IllegalArgumentException("escrow is not an address")
         val dep40 = Eth.normalize40(depositor) ?: throw IllegalArgumentException("depositor is not an address")
+        require(tipWei.signum() >= 0) { "tip must not be negative" }
+        if (privateLoad) require(Escrows.isV31(chainId, escrow40, v31Escrows)) { "private load needs escrow v3.1; 0x$escrow40 does not support it" }
+        else require(tipWei.signum() == 0) { "a tip applies only to private load" }
         val alias = "n_${label}_g"
         notes.note(alias)?.let { if (!it.spent) throw IllegalStateException("label '$label' already holds an unspent coin") }
-        val id = ByteArray(32).also { rnd.nextBytes(it) }
+        var id: ByteArray
+        do { id = ByteArray(32).also { rnd.nextBytes(it) } } while (Refresh.isReserved(Bytes.hex(id)))   // "RFSH" ids belong to refreshed coins
         val c0 = newKey(alias, spec)
         val k0 = certs.leafKey(c0.strings()) as ECPublicKey
         val now = nowS()
@@ -124,6 +140,7 @@ class OfflineWallet(
             put("noteId", Protocol.genesisNoteId(Bytes.hex(id)))
         }
         if (pendingDeposit) noteJson = noteJson.with("pendingDeposit", true).with("createdAt", now)
+        if (privateLoad) noteJson = noteJson.with("privateLoad", true).with("tipWei", tipWei.toString())
         val note = Note(noteJson)
         notes.put(note)
         val certsJson = buildJsonObject { c0.strings().forEach { put(it, Bytes.b64(certs.get(it))) } }
@@ -307,13 +324,14 @@ class OfflineWallet(
      * Attach only certificates the recipient lacks (not pinned roots, not in its "known" list), and for a payment
      * the coin's light-client DepositProof if this phone holds one.
      */
-    fun carry(bundle: JsonObject, req: ReceiveRequest?, withDepositProof: Boolean = req != null): JsonObject {
+    fun carry(bundle: JsonObject, req: ReceiveRequest?, withDepositProof: Boolean = req != null, extraChains: List<List<String>> = emptyList()): JsonObject {
         val skip = HashSet(certs.rootIds)
         req?.known?.let { skip.addAll(it) }
         val b = Bundle(bundle)
         val chains = ArrayList<List<String>>()
         chains.add(b.header.k0)
         b.path.forEach { chains.add(it.next) }
+        chains.addAll(extraChains)
         val seen = LinkedHashSet<String>(); var refs = 0
         val certsJson = buildJsonObject {
             for (c in chains) for (id in c) { refs++; if (seen.add(id) && id !in skip) put(id, Bytes.b64(certs.get(id))) }
@@ -423,6 +441,196 @@ class OfflineWallet(
         RedeemOutcome.Signed(full, note)
     }
 
+    // ================================================================ v3.1: cash out into a RAILGUN shield
+
+    /** Result of checking a website `shield-target` against a note (also shown to the user as "value check" lines). */
+    class ShieldCheck(val request: ShieldRequest?, val lines: List<VerifyLine>) {
+        val ok: Boolean get() = request != null && lines.all { it.ok }
+        val failures: List<String> get() = lines.filter { !it.ok }.map { "${it.title}: ${it.detail}" }
+    }
+
+    /**
+     * The refusals of `Wallet3Activity.redeemShield`, plus the v3.1-only rule:
+     *  - the coin's escrow must be v3.1 (v3 has no redeemToShield);
+     *  - the target must be for this coin's chain and escrow (when it names them);
+     *  - plain ERC20 WETH only (tokenType 0, the chain's WETH, subID 0);
+     *  - the shield value must equal the note's value exactly (the escrow shields the output's whole value).
+     */
+    fun checkShield(note: Note, target: JsonObject): ShieldCheck {
+        val h = note.header
+        val req = try { ShieldRequest.parse(target) } catch (e: Exception) {
+            return ShieldCheck(null, listOf(VerifyLine("0", "Shield request readable", false, e.message ?: "malformed")))
+        }
+        val lines = ArrayList<VerifyLine>()
+        val v31 = Escrows.isV31(h.chainId, h.escrow, v31Escrows)
+        lines.add(VerifyLine("1", "Coin is on escrow v3.1", v31,
+            if (v31) "0x${h.escrow}" else "this coin is on escrow 0x${h.escrow}, which cannot pay into RAILGUN; cash it out to an address"))
+        val tChain = target.optStr("chainId"); val tEsc = target.optStr("escrow")?.let { Eth.normalize40(it) }
+        val chainOk = tChain == null || tChain == h.chainId
+        val escOk = target.optStr("escrow") == null || tEsc == h.escrow.lowercase()
+        lines.add(VerifyLine("2", "Request is for this coin's escrow", chainOk && escOk,
+            if (chainOk && escOk) (if (tEsc == null) "the request does not name an escrow; the signed output binds this coin's" else "chain ${h.chainId}, escrow 0x${h.escrow}")
+            else "request is for chain ${tChain ?: h.chainId}, escrow ${tEsc?.let { "0x$it" } ?: "?"}"))
+        val weth = Escrows.WETH[h.chainId]
+        val tokenOk = req.tokenType == 0 && weth != null && req.tokenAddress40 == weth && req.tokenSubId.signum() == 0
+        lines.add(VerifyLine("3", "Plain WETH (ERC20, subID 0)", tokenOk,
+            if (tokenOk) "token 0x${req.tokenAddress40}" else "tokenType ${req.tokenType}, token 0x${req.tokenAddress40}, subID ${req.tokenSubId}"))
+        val valueOk = req.value == note.value
+        lines.add(VerifyLine("4", "Shield value equals the note", valueOk, "${Eth.eth(req.value)} ETH vs note ${Eth.eth(note.value)} ETH"))
+        return ShieldCheck(req, lines)
+    }
+
+    /** Signs a redemption of note [alias] into the RAILGUN shield [target] (`shield-target` object or a bare request). */
+    fun redeemShield(alias: String, target: JsonObject, approver: SpendApprover?, checkExpiry: Boolean = true): RedeemOutcome = synchronized(lock) {
+        val note = notes.note(alias) ?: return RedeemOutcome.Refused("no note $alias")
+        if (note.spent) return RedeemOutcome.Refused("note already spent")
+        if (note.pendingDeposit) return RedeemOutcome.Refused("coin not deposited yet")
+        val h = note.header
+        if (checkExpiry && h.expiry <= nowS()) return RedeemOutcome.Refused("note expired: the escrow no longer pays it")
+        val chk = checkShield(note, target)
+        if (!chk.ok) { log("REFUSED: ${chk.failures}"); return RedeemOutcome.Refused("refused: " + chk.failures.joinToString("; ")) }
+        val req = chk.request!!
+        val sh = req.hash()
+        val outs = listOf(Output(note.value, req.outputKey(h.chainId, h.escrow)))
+        val sig = try {
+            keys.sign(alias, Protocol.spendMessage(h, note.depth, note.noteId, outs), approver,
+                ApprovalPrompt("Prawl: approve private cash out", "Shield ${Eth.eth(note.value)} ETH into your private balance"))
+        } catch (t: Throwable) {
+            val m = (t.message ?: t.toString()).lineSequence().first()
+            log("REFUSED BY SECURE HARDWARE: $m")
+            return RedeemOutcome.Refused("refused by the secure hardware: $m")
+        }
+        val red = buildJsonObject {
+            put("header", h.json); put("path", note.json["path"]!!)
+            put("redeem", buildJsonObject {
+                put("outputs", Output.toJson(outs)); put("index", 0); put("payout", "0x" + "0".repeat(40))
+                put("kind", "shield"); put("shield", req.json); put("shieldHash", "0x$sh"); put("sig", Bytes.b64(sig))
+            })
+        }
+        val full = carry(red, null)
+        val npk = req.json.optStr("npk") ?: ""
+        notes.put(Note(note.json.with("spent", true).with("redeemedTo", "RAILGUN shield npk ${npk.take(18)}…").with("redeemBundle", full.toString()).with("redeemedAt", nowS())))
+        log("REDEEM-TO-SHIELD SIGNED: ${Eth.eth(note.value)} ETH note $alias -> RAILGUN npk ${npk.take(18)}… (shieldHash ${sh.take(16)}…)")
+        RedeemOutcome.Signed(full, note)
+    }
+
+    /** Unspent notes a shield of exactly [valueWei] could use (v3.1 coins whose value equals it). */
+    fun notesForShield(valueWei: BigInteger): List<Note> = spendable().filter {
+        it.value == valueWei && Escrows.isV31(it.header.chainId, it.header.escrow, v31Escrows) && it.header.expiry > nowS()
+    }
+
+    // ================================================================ v3.1: refresh
+
+    sealed class RefreshOutcome {
+        class Signed(val bundle: JsonObject, val newCoinId: String, val newExpiry: Long, val value: BigInteger, val reclaim40: String, val oldAlias: String) : RefreshOutcome() {
+            /** Website payload (`t:"refresh"`, provisional): redeem arguments + (newCoinId, newExpiry, newK0x, newK0y). */
+            val handoff: JsonObject get() = Handoff.redeem(bundle, null)
+        }
+        class Refused(val reason: String) : RefreshOutcome()
+    }
+
+    private fun uniqueLabel(base: String): String {
+        val taken = notes.notes().filter { !it.spent || it.pendingDeposit }.map { it.label }.toSet()
+        if (base !in taken) return base
+        var i = 2
+        while ("$base$i" in taken) i++
+        return "$base$i"
+    }
+
+    /**
+     * Refresh (RESULTS §3.6): signs the WHOLE note into a PRAWL-REFRESH output, which the escrow turns into a new coin
+     * with a new expiry, a new genesis key (made here) and [reclaim] as its depositor. The new coin id is derived from
+     * the signed message (`RFSH` prefix), so nobody can pre-empt it. The new coin is NOT spendable until
+     * [markRefreshed] (after the refresh landed on-chain); until then it is kept as a pending record with its key.
+     */
+    fun refresh(alias: String, expiresInS: Long, reclaim: String, approver: SpendApprover?, newLabel: String? = null): RefreshOutcome = synchronized(lock) {
+        val dep40 = Eth.normalize40(reclaim) ?: return RefreshOutcome.Refused("reclaim address is not an address")
+        if (dep40 == "0".repeat(40)) return RefreshOutcome.Refused("reclaim address must not be the zero address")
+        val note = notes.note(alias) ?: return RefreshOutcome.Refused("no note $alias")
+        if (note.spent) return RefreshOutcome.Refused("note already spent")
+        if (note.pendingDeposit) return RefreshOutcome.Refused("coin not deposited yet")
+        val h = note.header
+        if (!Escrows.isV31(h.chainId, h.escrow, v31Escrows))
+            return RefreshOutcome.Refused("this coin is on escrow 0x${h.escrow}, which has no refresh; refresh needs escrow v3.1. Cash it out and load again")
+        val now = nowS()
+        if (h.expiry <= now) return RefreshOutcome.Refused("note expired: the escrow no longer pays it")
+        if (expiresInS < REFRESH_MIN_S || expiresInS > REFRESH_MAX_S)
+            return RefreshOutcome.Refused("new lifetime must be between 1 and ${REFRESH_MAX_S / 86400} days (the escrow allows at most 30 from submission)")
+        val newExpiry = now + expiresInS
+        val label = uniqueLabel(newLabel ?: (h.label + "r"))
+        val newAlias = freshAlias("n_${label}_g")
+        val c0 = newKey(newAlias, KeySpec(userAuthPerUse = ownerApprovalForNewKeys()))
+        var persisted = false
+        try {
+            val k0 = certs.leafKey(c0.strings()) as ECPublicKey
+            val newK0Hash = certs.leafKeyHash(c0.strings())
+            check(newK0Hash == Refresh.keyHashXy(k0.w.affineX, k0.w.affineY)) { "internal: new key hash mismatch" }
+            val outs = listOf(Output(note.value, Refresh.outputKey(h.chainId, h.escrow, newExpiry, newK0Hash, dep40)))
+            val msg = Protocol.spendMessage(h, note.depth, note.noteId, outs)
+            val newCoinId = Refresh.coinId(Refresh.messageHash(msg), 0)
+            check(Refresh.isReserved(newCoinId))
+            val sig = try {
+                keys.sign(alias, msg, approver, ApprovalPrompt("Prawl: approve refresh", "Move ${Eth.eth(note.value)} ETH into a new coin (${expiresInS / 86400} days)"))
+            } catch (t: Throwable) {
+                val m = (t.message ?: t.toString()).lineSequence().first()
+                log("REFUSED BY SECURE HARDWARE: $m")
+                keys.delete(newAlias)
+                return RefreshOutcome.Refused("refused by the secure hardware: $m")
+            }
+            val k0x = k0.w.affineX.toString(16); val k0y = k0.w.affineY.toString(16)
+            val red = buildJsonObject {
+                put("header", h.json); put("path", note.json["path"]!!)
+                put("redeem", buildJsonObject {
+                    put("outputs", Output.toJson(outs)); put("index", 0); put("payout", "0x$dep40"); put("kind", "refresh")
+                    put("refresh", buildJsonObject { put("expiry", newExpiry); put("k0", c0); put("k0x", k0x); put("k0y", k0y); put("depositor", dep40); put("coinId", newCoinId) })
+                    put("sig", Bytes.b64(sig))
+                })
+            }
+            val full = carry(red, null, extraChains = listOf(c0.strings()))
+            val newHeader = buildJsonObject {
+                put("v", 3); put("label", label); put("coinId", newCoinId); put("chainId", h.chainId); put("escrow", h.escrow)
+                put("expiry", newExpiry); put("value", note.value.toString()); put("k0", c0); put("k0x", k0x); put("k0y", k0y); put("depositor", dep40)
+            }
+            // persist before anything is shown: the old key is spent, so this record is the money
+            notes.putRecord("refresh", newCoinId, buildJsonObject {
+                put("coinId", newCoinId); put("alias", newAlias); put("label", label); put("value", note.value.toString())
+                put("oldAlias", alias); put("oldCoinId", h.coinId); put("header", newHeader); put("bundle", full.toString()); put("at", now)
+            })
+            persisted = true
+            notes.put(Note(note.json.with("spent", true).with("refreshedTo", newCoinId).with("redeemBundle", full.toString()).with("redeemedAt", now)))
+            log("REFRESH SIGNED: ${Eth.eth(note.value)} ETH note $alias -> new coin ${newCoinId.take(16)}… (key $newAlias, expires ${newExpiry}, reclaim 0x$dep40)")
+            RefreshOutcome.Signed(full, newCoinId, newExpiry, note.value, dep40, alias)
+        } catch (e: Exception) {
+            // before the record is persisted the new key has signed nothing and must not linger; after it, the record owns the key
+            if (!persisted) keys.delete(newAlias)
+            RefreshOutcome.Refused(e.message ?: e.toString())
+        }
+    }
+
+    /** Refreshes signed but not yet confirmed, newest first. */
+    fun pendingRefreshes(): List<PendingRefresh> =
+        notes.recordNames("refresh").mapNotNull { n -> notes.record("refresh", n)?.let { PendingRefresh(it) } }.sortedByDescending { it.at }
+
+    /**
+     * The user confirmed the refresh landed (or the light-client check proved it): the new coin's genesis note is created
+     * and becomes spendable, keyed by the genesis key made at refresh time. The pending record is consumed, so a second call fails.
+     */
+    fun markRefreshed(coinId: String): Note = synchronized(lock) {
+        val id = coinId.lowercase().removePrefix("0x")
+        val rec = notes.record("refresh", id) ?: throw IllegalArgumentException("no pending refresh for coin 0x$id")
+        val alias = rec.str("alias")
+        notes.note(alias)?.let { notes.deleteRecord("refresh", id); return@synchronized it }
+        check(keys.exists(alias)) { "the new coin's genesis key $alias is missing" }
+        val note = Note(buildJsonObject {
+            put("header", rec["header"]!!); put("path", JsonArray(emptyList())); put("alias", alias); put("value", rec.str("value"))
+            put("noteId", Protocol.genesisNoteId(id)); put("refreshedFrom", rec.str("oldCoinId")); put("depositedAt", nowS())
+        })
+        notes.put(note)
+        notes.deleteRecord("refresh", id)
+        log("REFRESH CONFIRMED: coin 0x${id.take(16)}… is live, ${Eth.eth(note.value)} ETH, key $alias")
+        note
+    }
+
     // ================================================================ views
 
     fun spendable(): List<Note> = notes.notes().filter { !it.spent && !it.pendingDeposit }
@@ -440,6 +648,10 @@ class OfflineWallet(
     }
 
     companion object {
+        /** New coin lifetime on refresh: 1 to 28 days (the escrow requires newExpiry <= submission time + 30 days). */
+        const val REFRESH_MIN_S = 86400L
+        const val REFRESH_MAX_S = 28 * 86400L
+
         fun deflated(s: String): Int {
             val d = Deflater(Deflater.BEST_COMPRESSION)
             d.setInput(s.toByteArray(Charsets.UTF_8)); d.finish()

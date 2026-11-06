@@ -123,9 +123,9 @@ fun SettingsScreen(nav: Nav) {
                 SecondaryButton("Refresh proofs of my coins", {
                     online("Building deposit proofs…") {
                         val coins = g.notes.notes().filter { !it.spent && !it.pendingDeposit }.map { it.header }.distinctBy { it.coinId }
-                            .filter { it.escrow == g.escrow40 }
+                            .filter { (it.chainId to it.escrow) in xyz.prawl.core.protocol.Escrows.PRODUCT }
                         if (g.lightClient.cache() == null) g.lightClient.syncCommittees()
-                        val ok = coins.count { hdr -> runCatching { g.lightClient.buildProof(g.escrow40, hdr.coinId, DepositCommitment.commitment(hdr)).ok }.getOrDefault(false) }
+                        val ok = coins.count { hdr -> runCatching { g.lightClient.buildProof(hdr.escrow, hdr.coinId, DepositCommitment.commitment(hdr)).ok }.getOrDefault(false) }
                         "$ok of ${coins.size} coin(s) have a fresh deposit proof"
                     }
                 }, enabled = !busy)
@@ -154,7 +154,8 @@ fun SettingsScreen(nav: Nav) {
         PCard(title = "About") {
             KeyValue("App", "${BuildConfig.APPLICATION_ID} ${BuildConfig.VERSION_NAME}", mono = true)
             KeyValue("Network", "Sepolia (${g.chainId})")
-            KeyValue("Escrow", Fmt.addr(g.escrow40), mono = true)
+            KeyValue("Escrow v3.1 (new coins)", Fmt.addr(g.escrow40), mono = true)
+            KeyValue("Escrow v3 (still accepted)", Fmt.addr(xyz.prawl.core.protocol.Escrows.SEPOLIA_V3), mono = true)
             KeyValue("Website", BuildConfig.HANDOFF_SITE, mono = true)
             if (BuildConfig.DEBUG) KeyValue("Harness", "${BuildConfig.APPLICATION_ID}/xyz.prawl.offline.harness.HarnessActivity", mono = true)
         }

@@ -13,6 +13,7 @@ import xyz.prawl.core.attest.AttestationVerifier
 import xyz.prawl.core.certs.FileCertStore
 import xyz.prawl.core.deposit.DepositSources
 import xyz.prawl.core.deposit.DepositVerifier
+import xyz.prawl.core.protocol.Escrows
 import xyz.prawl.core.protocol.OfflineWallet
 import xyz.prawl.core.protocol.RecipientPolicy
 import xyz.prawl.core.store.FileNoteStore
@@ -92,7 +93,8 @@ class AppGraph(val app: Application) {
     /** One lock for every wallet instance: two spends can never interleave. */
     val walletLock = Any()
 
-    val escrow40: String = Eth.normalize40(BuildConfig.ESCROW)!!
+    /** Escrow new coins are minted for (v3.1 by default); the product accepts and spends coins of [Escrows.PRODUCT]. */
+    val escrow40: String = Eth.normalize40(BuildConfig.ESCROW)!!.also { require((BuildConfig.CHAIN_ID to it) in Escrows.PRODUCT) { "default escrow is not a known escrow" } }
     val chainId: String = BuildConfig.CHAIN_ID
 
     val attestationPolicy = AttestationPolicy(BuildConfig.ALLOWED_APPS.split(',').map {
@@ -104,7 +106,7 @@ class AppGraph(val app: Application) {
     /** Product policy: settings + only the configured escrow. */
     fun recipientPolicy() = RecipientPolicy(
         capWei = settings.capWei, minRemainingS = settings.minRemainingS,
-        acceptedEscrows = setOf(chainId to escrow40),
+        acceptedEscrows = Escrows.PRODUCT,
     )
 
     /** The wallet as the screens use it. */
@@ -118,12 +120,13 @@ class AppGraph(val app: Application) {
      * The wallet as the harness uses it: harness policy (any escrow), owner approval off, and deposits backed by a
      * carried light-client proof or else the given snapshot file (the harness's `snapshot` extra).
      */
-    fun harnessWallet(snapshot: DepositVerifier?, log: (String) -> Unit): OfflineWallet = OfflineWallet(
+    fun harnessWallet(snapshot: DepositVerifier?, log: (String) -> Unit, extraV31: Set<Pair<String, String>> = emptySet()): OfflineWallet = OfflineWallet(
         keys, notes, certStore, trust.anchors(), checker(), { RecipientPolicy() },
         { CompositeDepositVerifier(listOfNotNull(
             LightClientDepositVerifier(lightClient.backend) { id, p -> lightClient.store.saveProof(id, p) }, snapshot)) },
         ownerApprovalForNewKeys = { false }, log = log, lock = walletLock,
         depositProofFor = lightClient::proofFor, lcAdvertisement = lightClient::advertisement,
+        v31Escrows = Escrows.V31 + extraV31,
     )
 
     private val _version = MutableStateFlow(0)
