@@ -118,7 +118,7 @@ function ShieldTarget({ ask }: { ask?: { value: string; escrow: `0x${string}`; n
  * Offline cash (phone ↔ website, HANDOFF v1). The phones hold and pay the
  * cash; the website only loads coins into the escrow and cashes them out.
  */
-export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; incoming?: { link: string; n: number } } = {}) {
+export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; incoming?: { link: string; n: number; own?: boolean } } = {}) {
   const w = useWallet();
   const [payload, setPayload] = useState<OfflinePayload>();
   const [text, setText] = useState("");
@@ -132,11 +132,12 @@ export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; inc
   /** Read-only checks of a private load against the escrow (deposit address, reservation, expiry), run when it opens. */
   const [chainProblems, setChainProblems] = useState<string[]>();
 
-  const take = useCallback((t: string) => {
+  /** [own]: the link came straight from this wallet's own phone app (a coin it just minted), not from a scan or a paste. */
+  const take = useCallback((t: string, own = false) => {
     setError(undefined);
     setStatus(undefined);
     clearFinishedAction();
-    setOwnCoin(AUTO_CONFIRM);
+    setOwnCoin(AUTO_CONFIRM || own);
     try {
       setPayload(payloadFromText(t));
       setText("");
@@ -154,7 +155,7 @@ export function OfflineCard({ onOpened, incoming }: { onOpened?: () => void; inc
 
   // A payload handed over by the phone bridge opens like a scanned code.
   useEffect(() => {
-    if (incoming) take(incoming.link);
+    if (incoming) take(incoming.link, !!incoming.own);
   }, [incoming, take]);
 
   const opened = useRef(onOpened);

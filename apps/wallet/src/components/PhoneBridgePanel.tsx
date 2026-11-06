@@ -21,7 +21,7 @@ import { Icon, short } from "./ui";
  * card below like a scanned code, so the same checks and the same simulate-then-send apply. Cash-out
  * and refresh wait for the user's approval on the phone itself.
  */
-export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string) => void }) {
+export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string, opts?: { own?: boolean }) => void }) {
   const w = useWallet();
   const bridge = getBridge();
   const [coins, setCoins] = useState<BridgeCoin[]>();
@@ -48,12 +48,12 @@ export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string) => v
   if (!bridge) return null;
 
   /** One phone call at a time, with a waiting message; a refusal on the phone is not an error. */
-  async function run(label: string, fn: () => Promise<{ link: string } | undefined>) {
+  async function run(label: string, fn: () => Promise<{ link: string } | undefined>, opts: { own?: boolean } = {}) {
     setError(undefined);
     setBusy(label);
     try {
       const out = await fn();
-      if (out) onPayload(out.link);
+      if (out) onPayload(out.link, opts);
     } catch (e) {
       setError(e instanceof BridgeDeclined ? "Declined on the phone. Nothing was signed." : e instanceof Error ? e.message : String(e));
     } finally {
@@ -107,7 +107,7 @@ export function PhoneBridgePanel({ onPayload }: { onPayload: (link: string) => v
                 if (!w.evmAddress) throw new Error("unlock the wallet first");
                 const r = await mintOnPhone(b, { depositor: w.evmAddress, valueWei: wei, mode: priv ? "private" : "public" });
                 return r;
-              })
+              }, { own: true })
             }
             className="rounded-lg bg-emerald-500 px-4 text-sm font-semibold text-zinc-950 disabled:opacity-50"
           >

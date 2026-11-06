@@ -20,7 +20,7 @@ export function OfflineMode({ onOpened }: { onOpened: () => void }) {
   const w = useWallet();
   const unlocked = !!w.railgunAddress;
   // A payload the phone bridge returned: the card below opens it like a scanned code.
-  const [incoming, setIncoming] = useState<{ link: string; n: number }>();
+  const [incoming, setIncoming] = useState<{ link: string; n: number; own?: boolean }>();
   return (
     <div className="flex flex-col gap-4 px-5 pb-6">
       {unlocked && (
@@ -49,7 +49,7 @@ export function OfflineMode({ onOpened }: { onOpened: () => void }) {
         </>
       )}
 
-      {unlocked && <PhoneBridgePanel onPayload={(link) => setIncoming({ link, n: Date.now() })} />}
+      {unlocked && <PhoneBridgePanel onPayload={(link, opts) => setIncoming({ link, n: Date.now(), ...(opts?.own ? { own: true } : {}) })} />}
 
       <OfflineCard onOpened={onOpened} incoming={incoming} />
 
