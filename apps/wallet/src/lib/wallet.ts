@@ -722,6 +722,9 @@ function fmtEth(wei: bigint): string {
 /** kohaku's "Insufficient balance for intent" in words, with what would fit. */
 function explain(kind: "send" | "unshield", e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e);
+  if (BUNDLER_UPSTREAM_ERROR.test(msg)) {
+    return "The public bundler (Pimlico) could not reach its own Ethereum node, even after several tries. That is on its side and usually passes within a few minutes. Nothing was sent and your funds did not move: try again shortly.";
+  }
   if (!/Insufficient balance for intent/i.test(msg)) return msg;
   const spendable = (state.balances ?? [])
     .filter((b) => b.token !== undefined && b.token === state.wrappedBaseToken && b.poiStatus === "Valid")
@@ -742,6 +745,16 @@ function explain(kind: "send" | "unshield", e: unknown): string {
  */
 /** Network-level failures while preparing a private operation (not a refusal by the bundler or the contract). */
 const TRANSIENT_PREPARE_ERROR = /error sending request|HTTP error|timed out|timeout|network|fetch failed|connection (reset|closed|refused)|ECONN/i;
+
+/**
+ * Waits between attempts to prepare a private operation. "Bundler error: ... HTTP error: error sending request" is the
+ * public bundler (Pimlico) failing to reach ITS OWN Ethereum node, not a problem on our Tor path (the wallet's network log
+ * shows every bundler request answered in 1 to 3 s). It tends to last seconds to a minute, so back off: about a minute in all.
+ */
+const PREPARE_RETRY_DELAYS_MS: readonly number[] = import.meta.env.MODE === "test" ? [5, 5, 5, 5, 5] : [4_000, 8_000, 12_000, 16_000, 20_000];
+
+/** The bundler's own upstream failure, in plain words. */
+const BUNDLER_UPSTREAM_ERROR = /Bundler error:.*(error sending request|HTTP error)/i;
 
 async function privateOp(
   kind: "send" | "unshield",
@@ -774,9 +787,9 @@ async function privateOp(
         prepared = await run(oneTimeKey);
       } catch (e) {
         const text = e instanceof Error ? e.message : String(e);
-        if (attempt >= 2 || !TRANSIENT_PREPARE_ERROR.test(text)) throw e;
-        status("The bundler did not answer; trying again…");
-        await new Promise((resolve) => setTimeout(resolve, 4000));
+        if (attempt >= PREPARE_RETRY_DELAYS_MS.length || !TRANSIENT_PREPARE_ERROR.test(text)) throw e;
+        status(`The public bundler is having trouble reaching its node; trying again (${attempt + 1}/${PREPARE_RETRY_DELAYS_MS.length})…`);
+        await new Promise((resolve) => setTimeout(resolve, PREPARE_RETRY_DELAYS_MS[attempt]));
         if (myEpoch !== epoch) throw new Error("wallet was locked or changed");
       }
     }

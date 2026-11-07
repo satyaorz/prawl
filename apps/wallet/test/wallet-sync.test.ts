@@ -118,6 +118,51 @@ describe("wallet sync", () => {
       }
     }, 20_000);
 
+    it("keeps trying through a longer bundler outage (up to 6 attempts) and then succeeds", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        if (prepares <= 5) throw new Error("Bundler error: Other: HTTP error: error sending request");
+        return { signed: {}, userOpHash: `0x${"11".repeat(32)}` };
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockResolvedValue(okTx);
+      try {
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(true);
+        expect(prepares).toBe(6);
+        expect(tx.sendUserOp).toHaveBeenCalledTimes(1);
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear();
+      }
+    }, 20_000);
+
+    it("gives up after those attempts with a plain explanation, and sends nothing", async () => {
+      reset(0);
+      await wallet.createWallet();
+      const tx = await import("../src/lib/tx");
+      let prepares = 0;
+      answers.prepareUnshield = () => {
+        prepares++;
+        throw new Error("Bundler error: Other: HTTP error: error sending request");
+      };
+      (tx.sendUserOp as ReturnType<typeof vi.fn>).mockClear();
+      try {
+        expect(await wallet.unshieldEth(recipient, 10n ** 15n)).toBe(false);
+        expect(prepares).toBe(6);
+        expect(tx.sendUserOp).not.toHaveBeenCalled();
+        const action = wallet.walletState.get().action;
+        expect(action?.error).toMatch(/public bundler \(Pimlico\) could not reach its own Ethereum node/);
+        expect(action?.error).toMatch(/funds did not move/);
+      } finally {
+        delete answers.prepareUnshield;
+        kv.clear();
+      }
+    }, 20_000);
+
     it("does not repeat a refusal that is not a network error", async () => {
       reset(0);
       await wallet.createWallet();
